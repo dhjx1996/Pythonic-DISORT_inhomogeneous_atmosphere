@@ -19,7 +19,7 @@ You may contact me, Dion, through dh3065@columbia.edu.
 
 The **GitHub repository** is https://github.com/LDEO-CREW/Pythonic-DISORT.
 
-Accompanying Journal of Open Source Software paper: https://joss.theoj.org/papers/10.21105/joss.06442.
+Accompanying Journal of Open Source Software paper: https://joss.theoj.org/papers/10.21105/joss.06442. **Please cite this paper if you use PythonicDISORT**.
 
 # Documentation
 https://pythonic-disort.readthedocs.io/en/latest/
@@ -54,7 +54,7 @@ These notebooks double up as examples of how to use PythonicDISORT. The tests wh
 # Installation
 
 * From PyPI: `pip install PythonicDISORT`
-* From Conda-forge: (TODO: need to first publish on Conda-forge)
+* From Conda-Forge: `conda install -c conda-forge pythonicdisort` or `mamba install -c conda-forge pythonicdisort`
 * By cloning repository: `pip install .` in the `Pythonic-DISORT` directory; `pip install -r all_optional_dependencies.txt` to install all optional dependencies (see *Requirements to run PythonicDISORT*)
 
 ## Requirements to run PythonicDISORT
