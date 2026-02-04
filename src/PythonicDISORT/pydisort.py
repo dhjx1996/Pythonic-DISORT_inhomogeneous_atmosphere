@@ -406,19 +406,21 @@ def pydisort(
         
         # TMS correction for the intensity (see section 3.7.2)
         # --------------------------------------------------------------------------------------------------------------------------
-        def TMS_correction(tau, phi, is_antiderivative_wrt_tau, l, l_uniq, l_inv):
+        def TMS_correction(tau, phi, is_antiderivative_wrt_tau):
             Ntau = len(tau)
             Nphi = len(phi)
             # Atmospheric layer indices
-            if not there_is_iso_source:
-                l_uniq, l_inv = np.unique(l, return_inverse=True)
-            scaled_tau_arr_l = scaled_tau_arr_with_0[1:][l]
+            l = np.argmax(tau[:, None] <= tau_arr[None, :], axis=1)
+            scaled_tau_arr_l = scaled_tau_arr_with_0[l + 1]
             scaled_tau_arr_lm1 = scaled_tau_arr_with_0[l]
 
             # Delta-M scaling
-            tau_dist_from_top = tau_arr[l] - tau
-            scaled_tau_dist_from_top = tau_dist_from_top * scale_tau[l]
-            scaled_tau = scaled_tau_arr_l - scaled_tau_dist_from_top
+            if np.any(scale_tau != np.ones(NLayers)):
+                tau_dist_from_top = tau_arr[l] - tau
+                scaled_tau_dist_from_top = tau_dist_from_top * scale_tau[l]
+                scaled_tau = scaled_tau_arr_l - scaled_tau_dist_from_top
+            else:
+                scaled_tau = tau
             
             # mathscr_B
             # --------------------------------------------------------------------------------------------------------------------------
@@ -429,45 +431,44 @@ def pydisort(
                 [
                     f(nu)[:, None, :]
                     # Iterates over the 0th axis
-                    for f in map(Legendre, weighted_Leg_coeffs_all[l_uniq])
+                    for f in map(Legendre, weighted_Leg_coeffs_all)
                 ],
                 axis=1,
-            ) # (NQuad, NLayers_uniq, Nphi)
+            )
             p_trun = np.concatenate(
                 [
                     f(nu)[:, None, :]
                     # Iterates over the 0th axis
-                    for f in map(Legendre, weighted_scaled_Leg_coeffs[l_uniq])
+                    for f in map(Legendre, weighted_scaled_Leg_coeffs)
                 ],
                 axis=1,
-            ) # (NQuad, NLayers_uniq, Nphi)
-            
+            )
             mathscr_B = (
-                (scaled_omega_arr[l_uniq] * I0_div_4pi)[None, :, None]
+                (scaled_omega_arr * I0)[None, :, None]
+                / (4 * np.pi)
                 * (mu0 / (mu0 + mu_arr))[:, None, None]
-                * (p_true / (1 - f_arr)[None, l_uniq, None] - p_trun)
-            ) # (NQuad, NLayers_uniq, Nphi)
+                * (p_true / (1 - f_arr[None, :, None]) - p_trun)
+            )
             # --------------------------------------------------------------------------------------------------------------------------
             
             neg_scaled_tau_div_mu0 = -scaled_tau / mu0
             if is_antiderivative_wrt_tau:
 
-                scale_tau_l = scale_tau[l_uniq]
-                neg_scale_tau_l_div_mu0 = -scale_tau_l / mu0
-                scale_tau_l_div_mu_arr_pos = scale_tau_l[None, :] / mu_arr_pos[:, None]
+                neg_scale_tau_div_mu0 = -scale_tau / mu0
+                scale_tau_div_mu_arr_pos = scale_tau[None, :] / mu_arr_pos[:, None]
 
                 TMS_correction_pos = (
-                    np.exp(neg_scaled_tau_div_mu0) / neg_scale_tau_l_div_mu0[l_inv]
+                    np.exp(neg_scaled_tau_div_mu0) / neg_scale_tau_div_mu0[l]
                 )[None, :] - np.exp(
                     (scaled_tau - scaled_tau_arr_l)[None, :] / mu_arr_pos[:, None]
                     - scaled_tau_arr_l[None, :] / mu0
-                ) / scale_tau_l_div_mu_arr_pos[:, l_inv]
+                ) / scale_tau_div_mu_arr_pos[:, l]
                 TMS_correction_neg = (
-                    np.exp(neg_scaled_tau_div_mu0) / neg_scale_tau_l_div_mu0[l_inv]
+                    np.exp(neg_scaled_tau_div_mu0) / neg_scale_tau_div_mu0[l]
                 )[None, :] + np.exp(
                     (scaled_tau_arr_lm1 - scaled_tau)[None, :] / mu_arr_pos[:, None]
                     - scaled_tau_arr_lm1[None, :] / mu0
-                ) / scale_tau_l_div_mu_arr_pos[:, l_inv]
+                ) / scale_tau_div_mu_arr_pos[:, l]
             else:
                 TMS_correction_pos = np.exp(neg_scaled_tau_div_mu0)[None, :] - np.exp(
                     (scaled_tau - scaled_tau_arr_l)[None, :] / mu_arr_pos[:, None]
@@ -477,123 +478,111 @@ def pydisort(
                     (scaled_tau_arr_lm1 - scaled_tau)[None, :] / mu_arr_pos[:, None]
                     - scaled_tau_arr_lm1[None, :] / mu0
                 )
-
             
             ## Contribution from other layers
             # --------------------------------------------------------------------------------------------------------------------------
-            solution = (
-                mathscr_B[:, l_inv, :]
-                * np.concatenate((TMS_correction_pos, TMS_correction_neg), axis=0)[:, :, None]
-            )
+            Bpos = mathscr_B[:N, :, :]                                      # (N, NLayers, Nphi)
+            Bneg = mathscr_B[N:, :, :]                                      # (N, NLayers, Nphi)
             
-            if is_atmos_multilayered:
-                any_pos = (l.min() < NLayers - 1)
-                any_neg = (l.max() > 0)
+            sol_pos = Bpos[:, l, :] * TMS_correction_pos[:, :, None]        # (N, Ntau, Nphi)
+            sol_neg = Bneg[:, l, :] * TMS_correction_neg[:, :, None]        # (N, Ntau, Nphi)
+            
+            if not is_atmos_multilayered:
+                return np.concatenate((sol_pos, sol_neg), axis=0)
 
-                mu0_inv = 1 / mu0
+            # ---------------- other-layer contributions ----------------
+            any_pos = (l.min() < NLayers - 1)  # exists tau with layers below
+            any_neg = (l.max() > 0)            # exists tau with layers above
 
-                scaled_tauwith0_front = scaled_tau_arr_with_0[:-1]          # (NLayers,)
-                scaled_tauwith0_back  = scaled_tau_arr_with_0[1:]           # (NLayers,); i.e. `scaled_tau_arr`
+            # Layer boundaries/thickness in scaled-tau coordinates
+            tau_front = scaled_tau_arr_with_0[:-1]                           # (NLayers,) = tau_r
+            tau_back  = scaled_tau_arr_with_0[1:]                            # (NLayers,) = tau_{r+1}
 
-                exp_taufront_mu0_inv = np.concatenate(
-                    ([1], np.exp(-scaled_tauwith0_front[1:] * mu0_inv))
-                )  # (Nlayers, )
+            # decay[n,r] = exp(-scaled_thickness_arr[r]/mu[n])  (argument <= 0; underflow is safe)
+            decay = np.exp(-scaled_thickness_arr[None, :] * M_inv[:, None])                  # (N, NLayers)
 
+            exp_taufront_mu0_inv = np.exp(-tau_front / mu0)              # (NLayers,)
+            exp_tauback_mu0_inv  = np.exp(-tau_back / mu0)              # (NLayers,)
 
-                Bpos = mathscr_B[:N, :, :]                       # (N, NLayers_uniq, Nphi)
-                Bneg = mathscr_B[N:, :, :]                       # (N, NLayers_uniq, Nphi)
+            if is_antiderivative_wrt_tau:
+                # (N, NLayers): multiply by this instead of dividing by (scale_tau/mu)
+                mu_div_scale_layers = mu_arr_pos[:, None] / scale_tau[None, :]
 
-                # decay[n,r] = exp(-scaled_thickness_arr[r]/mu[n]); always <= 1
-                log_decay = -scaled_thickness_arr[None, :] * M_inv[:, None]                    # (N, NLayers)
-
-                # decay_prod[n,k] = prod_{m=0}^{k-1} decay[n,m], with decay_prod[:,0]=1
-                log_decay_prod = np.cumsum(log_decay, axis=1) # The cumsum requires ALL layers; `l_uniq` is inapplicable
-                decay_prod = np.concatenate((np.ones((N, 1)), np.exp(log_decay_prod)), axis=1) # (N, NLayers + 1)
+            # ===== POS: sum over r > l =====
+            if any_pos:
+                # fac_pos = 1 - exp(-scaled_thickness_arr*(1/mu + 1/mu0)) = -expm1(-scaled_thickness_arr*(...))
+                delta_pos = scaled_thickness_arr[None, :] * (M_inv + 1 / mu0)[:, None]        # (N, NLayers) >= 0
+                fac_pos = -np.expm1(-delta_pos)                               # (N, NLayers) in [0,1)
 
                 if is_antiderivative_wrt_tau:
-                    # (N, NLayers)
-                    integration_factor = mu_arr_pos[:, None] / scale_tau
+                    fac_pos = fac_pos * mu_div_scale_layers                  # (N, NLayers)
 
-                # ====================================================================
-                # POS: pre-accumulate "contribution from below" sums Rpos[N, l, Nphi]
-                # ====================================================================
-                if any_pos:
-                    thickness_pos = scaled_thickness_arr[None, :] * (M_inv + mu0_inv)[:, None]  # (N, NLayers); always > 0
-                    # em1_pos = 1 - exp(-scaled_thickness_arr*(1/mu + 1/mu0)) = -expm1(-thickness_pos)
-                    em1_pos = -np.expm1(-thickness_pos)                                         # (N, NLayers)
-                    if is_antiderivative_wrt_tau:
-                        em1_pos = integration_factor * em1_pos
+                # coef_pos[n,r] multiplies exp((tau - tau_front[r])/mu - tau_front[r]/mu0) after re-referencing
+                # includes exp(-tau_front[r]/mu0)
+                coef_pos = fac_pos * exp_taufront_mu0_inv[None, :]            # (N, NLayers)
 
-                    layer_term_pos = em1_pos * exp_taufront_mu0_inv[None, :]                    # (N, NLayers)
+                # Reverse scan to build Acc_l (referenced at tau_back[l]) INCLUDING Bpos:
+                # Acc_{r-1} = coef_pos[:,r]*Bpos[:,r,:] + decay[:,r]*Acc_r
+                acc0 = np.zeros((N, Nphi))
+                acc = acc0
+                cols_rev = [acc0]  # Acc_{NLayers-1} = 0
 
-                    # Reverse-scan via cumsum:
-                    # Rpos[l] = (1/decay_prod[l+1]) * sum_{r=l+1..} (layer_term_pos[r] * decay_prod[r])
-                    weighted_layer_term_pos = layer_term_pos * decay_prod[:, :NLayers]          # (N, NLayers)
-                    cumsum_pos = np.cumsum(weighted_layer_term_pos[:, ::-1], axis=1)[:, ::-1]   # (N, NLayers)
+                for r in range(NLayers - 1, 0, -1):  # r = NLayers-1 ... 1
+                    term = coef_pos[:, r][:, None] * Bpos[:, r, :]            # (N, Nphi)
+                    acc = term + decay[:, r][:, None] * acc
+                    cols_rev.append(acc)
 
-                    Rpos_rest = cumsum_pos[:, 1:] / decay_prod[:, 1 : NLayers]                  # (N, NLayers - 1)
-                    Rpos = np.concatenate([Rpos_rest, np.zeros((N, 1))], axis=1)                # (N, NLayers)
+                Acc_pos = np.stack(cols_rev[::-1], axis=1)                    # (N, NLayers, Nphi)
 
-                    # Apply to all `tau`
-                    # expfac_pos = exp(M_inv*tau) * exp(-M_inv*scaled_tauwith0_back[l])
-                    expfac_pos = np.exp(M_inv[:, None] * (scaled_tau - scaled_tauwith0_back[l])[None, :])  # (N, Ntau)
-                    tmp = np.take(Rpos, l, axis=1)                                                         # (N, Ntau)
-                    tmp = (tmp * expfac_pos)[:, :, None] * Bpos[:, l_inv, :]
+                # Apply to tau: multiply by exp((scaled_tau - tau_back[l]) / mu) (argument <= 0 in exact arithmetic)
+                expfac_pos = np.exp(M_inv[:, None] * (scaled_tau - tau_back[l])[None, :])  # (N, Ntau)
+                contrib_pos = Acc_pos[:, l, :] * expfac_pos[:, :, None]         # (N, Ntau, Nphi)
+
+                sol_pos = sol_pos + contrib_pos
+
+            # ===== NEG: sum over r < l =====
+            if any_neg:
+                # We need term_base[n,r] = exp(-tau_back[r]/mu0) - exp(-scaled_thickness_arr[r]/mu)*exp(-tau_front[r]/mu0)
+                # computed stably via expm1 using only non-positive inputs.
+                delta_neg = scaled_thickness_arr[None, :] * (M_inv - 1 / mu0)[:, None]        # (N, NLayers), can be +/-.
+                abs_delta = np.abs(delta_neg)
+                em1 = np.expm1(-abs_delta)                                    # (N, NLayers) in [-1,0], argument <= 0
+
+                exp_x1 = exp_tauback_mu0_inv[None, :]                         # (1, NLayers)
+                exp_x0 = decay * exp_taufront_mu0_inv[None, :]                # (N, NLayers)
+
+                # if delta>=0: term = exp_x1*(1-exp(-delta)) = exp_x1*(-expm1(-delta)) = exp_x1*(-em1)
+                # if delta<0 : term = exp_x0*(exp(delta)-1)  = exp_x0*expm1(delta)     = exp_x0*( em1)  (since delta<0 -> em1=expm1(delta))
+                term_base = np.where(delta_neg >= 0.0, (-em1) * exp_x1, em1 * exp_x0)  # (N, NLayers)
+
+                if is_antiderivative_wrt_tau:
+                    # original divides by (-scale_tau/mu) == multiply by (-(mu/scale_tau))
+                    coef_neg = term_base * -mu_div_scale_layers               # (N, NLayers)
+                else:
+                    coef_neg = term_base                                      # (N, NLayers)
+
+                # Forward scan to build Acc_l (referenced at tau_front[l]) INCLUDING Bneg:
+                # Acc_{r+1} = coef_neg[:,r]*Bneg[:,r,:] + decay[:,r]*Acc_r
+                acc0 = np.zeros((N, Nphi))
+                acc = acc0
+                cols = [acc0]  # Acc_0 = 0
+
+                for r in range(0, NLayers - 1):  # r = 0 ... NLayers-2
+                    term = coef_neg[:, r][:, None] * Bneg[:, r, :]            # (N, Nphi)
+                    acc = term + decay[:, r][:, None] * acc
+                    cols.append(acc)
+
+                Acc_neg = np.stack(cols, axis=1)                              # (N, NLayers, Nphi)
+
+                # Apply to tau: multiply by exp((tau_front[l] - scaled_tau) / mu) (argument <= 0 in exact arithmetic)
+                expfac_neg = np.exp(M_inv[:, None] * (tau_front[l] - scaled_tau)[None, :])  # (N, Ntau)
+                contrib_neg = Acc_neg[:, l, :] * expfac_neg[:, :, None]          # (N, Ntau, Nphi)
+
+                sol_neg = sol_neg + contrib_neg
+
+            return np.concatenate((sol_pos, sol_neg), axis=0)
                     
-                    if autograd_compatible:
-                        solution = np.concatenate((solution[:N, :, :] + tmp, solution[N:, :, :]), axis=0)
-                    else:
-                        solution[:N, :, :] += tmp
-
-                # ====================================================================
-                # NEG: pre-accumulate "contribution from above" sums Rneg[N, l, Nphi]
-                # ====================================================================
-                if any_neg:
-                    decay = np.exp(log_decay)                                                    # (N, NLayers)
-                    
-                    # Ensure no positive exponents
-                    thickness_neg = scaled_thickness_arr[None, :] * (M_inv - mu0_inv)[:, None]   # (N, NLayers)
-                    mask = (thickness_neg >= 0)
-
-                    exp_x1 = np.exp(-scaled_tauwith0_back * mu0_inv)[None, :]                    # (1, NLayers)
-                    exp_x0 = decay * exp_taufront_mu0_inv[None, :]                               # (N, NLayers)
-
-                    # Let a = |thickness_neg| >= 0. Then expm1(-a) uses only non-positive inputs.
-                    em1_neg = np.expm1(-np.abs(thickness_neg))                                       # (N, NLayers)
-
-                    # thickness_neg>=0: exp_x1 * (1 - exp(-a)) = exp_x1 * (-expm1(-a)) = exp_x1 * (-em1_neg)
-                    # thickness_neg<0 : exp_x0 * (exp(-a) - 1) = exp_x0 * expm1(-a)    = exp_x0 * ( em1_neg)
-                    layer_term_negthick = em1_neg * exp_x0                                       # (N, NLayers)
-                    layer_term_posthick = -em1_neg * exp_x1                                      # (N, NLayers)
-                    layer_term_neg = layer_term_posthick * mask + layer_term_negthick * (~mask)  # (N, NLayers)
-
-                    if is_antiderivative_wrt_tau:
-                        layer_term_neg = -integration_factor * layer_term_neg
-
-                    # Forward-scan via cumsum:
-                    # Rneg[l] = decay_prod[l] * sum_{r<l} layer_term_neg[r] / decay_prod[r+1]
-                    weighted_layer_term_neg = layer_term_neg / decay_prod[:, 1:]                 # (N, NLayers)
-                    cumsum_neg = np.cumsum(weighted_layer_term_neg, axis=1)                      # (N, NLayers)
-                    
-                    Rneg_rest = decay_prod[:, 1 : NLayers] * cumsum_neg[:, :-1]                  # (N, NLayers - 1)
-                    Rneg = np.concatenate([np.zeros((N, 1)), Rneg_rest], axis=1)                 # (N, NLayers)
-
-                    # Apply to all `tau`
-                    expfac_neg = np.exp(M_inv[:, None] * (scaled_tauwith0_front[l] - scaled_tau)[None, :])  # (N, Ntau)
-                    tmp = np.take(Rneg, l, axis=1)                                                          # (N, Ntau)
-                    tmp = (tmp * expfac_neg)[:, :, None] * Bneg[:, l_inv, :]
-                    
-                    if autograd_compatible:
-                        solution = np.concatenate((solution[:N, :, :], solution[N:, :, :] + tmp), axis=0)
-                    else:
-                        solution[N:, :, :] += tmp
-
-                return solution
-
             # --------------------------------------------------------------------------------------------------------------------------
-            
-            else:
-                return solution
         # --------------------------------------------------------------------------------------------------------------------------
 
         # IMS correction for the intensity (see section 3.7.2)
@@ -628,7 +617,8 @@ def pydisort(
                 ) / (mu_arr_pos * scaled_mu0 * x)[:, None]
                 
             return (
-                I0_div_4pi
+                I0
+                / (4 * pi)
                 * (omega_avg * f_avg) ** 2
                 / (1 - omega_avg * f_avg)
                 * Legendre(
@@ -640,59 +630,25 @@ def pydisort(
 
         # The corrected intensity
         # --------------------------------------------------------------------------------------------------------------------------
-        def u_corrected(
-            tau,
-            phi,
-            is_antiderivative_wrt_tau=False,
-            return_Fourier_error=False,
-            return_tau_arr=False,
-        ):
+        def u_corrected(tau, phi, is_antiderivative_wrt_tau=False, return_Fourier_error=False, return_tau_arr=False):
             tau = np.atleast_1d(tau)
             phi = np.atleast_1d(phi)
-
-            u_star_outputs = u_star(
-                tau,
-                phi,
-                is_antiderivative_wrt_tau,
-                return_Fourier_error,
-                return_tau_arr,
-                _return_l=True,
-            )
-            if there_is_iso_source:
-                NT_corrections = TMS_correction(
-                    tau,
-                    phi,
-                    is_antiderivative_wrt_tau,
-                    u_star_outputs[-3],
-                    u_star_outputs[-2],
-                    u_star_outputs[-1],
-                )
-                u_star_outputs = u_star_outputs[:-3]
-            else:
-                NT_corrections = TMS_correction(
-                    tau, phi, is_antiderivative_wrt_tau, u_star_outputs[-1], None, None
-                )
-                u_star_outputs = u_star_outputs[:-1]
-
+            NT_corrections = TMS_correction(tau, phi, is_antiderivative_wrt_tau)
+            
             if autograd_compatible:
-                NT_corrections = np.concatenate(
-                    (
-                        NT_corrections[:N, :, :],
-                        NT_corrections[N:, :, :]
-                        + IMS_correction(tau, phi, is_antiderivative_wrt_tau),
-                    ),
-                    axis=0,
+                NT_corrections = NT_corrections + np.concatenate(
+                    [np.zeros((N, len(tau), len(phi))), IMS_correction(tau, phi, is_antiderivative_wrt_tau)], axis=0
                 )
             else:
                 NT_corrections[N:, :, :] += IMS_correction(tau, phi, is_antiderivative_wrt_tau)
-
+            
             if return_Fourier_error or return_tau_arr:
+                u_star_outputs = u_star(tau, phi, is_antiderivative_wrt_tau, return_Fourier_error, return_tau_arr)
                 return (
                     u_star_outputs[0] + rescale_factor * np.squeeze(NT_corrections),
                 ) + u_star_outputs[1:]
             else:
-                return u_star_outputs[0] + rescale_factor * np.squeeze(NT_corrections)
-
+                return u_star(tau, phi, is_antiderivative_wrt_tau) + rescale_factor * np.squeeze(NT_corrections)
         # --------------------------------------------------------------------------------------------------------------------------
 
         return mu_arr, flux_up, flux_down, u0, u_corrected

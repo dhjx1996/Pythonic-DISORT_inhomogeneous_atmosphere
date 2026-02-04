@@ -167,7 +167,7 @@ def _assemble_intensity_and_fluxes(
  
         # Construct the intensity function (refer to section 3.7 of the Comprehensive Documentation)
         # --------------------------------------------------------------------------------------------------------------------------
-        def u(tau, phi, is_antiderivative_wrt_tau=False, return_Fourier_error=False, return_tau_arr=False, *, _return_l=False):
+        def u(tau, phi, is_antiderivative_wrt_tau=False, return_Fourier_error=False, return_tau_arr=False):
             """
             Intensity function with arguments `(tau, phi)` of types `(array or float, array or float)`.
             Returns an ndarray with axes corresponding to variation with `mu, tau, phi` respectively.
@@ -318,13 +318,6 @@ def _assemble_intensity_and_fluxes(
             if return_tau_arr:
                 outputs += (tau_arr,)
                 output_is_tuple = True
-            
-            if _return_l: # This indicates to the function that NT corrections are activated
-                output_is_tuple = True
-                outputs += (l,)
-                if there_is_iso_source:
-                    # The TMS correction will use these
-                    outputs += (l_uniq, l_inv)
                 
             return outputs if output_is_tuple else outputs[0]
         # --------------------------------------------------------------------------------------------------------------------------
