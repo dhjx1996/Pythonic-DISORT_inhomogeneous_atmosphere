@@ -495,14 +495,16 @@ def pydisort(
             any_neg = (l.max() > 0)            # exists tau with layers above
 
             # Layer boundaries/thickness in scaled-tau coordinates
-            tau_front = scaled_tau_arr_with_0[:-1]                           # (NLayers,) = tau_r
-            tau_back  = scaled_tau_arr_with_0[1:]                            # (NLayers,) = tau_{r+1}
+            exp_scaled_tau_arr_with_0 = prepend(np.exp(-scaled_tau_arr_with_0[1:] / mu0), NLayers, 1)
 
-            # decay[n,r] = exp(-scaled_thickness_arr[r]/mu[n])  (argument <= 0; underflow is safe)
-            decay = np.exp(-scaled_thickness_arr[None, :] * M_inv[:, None])                  # (N, NLayers)
+            # decay[n,r] = exp(-scaled_thickness_arr[r]/mu[n])
+            delta = scaled_thickness_arr[None, :] * M_inv[:, None]
+            decay = np.exp(-delta)  # (N, NLayers)
 
-            exp_taufront_mu0_inv = np.exp(-tau_front / mu0)              # (NLayers,)
-            exp_tauback_mu0_inv  = np.exp(-tau_back / mu0)              # (NLayers,)
+            # tau_front = scaled_tau_arr_with_0[:-1]
+            exp_taufront_mu0_inv = exp_scaled_tau_arr_with_0[:-1]            # (NLayers,)
+            # tau_back = scaled_tau_arr_with_0[1:]
+            exp_tauback_mu0_inv  = exp_scaled_tau_arr_with_0[1:]             # (NLayers,)
 
             if is_antiderivative_wrt_tau:
                 # (N, NLayers): multiply by this instead of dividing by (scale_tau/mu)
@@ -511,15 +513,15 @@ def pydisort(
             # ===== POS: sum over r > l =====
             if any_pos:
                 # fac_pos = 1 - exp(-scaled_thickness_arr*(1/mu + 1/mu0)) = -expm1(-scaled_thickness_arr*(...))
-                delta_pos = scaled_thickness_arr[None, :] * (M_inv + 1 / mu0)[:, None]        # (N, NLayers) >= 0
-                fac_pos = -np.expm1(-delta_pos)                               # (N, NLayers) in [0,1)
+                delta_pos = delta + (scaled_thickness_arr / mu0)[None, :]    # (N, NLayers) >= 0
+                fac_pos = -np.expm1(-delta_pos)                              # (N, NLayers) in [0,1)
 
                 if is_antiderivative_wrt_tau:
                     fac_pos = fac_pos * mu_div_scale_layers                  # (N, NLayers)
 
                 # coef_pos[n,r] multiplies exp((tau - tau_front[r])/mu - tau_front[r]/mu0) after re-referencing
                 # includes exp(-tau_front[r]/mu0)
-                coef_pos = fac_pos * exp_taufront_mu0_inv[None, :]            # (N, NLayers)
+                coef_pos = fac_pos * exp_taufront_mu0_inv[None, :]           # (N, NLayers)
 
                 # Reverse scan to build Acc_l (referenced at tau_back[l]) INCLUDING Bpos:
                 # Acc_{r-1} = coef_pos[:,r]*Bpos[:,r,:] + decay[:,r]*Acc_r
@@ -535,8 +537,8 @@ def pydisort(
                 Acc_pos = np.stack(cols_rev[::-1], axis=1)                    # (N, NLayers, Nphi)
 
                 # Apply to tau: multiply by exp((scaled_tau - tau_back[l]) / mu) (argument <= 0 in exact arithmetic)
-                expfac_pos = np.exp(M_inv[:, None] * (scaled_tau - tau_back[l])[None, :])  # (N, Ntau)
-                contrib_pos = Acc_pos[:, l, :] * expfac_pos[:, :, None]         # (N, Ntau, Nphi)
+                expfac_pos = np.exp(M_inv[:, None] * (scaled_tau - scaled_tau_arr_with_0[1:][l])[None, :])  # (N, Ntau)
+                contrib_pos = Acc_pos[:, l, :] * expfac_pos[:, :, None]       # (N, Ntau, Nphi)
 
                 sol_pos = sol_pos + contrib_pos
 
@@ -544,16 +546,15 @@ def pydisort(
             if any_neg:
                 # We need term_base[n,r] = exp(-tau_back[r]/mu0) - exp(-scaled_thickness_arr[r]/mu)*exp(-tau_front[r]/mu0)
                 # computed stably via expm1 using only non-positive inputs.
-                delta_neg = scaled_thickness_arr[None, :] * (M_inv - 1 / mu0)[:, None]        # (N, NLayers), can be +/-.
-                abs_delta = np.abs(delta_neg)
-                em1 = np.expm1(-abs_delta)                                    # (N, NLayers) in [-1,0], argument <= 0
+                delta_neg = delta - (scaled_thickness_arr / mu0)[None, :]     # (N, NLayers), can be +/-.
+                em1 = np.expm1(-np.abs(delta_neg))                            # (N, NLayers) in [-1,0], argument <= 0
 
                 exp_x1 = exp_tauback_mu0_inv[None, :]                         # (1, NLayers)
                 exp_x0 = decay * exp_taufront_mu0_inv[None, :]                # (N, NLayers)
 
                 # if delta>=0: term = exp_x1*(1-exp(-delta)) = exp_x1*(-expm1(-delta)) = exp_x1*(-em1)
                 # if delta<0 : term = exp_x0*(exp(delta)-1)  = exp_x0*expm1(delta)     = exp_x0*( em1)  (since delta<0 -> em1=expm1(delta))
-                term_base = np.where(delta_neg >= 0.0, (-em1) * exp_x1, em1 * exp_x0)  # (N, NLayers)
+                term_base = np.where(delta_neg >= 0.0, -em1 * exp_x1, em1 * exp_x0)  # (N, NLayers)
 
                 if is_antiderivative_wrt_tau:
                     # original divides by (-scale_tau/mu) == multiply by (-(mu/scale_tau))
@@ -568,15 +569,15 @@ def pydisort(
                 cols = [acc0]  # Acc_0 = 0
 
                 for r in range(0, NLayers - 1):  # r = 0 ... NLayers-2
-                    term = coef_neg[:, r][:, None] * Bneg[:, r, :]            # (N, Nphi)
+                    term = coef_neg[:, r][:, None] * Bneg[:, r, :]              # (N, Nphi)
                     acc = term + decay[:, r][:, None] * acc
                     cols.append(acc)
 
-                Acc_neg = np.stack(cols, axis=1)                              # (N, NLayers, Nphi)
+                Acc_neg = np.stack(cols, axis=1)                                # (N, NLayers, Nphi)
 
                 # Apply to tau: multiply by exp((tau_front[l] - scaled_tau) / mu) (argument <= 0 in exact arithmetic)
-                expfac_neg = np.exp(M_inv[:, None] * (tau_front[l] - scaled_tau)[None, :])  # (N, Ntau)
-                contrib_neg = Acc_neg[:, l, :] * expfac_neg[:, :, None]          # (N, Ntau, Nphi)
+                expfac_neg = np.exp(M_inv[:, None] * (scaled_tau_arr_with_0[l] - scaled_tau)[None, :])  # (N, Ntau)
+                contrib_neg = Acc_neg[:, l, :] * expfac_neg[:, :, None]         # (N, Ntau, Nphi)
 
                 sol_neg = sol_neg + contrib_neg
 
