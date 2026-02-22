@@ -1,0 +1,97 @@
+"""
+Test suite 5: Lambertian BDRF surface, beam source.
+
+Corresponds to aspects of Stamnes Test Problems 7d and 11 (Lambertian
+surface reflectance with direct-beam + diffuse scattering).
+Exercises both the scalar and callable BDRF code paths in _solve_bc_magnus.
+
+Reference: pydisort (single-layer, exact eigendecomposition).
+Fallback:  reference_results/5{a-c}_test.npz
+"""
+import numpy as np
+from math import pi
+import PythonicDISORT
+from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
+
+NQuad = 8
+NLeg  = NQuad
+
+
+def _make_isotropic():
+    g_l = np.zeros(NLeg); g_l[0] = 1.0
+    return g_l, make_D_m_funcs(g_l, NLeg, NQuad)
+
+
+def _make_HG(g):
+    g_l = g ** np.arange(NLeg)
+    return g_l, make_D_m_funcs(g_l, NLeg, NQuad)
+
+
+def test_5a():
+    """Isotropic scattering, scalar (Lambertian) BDRF with albedo=0.1."""
+    print("\n--- Test 5a ---")
+    tau_bot, omega = 0.5, 0.5
+    mu0, I0, phi0  = 0.5, 1.0, 0.0
+    rho = 0.1
+    # pydisort BDRF convention: scalar mode-0 coefficient = rho/pi
+    BDRF = [rho / pi]
+    g_l, D_m_funcs = _make_isotropic()
+
+    flux_ref, u0_ref = get_reference(
+        "5a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        BDRF_Fourier_modes=BDRF,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_5b():
+    """HG g=0.75, scalar Lambertian BDRF with albedo=0.5."""
+    print("\n--- Test 5b ---")
+    tau_bot, omega, g = 1.0, 0.8, 0.75
+    mu0, I0, phi0 = 0.5, 1.0, 0.0
+    rho = 0.5
+    BDRF = [rho / pi]
+    g_l, D_m_funcs = _make_HG(g)
+
+    flux_ref, u0_ref = get_reference(
+        "5b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        BDRF_Fourier_modes=BDRF,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_5c():
+    """HG g=0.5, callable Lambertian BDRF (rho=0.3) — exercises callable path."""
+    print("\n--- Test 5c ---")
+    tau_bot, omega, g = 2.0, 0.7, 0.5
+    mu0, I0, phi0 = 0.6, pi / 0.6, 0.0
+    rho = 0.3
+
+    # pydisort mode-m callable: BDRF^m(mu_i, mu_j) = rho/pi for m=0, 0 otherwise.
+    # Lambertian surface has only an m=0 contribution.
+    BDRF_callable = [lambda mu, mup, _r=rho: np.full(
+        np.broadcast_shapes(np.shape(mu), np.shape(mup)), _r / pi
+    )]
+    # Scalar equivalent for the pydisort reference
+    BDRF_scalar = [rho / pi]
+
+    g_l, D_m_funcs = _make_HG(g)
+
+    # Reference uses scalar BDRF (equivalent result for Lambertian surface)
+    flux_ref, u0_ref = get_reference(
+        "5c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        BDRF_Fourier_modes=BDRF_scalar,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=300, BDRF_Fourier_modes=BDRF_callable,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

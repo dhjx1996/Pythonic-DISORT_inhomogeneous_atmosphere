@@ -9,19 +9,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -e ".[pytest]"
 ```
 
-**Run all tests** (from the `pydisotest/` directory):
+**Run all tests** (from the `tests/` directory; use the `DISORT` conda env):
 ```bash
-cd pydisotest && pytest
+cd tests && conda run -n DISORT python -m pytest .
 ```
 
 **Run a single test file:**
 ```bash
-cd pydisotest && pytest 1_test.py
+cd tests && conda run -n DISORT python -m pytest 1_test.py
 ```
 
 **Run a single test function:**
 ```bash
-cd pydisotest && pytest 1_test.py::test_1a
+cd tests && conda run -n DISORT python -m pytest 1_test.py::test_1a
+```
+
+**Regenerate .npz fallback reference files** (run once after changing tau values in generate_reference.py):
+```bash
+cd tests && conda run -n DISORT python generate_reference.py
 ```
 
 **Install notebook/example dependencies:**
@@ -73,7 +78,20 @@ All output functions accept `is_antiderivative_wrt_tau=True` to switch to their 
 
 ### Tests
 
-`pydisotest/` contains `N_test.py` files (N = 1–9, 11, I) corresponding to Stamnes' DISORT test problems, plus matching `N_test.ipynb` notebooks that show physical setup and plots. Tests use `subroutines._compare()` to verify PythonicDISORT results against Stamnes' wrapped FORTRAN DISORT. Section 6 of `docs/Pythonic-DISORT.ipynb` requires an F2PY-wrapped DISORT to be installed locally.
+`tests/` contains the PyTest suite for `pydisort_magnus` (25 tests across 7 files):
+
+| File | What it covers |
+|---|---|
+| `1_test.py` – `3_test.py` | Constant-ω Magnus vs pydisort reference (isotropic, Rayleigh-like, HG) |
+| `4_test.py` | Non-zero diffuse BCs (b_pos, b_neg) |
+| `5_test.py` | Lambertian BDRF surface (scalar and callable) |
+| `6_test.py` | τ-varying ω convergence: multi-layer pydisort → Magnus reference |
+| `7_test.py` | τ-varying ω and g, including BDRF |
+
+`tests/_helpers.py` provides `make_D_m_funcs`, `pydisort_toa`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, and `assert_convergence`.
+`tests/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
+
+The old `pydisotest/` (Stamnes DISORT test problems comparing against wrapped FORTRAN DISORT) has been removed.
 
 ### Documentation
 
@@ -85,3 +103,38 @@ The primary reference for the mathematics is `docs/Pythonic-DISORT.ipynb`, espec
 - Variable naming mirrors the mathematical notation from the notebook (e.g., `mu_arr_pos`, `weighted_scaled_Leg_coeffs`)
 - Internal functions are prefixed with `_` and are not part of the public API
 - Changes to numerical behavior must include a verification test and explanation
+
+---
+
+## Magnus forward solver (`pydisort_magnus`)
+
+**Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Magnus forward solver is the first building block.
+
+**Purpose**: `pydisort_magnus` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function D^m(τ), yielding the upward field at ToA (τ=0). It uses first-order Magnus integration (midpoint-rule matrix exponential) rather than per-layer eigendecomposition.
+
+### New files
+
+| File | Purpose |
+|---|---|
+| `src/PythonicDISORT/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
+| `src/PythonicDISORT/_magnus_propagator.py` | `_compute_magnus_propagator`: accumulates Φ^{hom} and φ^{part} via Magnus steps |
+| `src/PythonicDISORT/_solve_bc_magnus.py` | `_solve_bc_magnus`: solves N×N BC linear system from the propagator blocks |
+
+**NFourier** = `len(D_m_funcs)`. The m=0 callable handles isotropic/azimuth-symmetric scattering.
+
+**D_m_funcs interface**: `D_m_funcs[m](τ, mu_i, mu_j)` returns the phase-function kernel WITHOUT the ω factor:
+`D^m_pure(μ_i, μ_j; τ) = (1/2) Σ_l (2l+1) * poch_l * g_l^m(τ) * P_l^m(μ_i) * P_l^m(μ_j)`.
+Handles arbitrary signs of μ_i, μ_j with broadcasting support. ω is handled internally via `omega_func`.
+
+### Numerical stability limit
+
+The forward-accumulation propagator Φ^{hom} has condition number ≈ exp(2λ_max·τ_bot), where λ_max is the largest eigenvalue of the coefficient matrix. For τ_bot ≳ 3 (depending on ω and phase function), this exceeds double precision and the BC solve fails. Tests are limited to τ_bot ≤ 2 for safety. Fixing this requires a stable algorithm (doubling/adding) — see deferred features below.
+
+### Deferred features (not yet implemented — do not forget)
+
+- **Stable thick-atmosphere integration**: doubling/adding method to replace the forward-accumulation propagator for τ_bot ≳ 3
+- **Adaptive Magnus step control**: currently equidistant steps (`N_magnus_steps`)
+- **Delta-M scaling**: not applied in `pydisort_magnus`
+- **Nakajima-Tanaka (NT) corrections**: not applied; may be added in the future
+- **Isotropic internal source**: only the collimated beam source is handled
+- **Non-ToA depth evaluation**: currently only τ=0 (ToA) is returned
