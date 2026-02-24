@@ -227,8 +227,8 @@ def pydisort_magnus(
             def S_m_func(_tau):
                 return np.zeros(NQuad)
 
-        # ---- Magnus propagator ----------------------------------------
-        Phi_hom, phi_part = _compute_magnus_propagator(
+        # ---- Magnus propagator (step-by-step SVD, no positive exponents) ----
+        U_m, Sigma_m, Vt_m, q_scaled_m = _compute_magnus_propagator(
             A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad
         )
 
@@ -238,7 +238,7 @@ def pydisort_magnus(
         b_neg_m = b_neg_matrix[:, m]
 
         u_m = _solve_bc_magnus(
-            Phi_hom, phi_part, N,
+            U_m, Sigma_m, Vt_m, q_scaled_m, N,
             b_pos_m, b_neg_m,
             BDRF_mode_m, mu_arr_pos, W,
             m, mu0, I0_div_4pi_scaled, tau_bot,

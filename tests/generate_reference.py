@@ -46,9 +46,9 @@ for lbl, tau_bot, omega in [
     ("1a", 0.03125, 0.2),
     ("1b", 0.03125, 1 - 1e-6),
     ("1c", 0.03125, 0.99),
-    ("1d", 1.5,     0.2),
-    ("1e", 1.5,     1 - 1e-6),
-    ("1f", 1.5,     0.99),
+    ("1d", 32.0,    0.2),        # thick: tests SVD stabilization
+    ("1e", 32.0,    1 - 1e-6),   # thick: near-conservative
+    ("1f", 32.0,    0.99),       # thick: high scattering
 ]:
     save(lbl, tau_bot, omega, NQuad, g_l_iso, mu0_1, I0_1, phi0_1)
 
@@ -58,8 +58,8 @@ mu0_2, I0_2, phi0_2 = 0.080442, pi, pi
 for lbl, tau_bot, omega in [
     ("2a", 0.2, 0.5),
     ("2b", 0.2, 1 - 1e-6),
-    ("2c", 1.5, 0.5),
-    ("2d", 1.5, 1 - 1e-6),
+    ("2c", 5.0, 0.5),        # thick: tests SVD stabilization
+    ("2d", 5.0, 1 - 1e-6),   # thick: near-conservative
 ]:
     save(lbl, tau_bot, omega, NQuad, g_l_ray, mu0_2, I0_2, phi0_2)
 
@@ -67,7 +67,7 @@ print("\n=== Test 3: HG scattering ===")
 for lbl, tau_bot, omega, g, mu0, I0, phi0 in [
     ("3a", 1.0, 1 - 1e-6, 0.75, 1.0,     pi,       pi),
     ("3b", 1.0, 0.9,      0.75, 0.5,     1.0,      0.0),
-    ("3c", 2.0, 0.8,      0.5,  0.6, pi / 0.6, 0.9 * pi),
+    ("3c", 5.0, 0.8,      0.5,  0.6, pi / 0.6, 0.9 * pi),  # thick: tests SVD stabilization
 ]:
     g_l = g ** np.arange(NQuad)
     save(lbl, tau_bot, omega, NQuad, g_l, mu0, I0, phi0)

@@ -55,11 +55,11 @@ def test_3b():
 
 
 def test_3c():
-    """tau=2, g=0.5, omega=0.8, mu0=0.6."""
+    """Thick atmosphere (tau=5), g=0.5, omega=0.8, mu0=0.6 — tests SVD stabilization."""
     print("\n--- Test 3c ---")
-    tau_bot, omega, g = 2.0, 0.8, 0.5
+    tau_bot, omega, g = 5.0, 0.8, 0.5
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.9 * pi
     g_l = _make(g)
     flux_ref, u0_ref = get_reference("3c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=300)
+    flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=100)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

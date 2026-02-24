@@ -104,6 +104,17 @@ The primary reference for the mathematics is `docs/Pythonic-DISORT.ipynb`, espec
 - Internal functions are prefixed with `_` and are not part of the public API
 - Changes to numerical behavior must include a verification test and explanation
 
+### Numerical stability invariant — NO POSITIVE EXPONENTS
+
+**This is a hard design invariant for both `pydisort` and `pydisort_magnus`.**
+
+No intermediate quantity in the solver may contain a factor of the form `exp(+λ · τ)` with
+`λ > 0` and `τ > 0`.  Violating this causes catastrophic floating-point overflow for thick
+atmospheres.  The original PythonicDISORT enforces this via the Stamnes-Conklin substitution
+(growing-mode coefficients are always parametrised from `τ_bot`, making them ≤ 1).  Any new
+algorithm (Magnus, doubling/adding, SVD-based propagation, etc.) must satisfy the same
+invariant — no positive exponents anywhere in the code.
+
 ---
 
 ## Magnus forward solver (`pydisort_magnus`)
@@ -111,6 +122,22 @@ The primary reference for the mathematics is `docs/Pythonic-DISORT.ipynb`, espec
 **Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Magnus forward solver is the first building block.
 
 **Purpose**: `pydisort_magnus` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function D^m(τ), yielding the upward field at ToA (τ=0). It uses first-order Magnus integration (midpoint-rule matrix exponential) rather than per-layer eigendecomposition.
+
+### Design scope and restrictions
+
+**Primary use case — τ-dependent ω and/or phase function.** This solver exists specifically
+for atmospheres where ω(τ) and/or D^m(τ, ·, ·) vary continuously with optical depth.  The
+τ-independent case is handled more efficiently and exactly by the original `pydisort` solver;
+`pydisort_magnus` will not be optimised for that case.  Constant-ω / constant-phase problems
+are retained only as sanity-check test cases (tests 1–5), not as a target use case.
+
+**Bottom boundary condition: unrestricted.**  Arbitrary `b_pos` and BDRF are supported.
+Physical BDRFs (energy-conserving, ‖R‖₂ = O(1)) cannot resurrect SVD-truncated modes
+because the reflected amplitude of a truncated mode is still below the truncation threshold.
+The SVD rank reduction happens inside the propagator accumulation loop and is independent of
+the BC structure.  Note: for thick absorbing atmospheres, a non-zero `b_pos` has negligible
+influence on ToA flux via the decaying modes (suppressed by exp(−λ·τ_bot) → 0 going up);
+its contribution through the growing modes (always kept) reaches ToA correctly.
 
 ### New files
 
@@ -128,11 +155,26 @@ Handles arbitrary signs of μ_i, μ_j with broadcasting support. ω is handled i
 
 ### Numerical stability limit
 
-The forward-accumulation propagator Φ^{hom} has condition number ≈ exp(2λ_max·τ_bot), where λ_max is the largest eigenvalue of the coefficient matrix. For τ_bot ≳ 3 (depending on ω and phase function), this exceeds double precision and the BC solve fails. Tests are limited to τ_bot ≤ 2 for safety. Fixing this requires a stable algorithm (doubling/adding) — see deferred features below.
+The forward-accumulation propagator Φ^{hom} (as currently implemented) has condition number
+≈ exp(2λ_max·τ_bot).  For τ_bot ≳ 2–3 this exceeds double precision and BOTH Φ^{hom} and
+φ^{part} are corrupted — fixing the BC solver alone is insufficient because the Magnus
+accumulator itself manufactures positive exponents.  Tests are currently limited to τ_bot ≤ 2.
+
+The planned fix is **step-by-step SVD truncation** in the Magnus propagator: maintain
+Φ^{hom} in factored form (U, Σ, Vt) and after each step truncate singular values below
+machine epsilon, collapsing the rank of the propagator as modes die.  φ^{part} is
+maintained in the same reduced basis with the growing-mode component explicitly zeroed at
+each step (it is physically zero; only its numerical ghost causes instability).  This keeps
+all intermediate quantities ≤ O(1) — no positive exponents.
+
+Previous failed approach (two-path SC with A_mid fallback): fixed only the BC solver, not
+the Magnus accumulator.  φ^{part} from the accumulator remained garbage for thick atmospheres,
+contaminating the BC RHS even when the SC LHS was well-conditioned.
 
 ### Deferred features (not yet implemented — do not forget)
 
-- **Stable thick-atmosphere integration**: doubling/adding method to replace the forward-accumulation propagator for τ_bot ≳ 3
+- **Step-by-step SVD truncation for thick atmospheres**: stable Magnus propagation via
+  incremental rank reduction (primary next task — see stability note above)
 - **Adaptive Magnus step control**: currently equidistant steps (`N_magnus_steps`)
 - **Delta-M scaling**: not applied in `pydisort_magnus`
 - **Nakajima-Tanaka (NT) corrections**: not applied; may be added in the future

@@ -2,15 +2,12 @@
 Test suite 1: Isotropic scattering, beam source.
 
 Corresponds to Stamnes Test Problem 1.
-Exercises thin (tau_bot = 0.03125) and moderate (tau_bot = 1.5) single-layer
-atmospheres at three single-scattering albedo values.
-
-Note: The Magnus forward-propagator is numerically stable for tau_bot up to
-~2–3 (depending on omega and phase function); thicker atmospheres require a
-numerically stable scheme such as doubling/adding (a deferred feature).
+Tests 1a–1c: thin atmosphere (tau_bot = 0.03125).
+Tests 1d–1f: thick atmosphere (tau_bot = 32) — exercises the SVD-based
+             thick-atmosphere stabilization (step-by-step rank reduction).
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/1{a-f}_test.npz
+Fallback:  reference_results/1{a-f}.npz
 """
 import numpy as np
 from math import pi
@@ -69,27 +66,27 @@ def test_1c():
 # ── moderate atmosphere ─────────────────────────────────────────────────────
 
 def test_1d():
-    """Moderate atmosphere (tau=1.5), low scattering (omega=0.2)."""
+    """Thick atmosphere (tau=32), low scattering (omega=0.2) — tests SVD stabilization."""
     print("\n--- Test 1d ---")
-    tau_bot, omega = 1.5, 0.2
+    tau_bot, omega = 32.0, 0.2
     flux_ref, u0_ref = get_reference("1d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=200)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
 def test_1e():
-    """Moderate atmosphere (tau=1.5), conservative scattering (omega~1)."""
+    """Thick atmosphere (tau=32), conservative scattering (omega~1) — tests SVD stabilization."""
     print("\n--- Test 1e ---")
-    tau_bot, omega = 1.5, 1 - 1e-6
+    tau_bot, omega = 32.0, 1 - 1e-6
     flux_ref, u0_ref = get_reference("1e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=200)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
 def test_1f():
-    """Moderate atmosphere (tau=1.5), high scattering (omega=0.99)."""
+    """Thick atmosphere (tau=32), high scattering (omega=0.99) — tests SVD stabilization."""
     print("\n--- Test 1f ---")
-    tau_bot, omega = 1.5, 0.99
+    tau_bot, omega = 32.0, 0.99
     flux_ref, u0_ref = get_reference("1f", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=200)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
