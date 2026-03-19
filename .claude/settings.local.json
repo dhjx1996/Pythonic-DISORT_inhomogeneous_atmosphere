@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:\\\\Users\\\\dionh\\\\miniconda3\\\\envs\\\\DISORT\\\\python.exe\" -c \":*)",
+      "Bash(\"C:\\\\Users\\\\dionh\\\\miniconda3\\\\envs\\\\DISORT\\\\python.exe\" diag_riccati.py)",
+      "Bash(\"C:\\\\Users\\\\dionh\\\\miniconda3\\\\envs\\\\DISORT\\\\python.exe\" -m pytest . -v --tb=line)",
+      "WebSearch",
+      "Bash(\"C:\\\\Users\\\\dionh\\\\miniconda3\\\\envs\\\\DISORT\\\\python.exe\" diag_star_bdrf.py)",
+      "Bash(\"C:\\\\Users\\\\dionh\\\\miniconda3\\\\envs\\\\DISORT\\\\python.exe\" diag_adaptive.py)"
+    ]
+  }
+}

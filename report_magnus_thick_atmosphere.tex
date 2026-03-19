@@ -1,0 +1,756 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\cond}{\operatorname{cond}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\expm}{\operatorname{expm}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\tbot}{\tau_{\mathrm{bot}}}
+\newcommand{\ttrans}{\tau_{\mathrm{tr}}}
+
+\theoremstyle{definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Extending the Magnus Integrator to Thick Atmospheres:\\
+Mathematical and Computational Challenges}
+\author{Technical Report for the Pythonic-DISORT SSA Profile Retrieval Project}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+%======================================================================
+\section{Problem Statement}
+%======================================================================
+
+The \texttt{pydisort\_magnus} solver discretises the one-dimensional radiative
+transfer equation (RTE) for an atmosphere with continuously
+$\tau$-varying single-scattering albedo $\omega(\tau)$ and phase function.
+After azimuthal Fourier decomposition and angular discretisation with $2N$
+Gauss--Legendre quadrature streams, each Fourier mode satisfies a $2N$-dimensional
+linear ODE
+\begin{equation}\label{eq:ode}
+  \frac{d\vect{I}}{d\tau} = \mat{A}(\tau)\,\vect{I}(\tau) + \vect{S}(\tau),
+  \qquad \tau\in[0,\tbot],
+\end{equation}
+subject to boundary conditions at $\tau=0$ (top of atmosphere) and $\tau=\tbot$
+(bottom boundary), where $\vect{I}=[\vect{I}^+, \vect{I}^-]^T$ collects the
+upwelling ($\vect{I}^+$, $N$ components) and downwelling ($\vect{I}^-$, $N$
+components) discrete-ordinate intensities.
+
+The first-order Magnus integrator discretises~\eqref{eq:ode} into $K$ steps of
+size $h=\tbot/K$.  At each step the midpoint-rule matrix exponential
+\begin{equation}\label{eq:magnus_step}
+  \mat{\Phi}_k = \exp\!\bigl(h\,\mat{A}(\tau_{k+1/2})\bigr)
+\end{equation}
+advances the homogeneous solution, and the particular-solution increment
+$\vect{\delta}_k$ from the collimated beam source is obtained from the augmented
+matrix exponential.
+
+\textbf{The problem.}  For \emph{thin} atmospheres ($\tbot\lesssim 2$) the
+solver works correctly (19/25 tests pass).  For \emph{thick} atmospheres
+($\tbot=5$--$32$), the step-by-step SVD accumulation of the propagator
+catastrophically fails (6/25 tests fail).  This report analyses why, and
+proposes two viable strategies within the Magnus framework.
+
+
+%======================================================================
+\section{The DISORT Coefficient Matrix}\label{sec:A_structure}
+%======================================================================
+
+The coefficient matrix has the block structure
+\begin{equation}\label{eq:A_block}
+  \mat{A} = \begin{pmatrix} -\mat{\alpha} & -\mat{\beta} \\
+                              \mat{\beta}  &  \mat{\alpha} \end{pmatrix},
+  \qquad
+  \mat{\alpha} = \mat{M}^{-1}(\mat{D}^+\mat{W} - \mat{I}_N),
+  \quad
+  \mat{\beta}  = \mat{M}^{-1}\mat{D}^-\mat{W},
+\end{equation}
+where $\mat{M}=\diag(\mu_1,\dots,\mu_N)$ (quadrature cosines),
+$\mat{W}=\diag(w_1,\dots,w_N)$ (quadrature weights), and
+$\mat{D}^\pm$ are the $N\times N$ phase-function kernel matrices evaluated at
+$(\mu_i, \pm\mu_j)$ and scaled by $\omega(\tau)$.
+
+\subsection{Eigenvalue structure}
+The eigenvalues of $\mat{A}$ come in exact $\pm\lambda$ pairs
+(consequence of the block symmetry in~\eqref{eq:A_block}):
+\[
+  \lambda_1 > \lambda_2 > \cdots > \lambda_N > 0 > -\lambda_N > \cdots > -\lambda_1.
+\]
+For isotropic scattering with $N=4$ and $\omega=0.5$:
+$\lambda_{\max}\approx 13.77$, $\lambda_{\min}\approx 0.97$.
+As $\omega\to 1$, the smallest eigenvalue pair $\lambda_N\to 0$ (diffusion
+mode), while $\lambda_1$ remains $O(1/\mu_{\min})\approx 14$.
+
+\subsection{Non-normality}\label{sec:nonnormal}
+\emph{$\mat{A}$ is not symmetric and not normal.}  The $\mat{M}^{-1}$ factor
+in~\eqref{eq:A_block} breaks symmetry: $\mat{A}\neq\mat{A}^T$ and
+$\mat{A}\mat{A}^T\neq\mat{A}^T\mat{A}$.  We measured
+\begin{equation}
+  \frac{\|\mat{A}\mat{A}^T - \mat{A}^T\mat{A}\|_F}{\|\mat{A}\|_F^2}
+  \;\approx\; 0.08 \;(\omega=0.2),\quad 0.19 \;(\omega=0.5),\quad 0.34 \;(\omega=0.99).
+\end{equation}
+The eigenvector matrix $\mat{V}$ has condition number
+$\cond(\mat{V})\approx 1.15$--$3.74$ (increasing with $\omega$).  While
+these values appear modest, they have profound consequences for the matrix
+exponential.
+
+
+%======================================================================
+\section{The Propagator and Its Singular Values}\label{sec:propagator}
+%======================================================================
+
+The formal solution of the homogeneous part of~\eqref{eq:ode} over
+$[0,\tbot]$ is the \emph{propagator} $\mat{\Phi}(\tbot)=\exp(\mat{A}\tbot)$
+(for constant $\mat{A}$; the variable-coefficient case is a time-ordered
+exponential).
+
+\subsection{Singular values vs.\ eigenvalues for normal matrices}
+If $\mat{A}$ were normal, we would have
+$\sigma_j\!\bigl(e^{\mat{A}\tau}\bigr)=e^{\text{Re}(\lambda_j)\tau}$ for
+each eigenvalue $\lambda_j$.  In particular, the $N$ modes with positive
+$\lambda_j$ give $\sigma_j\gg 1$ (growing) and the $N$ modes with negative
+$\lambda_j$ give $\sigma_j\ll 1$ (decaying), with
+$\sigma_{\max}/\sigma_{\min}=e^{2\lambda_{\max}\tau}$.
+
+\subsection{Non-normal transient growth}\label{sec:transient}
+For non-normal $\mat{A}$, the singular values of $e^{\mat{A}\tau}$ are
+\emph{not} simply $e^{\text{Re}(\lambda_j)\tau}$.  The classical
+Kreiss matrix theorem~\cite{kreiss1962} bounds the transient growth:
+\[
+  \|e^{\mat{A}\tau}\|_2 \;\leq\; \cond(\mat{V})^2\,\max_j e^{\text{Re}(\lambda_j)\tau}.
+\]
+Our diagnostics reveal a more striking phenomenon: for thick atmospheres,
+\emph{all} singular values of $e^{\mat{A}\tau}$ eventually become $\gg 1$,
+including those that initially decrease.  \Cref{tab:svd_tau5} shows the
+8 singular values of $\exp(\mat{A}\cdot\tau)$ for isotropic scattering,
+$\omega=0.5$:
+
+\begin{table}[h]\centering
+\caption{Singular values of $\exp(\mat{A}\tau)$, isotropic scattering,
+$\omega=0.5$, $N=4$ ($2N=8$ streams).}\label{tab:svd_tau5}
+\begin{tabular}{r|rrrr|rrrr}
+\toprule
+$\tau$ & $\sigma_1$ & $\sigma_2$ & $\sigma_3$ & $\sigma_4$
+       & $\sigma_5$ & $\sigma_6$ & $\sigma_7$ & $\sigma_8$ \\
+\midrule
+0.5  & $10^{2.9}$  & 4.0   & 2.0   & 1.6   & 0.61 & 0.51 & 0.25  & $10^{-3.0}$ \\
+1.0  & $10^{6.0}$  & 16    & 3.9   & 2.7   & 0.37 & 0.26 & 0.062 & $10^{-6.0}$ \\
+1.5  & $10^{9.0}$  & 65    & 7.6   & 4.3   & 0.23 & 0.13 & 0.015 & $10^{-9.1}$ \\
+2.0  & $10^{12.0}$ & 259   & 14.9  & 7.0   & 0.14 & 0.067& 0.004 & $\mathbf{4\times 10^{-7}}$ \\
+3.0  & $10^{17.9}$ & 4129  & 57    & 18    & 1.42 & 0.091& 0.068 & $\mathbf{0.019}$ \\
+5.0  & $10^{29.9}$ & $10^{12}$ & \multicolumn{2}{c|}{$10^{11}$}
+     & $10^{11}$ & $10^{10}$ & $10^{10}$ & $\mathbf{4.7\times 10^{7}}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observation.}  At $\tau=1.5$, $\sigma_8=7.9\times 10^{-10}$
+(minimum).  By $\tau=2.0$, $\sigma_8$ has \emph{rebounded} to
+$3.9\times 10^{-7}$; by $\tau=5.0$ it reaches $4.7\times 10^{7}$.  This
+``dip-and-rebound'' is a hallmark of non-normal transient growth: the
+interference between non-orthogonal eigenvectors causes all singular values
+to eventually align with the dominant growing mode.
+
+\begin{proposition}[All singular values grow for thick atmospheres]
+For the DISORT coefficient matrix $\mat{A}$ with $\omega>0$ and
+$\tau\to\infty$, all singular values of $\exp(\mat{A}\tau)$ grow as
+$\sigma_j \sim C_j\,e^{\lambda_{\max}\tau}$ for some constants $C_j>0$.
+This is because $e^{\mat{A}\tau} = \mat{V}\,\diag(e^{\lambda_j\tau})\,\mat{V}^{-1}$,
+and for large $\tau$ the rank-1 term
+$e^{\lambda_{\max}\tau}\,\vect{v}_1\,\vect{w}_1^T$ dominates every
+column of the matrix, where $\vect{v}_1$ and $\vect{w}_1^T$ are the
+right and left eigenvectors for $\lambda_{\max}$.
+\end{proposition}
+
+
+%======================================================================
+\section{Why the Step-by-Step SVD Fails}\label{sec:svd_failure}
+%======================================================================
+
+The current implementation accumulates the propagator in SVD form:
+\[
+  \mat{\Phi}(0\to k\cdot h) = \mat{U}_k\,\mat{\Sigma}_k\,\mat{V}_k^T,
+\]
+updated at each step via
+$\mat{G} = \mat{\Phi}_{\text{step}}\,\mat{U}_k\,\mat{\Sigma}_k$,
+then $\mat{G}=\hat{\mat{U}}\,\hat{\mat{\Sigma}}\,\hat{\mat{W}}^T$ (thin SVD).
+
+\subsection{The mechanism of failure}
+The update computes $\mat{G}=\mat{B}\,\diag(\mat{\Sigma}_k)$ where
+$\mat{B}=\mat{\Phi}_{\text{step}}\mat{U}_k$.  When $\sigma_{\max}/\sigma_{\min}$
+exceeds $\sim 10^{16}$ (machine precision in double float), the column
+$\mat{G}_{:,j}=\mat{B}_{:,j}\cdot\sigma_j$ with $\sigma_j\ll\sigma_{\max}$
+is polluted by roundoff from the large columns at the level
+\[
+  |\text{error in }\mat{G}_{:,j}| \;\sim\; \epsilon_{\text{mach}}\cdot
+  \|\mat{B}_{:,1}\|\cdot\sigma_1,
+  \qquad
+  \frac{\text{relative error}}{\text{true value}} \;\sim\;
+  \epsilon_{\text{mach}}\cdot\frac{\sigma_1}{\sigma_j}.
+\]
+Once $\sigma_1/\sigma_j > 10^{16}$, the $j$-th column of $\mat{G}$ is pure
+noise, and the SVD of $\mat{G}$ returns a spurious $\sigma_j$.
+
+\subsection{Diagnostic evidence}
+For $\omega=0.5$, $\tbot=5$, $K=100$ steps, we tracked the step-by-step SVD
+against the exact SVD of $\exp(\mat{A}\cdot k h)$:
+
+\begin{table}[h]\centering
+\caption{Step-by-step SVD vs.\ exact SVD,
+$\omega=0.5$, $\tbot=5$, $K=100$.}\label{tab:svd_track}
+\begin{tabular}{r|r|cc|cc}
+\toprule
+Step & $\tau$ & $\sigma_{\max}^{\text{step}}$ & $\sigma_{\max}^{\text{exact}}$
+     & $\sigma_{\min}^{\text{step}}$ & $\sigma_{\min}^{\text{exact}}$ \\
+\midrule
+ 10 & 0.50 & $9.95\times 10^{2}$  & $9.95\times 10^{2}$  & $1.01\times 10^{-3}$ & $1.01\times 10^{-3}$ \\
+ 20 & 1.00 & $9.72\times 10^{5}$  & $9.72\times 10^{5}$  & $1.03\times 10^{-6}$ & $1.03\times 10^{-6}$ \\
+ 30 & 1.50 & $9.50\times 10^{8}$  & $9.50\times 10^{8}$  & $1.05\times 10^{-9}$ & $7.86\times 10^{-10}$ \\
+ 40 & 2.00 & $9.28\times 10^{11}$ & $9.28\times 10^{11}$ & $1.08\times 10^{-12}$ & $3.92\times 10^{-7}$ \\
+ 50 & 2.50 & $9.07\times 10^{14}$ & $9.07\times 10^{14}$ & $1.10\times 10^{-15}$ & $1.04\times 10^{-6}$ \\
+ 54 & 2.70 & $1.42\times 10^{16}$ & $1.42\times 10^{16}$ & $\mathbf{7.0\times 10^{-17}}$ & $\mathbf{8.4\times 10^{-4}}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At step 54 ($\tau\approx 2.7$), the step-by-step $\sigma_{\min}$ is
+$7\times 10^{-17}$ (below machine epsilon) while the \emph{true}
+$\sigma_{\min}$ is $8.4\times 10^{-4}$ --- a discrepancy of 13 orders of
+magnitude.  The step-by-step SVD tracks $\sigma_{\max}$ perfectly (ratio
+$\equiv 1.000000$) but catastrophically loses $\sigma_{\min}$ once the
+condition number exceeds double precision.
+
+\subsection{Why this is fundamental, not a bug}
+The failure is not specific to SVD factorisation.  \emph{Any} algorithm
+that accumulates the full $2N\times 2N$ propagator $\mat{\Phi}(0\to\tbot)$
+will face the same problem: the propagator has condition number
+$\cond\bigl(\mat{\Phi}\bigr) = \sigma_{\max}/\sigma_{\min} \approx
+e^{2\lambda_{\max}\tbot}$, which exceeds double precision for
+$\tbot \gtrsim 36/\lambda_{\max} \approx 2.6$ (for $\lambda_{\max}\approx 14$).
+
+The non-normal transient growth (\Cref{sec:transient}) makes this worse:
+even the ``decaying'' singular values rebound and become large, so one
+cannot simply truncate them.  The freeze-and-keep approach (attempted in
+a previous session) failed precisely because it assumed that small step-by-step
+singular values corresponded to truly decaying physical modes --- but
+the rebound phenomenon shows they do not.
+
+
+%======================================================================
+\section{Previous Failed Approaches}\label{sec:failures}
+%======================================================================
+
+\subsection{Attempt 1: Step-by-step SVD with freeze-and-keep}
+\textbf{Idea.}  When $\sigma_j$ drops below a threshold, ``freeze'' that
+mode: remove it from the live SVD and record its $\mat{V}^T$ row and
+$q_{\text{scaled}}$ entry as fixed.
+
+\textbf{Why it failed.}  The frozen $\mat{V}^T_{\text{gro}}$ subspace
+(growing modes) was computed from the step-by-step SVD, which had already
+diverged from the true SVD by the time of freezing.  Canonical cosines
+between the step-by-step and exact growing-mode subspaces were as low as
+0.073, meaning the subspaces were nearly orthogonal.  The BC solver,
+which depends on accurate $\mat{V}^T_{\text{gro}}$, produced garbage.
+
+\subsection{Attempt 2: Gram--Schmidt re-orthogonalisation}
+\textbf{Idea.}  After freezing, re-orthogonalise the surviving modes
+against the frozen growing-mode subspace using Gram--Schmidt, to prevent
+mode leakage.
+
+\textbf{Why it failed.}  The frozen $\mat{V}^T_{\text{gro}}$ was itself
+inaccurate (see above).  Re-orthogonalising against an inaccurate subspace
+does not recover accuracy---it merely projects onto the wrong complement.
+
+\subsection{Attempt 3: Diffusion-domain handoff (current placeholder)}
+\textbf{Idea.}  Detect when $\sigma_{\min}<\epsilon_{\text{mach}}$ and hand
+off to a separate diffusion-domain solver.  The Magnus propagator at the
+handoff point $\ttrans$ is accurate (all $\sigma_j>\epsilon_{\text{mach}}$),
+and the diffusion solver handles the remaining depth $[\ttrans,\tbot]$.
+
+\textbf{Status.}  The detection and handoff are implemented; the diffusion
+solver itself is a placeholder (\texttt{NotImplementedError}).  The 6 failing
+tests all trigger this handoff at
+$\ttrans\approx\ln(1/\epsilon_{\text{mach}})/\lambda_{\max}\approx
+36/\lambda_{\max}$.
+
+
+%======================================================================
+\section{Theoretical Framework}\label{sec:theory}
+%======================================================================
+
+\subsection{Magnus expansion: convergence and accuracy}
+The Magnus expansion writes the solution of $\vect{I}'=\mat{A}(t)\vect{I}$
+as $\vect{I}(t)=\exp\bigl(\mat{\Omega}(t)\bigr)\vect{I}(0)$, where
+$\mat{\Omega}=\mat{\Omega}_1+\mat{\Omega}_2+\cdots$ is an infinite series
+in nested integrals and commutators of $\mat{A}$~\cite{magnus1954,blanes2009}.
+
+The first-order truncation $\mat{\Omega}_1=\int_0^h \mat{A}(s)\,ds$
+approximated by the midpoint rule $\mat{\Omega}_1\approx h\,\mat{A}(h/2)$
+gives the method used in \texttt{pydisort\_magnus}.  This is a
+second-order method: the local error per step is $O(h^3)$, giving global
+$O(h^2)$ convergence.
+
+\textbf{Convergence radius.}  The Magnus series converges provided
+$\int_0^h\|\mat{A}(s)\|_2\,ds < \pi$~\cite{blanes2009,moan2008}.  For the
+DISORT matrix with $\|\mat{A}\|_2\approx 14.4$, this gives
+$h<\pi/14.4\approx 0.22$.  With the typical step size
+$h=\tbot/K \leq 0.32$ (for $K\geq 100$), we are near or within this radius.
+The \emph{per-step} Magnus exponential is accurate.
+
+\textbf{Key conclusion.}  The Magnus integrator itself is mathematically
+viable for thick atmospheres.  The convergence radius limits the step size
+$h$, not the total depth $\tbot$.  The challenge is purely in how the
+per-step results are \emph{combined}.
+
+\subsection{The Stamnes--Conklin substitution (eigendecomposition approach)}
+In the original DISORT algorithm~\cite{stamnes1988}, the eigendecomposition
+$\mat{A}=\mat{V}\,\diag(\pm\lambda_j)\,\mat{V}^{-1}$ is computed once per
+layer.  The growing-mode coefficients are parametrised from $\tbot$:
+$c_j^{\text{gro}}(t)=\xi_j^{\text{gro}}\,e^{-\lambda_j(\tbot-\tau)}$,
+so that the exponential factor is always $\leq 1$.  This is the
+Stamnes--Conklin scaling transformation, and it renders the boundary-condition
+system unconditionally stable.
+
+The Magnus approach was designed to \emph{avoid} per-layer eigendecomposition
+(to handle continuously varying $\omega(\tau)$ and phase function).  We need
+an analog of the Stamnes--Conklin trick that works with matrix exponentials
+instead of eigendecompositions.
+
+\subsection{The interaction principle and Redheffer star product}
+\label{sec:star_product}
+
+A slab from $\tau_a$ to $\tau_b$ is characterised by its
+\emph{scattering matrix}: given radiation incident from both sides, what
+comes out?  Formally, define the $N\times N$ reflection and transmission
+operators:
+\begin{align}
+  \vect{I}^+(0) &= \mat{R}_\uparrow\,\vect{I}^-(0)
+                  + \mat{T}_\uparrow\,\vect{I}^+(\tbot)
+                  + \vect{s}_\uparrow, \label{eq:interaction_up} \\
+  \vect{I}^-(\tbot) &= \mat{T}_\downarrow\,\vect{I}^-(0)
+                      + \mat{R}_\downarrow\,\vect{I}^+(\tbot)
+                      + \vect{s}_\downarrow. \label{eq:interaction_down}
+\end{align}
+Here $\mat{R}_\uparrow$ is the slab's reflection of downwelling radiation
+(observed at the top), $\mat{T}_\downarrow$ is its downward transmission,
+$\mat{R}_\downarrow$ is its reflection of upwelling radiation (observed at
+the bottom), $\mat{T}_\uparrow$ is its upward transmission, and
+$\vect{s}_\uparrow,\vect{s}_\downarrow$ are source terms from internal
+scattering of the collimated beam.
+
+When two adjacent slabs (labelled 1 on top, 2 below) are combined, the
+\emph{Redheffer star product}~\cite{redheffer1962,grant1969} gives the
+combined slab's operators:
+\begin{align}
+  \mat{R}_\uparrow^{1\star 2} &= \mat{R}_\uparrow^{(1)}
+    + \mat{T}_\uparrow^{(1)}\,\mat{r}_\uparrow^{(2)}\,
+      (\mat{I}-\mat{R}_\downarrow^{(1)}\mat{r}_\uparrow^{(2)})^{-1}\,
+      \mat{T}_\downarrow^{(1)}, \label{eq:star_R} \\
+  \mat{T}_\downarrow^{1\star 2} &= \mat{t}_\downarrow^{(2)}\,
+      (\mat{I}-\mat{R}_\downarrow^{(1)}\mat{r}_\uparrow^{(2)})^{-1}\,
+      \mat{T}_\downarrow^{(1)}, \label{eq:star_T}
+\end{align}
+and analogously for $\mat{R}_\downarrow^{1\star 2}$,
+$\mat{T}_\uparrow^{1\star 2}$, and the source terms.
+
+\begin{proposition}[Boundedness of star-product intermediates]
+For a non-conservative atmosphere ($\omega<1$ everywhere), the operators
+$\mat{R}_\uparrow,\mat{R}_\downarrow$ are bounded: their spectral norms
+satisfy $\|\mat{R}\|_2<1$ (by energy conservation---some energy is absorbed
+at each scattering event).  The transmission operators
+$\mat{T}_\uparrow,\mat{T}_\downarrow$ decay as
+$\|\mat{T}\|_2\sim e^{-\lambda_N\tau}$ (governed by the smallest eigenvalue
+magnitude).  The resolvent
+$(\mat{I}-\mat{R}_\downarrow^{(1)}\mat{r}_\uparrow^{(2)})^{-1}$ is
+well-conditioned because
+$\|\mat{R}_\downarrow^{(1)}\|\cdot\|\mat{r}_\uparrow^{(2)}\|<1$.
+\end{proposition}
+
+\textbf{Crucial insight.}  All intermediate $N\times N$ quantities in the
+star product are $O(1)$.  No exponentially growing or decaying numbers
+appear anywhere.  This is the fundamental difference from the propagator
+accumulation approach.
+
+\subsection{Extracting $\mat{R}$, $\mat{T}$ from the Magnus step}
+From the $2N\times 2N$ propagator block decomposition
+\[
+  \mat{\Phi}_k = \begin{pmatrix} \mat{a} & \mat{b} \\ \mat{c} & \mat{d}
+  \end{pmatrix},
+  \qquad
+  \vect{\delta}_k = \begin{pmatrix} \vect{\delta}^+ \\ \vect{\delta}^- \end{pmatrix},
+\]
+the single-step reflection, transmission, and source are:
+\begin{equation}\label{eq:block_extract}
+  \mat{r}_\uparrow = -\mat{a}^{-1}\mat{b}, \quad
+  \mat{t}_\uparrow = \mat{a}^{-1}, \quad
+  \mat{r}_\downarrow = \mat{c}\,\mat{a}^{-1}, \quad
+  \mat{t}_\downarrow = \mat{d}-\mat{c}\,\mat{a}^{-1}\mat{b},
+\end{equation}
+\[
+  \vect{s}_\uparrow^{(k)} = -\mat{a}^{-1}\vect{\delta}^+, \qquad
+  \vect{s}_\downarrow^{(k)} = \vect{\delta}^- - \mat{c}\,\mat{a}^{-1}\vect{\delta}^+.
+\]
+For a single Magnus step of size $h$, the block $\mat{a}$ is well-conditioned:
+\begin{equation}
+  \cond(\mat{a}) \approx 1 + O(\lambda_{\max}h)
+  \quad\text{(measured: } \cond(\mat{a})\leq 1.30 \text{ for } h=0.02\text{).}
+\end{equation}
+The extraction~\eqref{eq:block_extract} is therefore numerically stable for
+small $h$.
+
+\subsection{Connection to invariant imbedding and the matrix Riccati equation}
+
+The interaction principle~\eqref{eq:interaction_up}--\eqref{eq:interaction_down}
+is closely related to the \emph{invariant imbedding} formulation of
+Bellman, Kalaba, and Prestrud~\cite{bellman1960}.  In that framework, the
+reflection matrix $\mat{R}(\tau)$ for the slab $[0,\tau]$ satisfies the
+matrix Riccati ODE
+\begin{equation}\label{eq:riccati}
+  \frac{d\mat{R}}{d\tau} = -\mat{\alpha}\mat{R} - \mat{R}\mat{\alpha}
+                            - \mat{R}\mat{\beta}\mat{R} - \mat{\beta},
+\end{equation}
+where $\mat{\alpha}$ and $\mat{\beta}$ are the blocks of $\mat{A}$
+in~\eqref{eq:A_block}.  The connection to the star product is:
+the Riccati equation~\eqref{eq:riccati} is the \emph{infinitesimal
+generator} of the star-product semigroup.  Specifically, the exact Riccati
+step from $\tau$ to $\tau+h$ is given by the M\"obius transformation
+\begin{equation}\label{eq:mobius}
+  \mat{R}(\tau+h) = (\mat{a}\,\mat{R}(\tau)+\mat{b})\,
+                     (\mat{c}\,\mat{R}(\tau)+\mat{d})^{-1}
+\end{equation}
+where $[\mat{a},\mat{b};\mat{c},\mat{d}]=\exp(\mat{A}\cdot h)$.
+
+The Riccati formulation~\eqref{eq:riccati} is stable because $\mat{R}$ is
+physically bounded ($\|\mat{R}\|_2<1$ for $\omega<1$).  No exponentially
+growing quantities ever appear.
+
+
+%======================================================================
+\section{Is Magnus Integration Mathematically Viable?}\label{sec:viability}
+%======================================================================
+
+\textbf{Yes.}  The first-order Magnus integrator computes an accurate
+matrix exponential $\exp(h\,\mat{A})$ at each step, provided
+$h\|\mat{A}\|_2 < \pi$ (the convergence radius of the Magnus series).
+This condition limits the \emph{step size}, not the total optical depth.
+For any $\tbot$, one can choose $K$ large enough that $h=\tbot/K$ satisfies
+the convergence criterion.
+
+The per-step accuracy is $O(h^2)$ (midpoint rule), and the global accuracy
+is $O(h^2)$ for $K$ steps.  This has been verified experimentally: with
+1600 steps for $\tbot=32$ (the hardest test case), the star-product approach
+achieves $0.25\%$ relative error, and the convergence ratio is
+$3.97\approx 4.0 = 2^2$ (confirming second-order convergence).
+
+The obstacle is not the Magnus integration itself but the propagator
+accumulation.  The star product (\Cref{sec:star_product}) resolves this
+completely.
+
+
+%======================================================================
+\section{Diagnostic Evidence}\label{sec:diagnostics}
+%======================================================================
+
+\subsection{Star-product convergence}
+We implemented the star-product combination as a standalone diagnostic
+and tested it against the pydisort eigendecomposition reference for all
+6 failing test cases.
+
+\begin{table}[h]\centering
+\caption{Star-product convergence with step count (first-order Magnus).
+``Ratio'' = error reduction when doubling $K$.}\label{tab:convergence}
+\begin{tabular}{ll|rrr|rrr}
+\toprule
+Test & ($\tbot$, $\omega$)
+  & \multicolumn{3}{c|}{Flux rel.\ error}
+  & \multicolumn{3}{c}{Convergence ratio} \\
+  & & $K\!=\!400$ & $K\!=\!800$ & $K\!=\!1600$
+  & 400/800 & 800/1600 \\
+\midrule
+2c & (5, 0.5)     & $9.2\times 10^{-4}$ & $2.3\times 10^{-4}$ & $5.8\times 10^{-5}$ & 4.00 & 4.00 \\
+1d & (32, 0.2)    & $4.0\times 10^{-2}$ & $1.0\times 10^{-2}$ & $2.6\times 10^{-3}$ & 3.89 & 3.97 \\
+1f & (32, 0.99)   & $2.7\times 10^{-2}$ & $7.0\times 10^{-3}$ & $1.7\times 10^{-3}$ & 3.94 & 3.98 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The convergence ratio approaches 4.0 in all cases, confirming the $O(h^2)$
+rate expected from the midpoint-rule Magnus.  \emph{No numerical instability
+is observed for any $\tbot$.}
+
+\subsection{Boundedness of intermediates}
+At every step of the star-product accumulation, we verified:
+\begin{itemize}[nosep]
+\item $\cond(\mat{a}_k)\leq 1.30$ (block of each Magnus step),
+\item $\cond(\mat{I}-\mat{r}_\uparrow^{(k)}\mat{R}_\downarrow)\leq 1.06$
+  (resolvent in star product),
+\item $\|\mat{R}_\uparrow\|_2 \leq 0.94$ (reflection always sub-unitary),
+\item $\|\mat{T}\|_2 \leq 1.0$ (transmission bounded).
+\end{itemize}
+These confirm unconditional numerical stability.
+
+\subsection{Handling of boundary conditions}
+The star-product approach correctly handles all boundary condition types.
+With $K=400$ steps, the $m=0$ mode matches pydisort to relative errors
+$\leq 10^{-5}$:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Test case & Star-product flux & Rel.\ error \\
+\midrule
+4a: $b_{\text{neg}}=1/\pi$, no beam   & $1.076167\times 10^{-1}$ & $2.6\times 10^{-16}$ \\
+4b: beam + $b_{\text{pos}}=0.5$, HG   & $9.936779\times 10^{-1}$ & $1.5\times 10^{-7}$  \\
+4c: both BCs, isotropic                & $6.088967\times 10^{-1}$ & $6.5\times 10^{-6}$  \\
+5a: BDRF $\rho=0.1$, isotropic         & $6.473253\times 10^{-2}$ & $7.4\times 10^{-7}$  \\
+5b: BDRF $\rho=0.5$, HG               & $8.631945\times 10^{-2}$ & $1.8\times 10^{-6}$  \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+%======================================================================
+\section{Proposed Approaches}\label{sec:proposals}
+%======================================================================
+
+\subsection{Approach 1: Star-product combination of Magnus steps
+(primary recommendation)}\label{sec:approach1}
+
+\textbf{Core idea.}  Replace the step-by-step SVD accumulation of the
+$2N\times 2N$ propagator with the Redheffer star-product accumulation of the
+$N\times N$ reflection, transmission, and source operators.
+
+\textbf{Per step.}  Compute the Magnus exponential $\mat{\Phi}_k$ and
+particular increment $\vect{\delta}_k$ exactly as now (augmented
+\texttt{expm}).  Extract $\mat{r}_\uparrow$, $\mat{t}_\uparrow$,
+$\mat{r}_\downarrow$, $\mat{t}_\downarrow$, $\vect{s}_\uparrow$,
+$\vect{s}_\downarrow$ via~\eqref{eq:block_extract}.
+
+\textbf{Accumulation.}  Combine each new step's operators with the
+accumulated operators using the star-product
+formulas~\eqref{eq:star_R}--\eqref{eq:star_T} and analogous source
+formulas (derived in the diagnostics).
+
+\textbf{BC solve.}  From the accumulated $(\mat{R}_\uparrow, \mat{T}_\uparrow,
+\mat{T}_\downarrow, \mat{R}_\downarrow, \vect{s}_\uparrow,
+\vect{s}_\downarrow)$, solve the boundary-condition system:
+\begin{align}
+  (\mat{I}-\mat{R}_{\text{surf}}\mat{R}_\downarrow)\,\vect{I}^+(\tbot)
+    &= \mat{R}_{\text{surf}}(\mat{T}_\downarrow\,\vect{b}_{\text{neg}}
+       + \vect{s}_\downarrow) + \vect{b}_{\text{pos}}^{\text{eff}}, \\
+  \vect{I}^+(0) &= \mat{R}_\uparrow\,\vect{b}_{\text{neg}}
+                  + \mat{T}_\uparrow\,\vect{I}^+(\tbot)
+                  + \vect{s}_\uparrow.
+\end{align}
+This is an $N\times N$ linear system (half the size of the current
+$2N\times 2N$ Stamnes--Conklin system) followed by a matrix-vector product.
+
+\textbf{Advantages.}
+\begin{itemize}[nosep]
+\item Unconditionally stable: all intermediates are $O(1)$.
+\item Clean $O(h^2)$ convergence, verified for $\tbot$ up to 32.
+\item Naturally handles BDRF, $b_{\text{pos}}$, $b_{\text{neg}}$.
+\item The per-step Magnus computation is unchanged.
+\item Cost: $O(K\cdot N^3)$ --- same as the current approach.
+\item Memory: $O(N^2)$ --- only the current accumulated operators are stored.
+\end{itemize}
+
+\textbf{Disadvantages.}
+\begin{itemize}[nosep]
+\item Requires rewriting \texttt{\_compute\_magnus\_propagator} (accumulation
+  loop) and \texttt{\_solve\_bc\_magnus} (BC solve).  The interface to
+  \texttt{pydisort\_magnus} is unchanged.
+\item The number of steps $K$ must be large enough that the per-step block
+  $\mat{a}$ is well-conditioned:
+  $h\cdot\lambda_{\max}\lesssim 1$--$2$ in practice.
+  For $\tbot=32$: $K\gtrsim 32\cdot 14/2 = 224$.
+\end{itemize}
+
+
+\subsection{Approach 2: Bidirectional Magnus propagation with
+mode-partitioned interface matching}\label{sec:approach2}
+
+\textbf{Core idea.}  Instead of propagating all $2N$ modes in one direction
+(forward), split into two half-rank sweeps:
+\begin{enumerate}[nosep]
+\item \textbf{Forward sweep} ($\tau=0\to\ttrans$): propagate $N$
+  fundamental solutions that are initially aligned with the
+  \emph{decaying} eigenvectors of $\mat{A}$.  These solutions shrink
+  (on average) going forward, so the sweep is well-conditioned.
+\item \textbf{Backward sweep} ($\tau=\tbot\to\ttrans$): propagate $N$
+  fundamental solutions aligned with the \emph{growing} eigenvectors.
+  Going backward, these become decaying, so this sweep is also
+  well-conditioned.
+\item \textbf{Match at $\ttrans$}: the $2N$ columns from both sweeps form
+  a complete basis at the interface.  Apply boundary conditions to
+  determine the coefficients.
+\end{enumerate}
+
+\textbf{Continuous orthogonalisation.}  In each sweep, the non-normality
+of $\mat{A}$ causes ``leakage'' of roundoff into the unwanted mode
+directions.  At each step, we orthogonalise the $N$ columns and project
+away the component in the unwanted eigenspace.  Concretely:
+\begin{enumerate}[nosep]
+\item Propagate: $\mat{Y}_{k+1} = \mat{\Phi}_k\,\mat{Y}_k$
+  \quad ($\mat{Y}\in\R^{2N\times N}$).
+\item QR: $\mat{Y}_{k+1} = \mat{Q}_{k+1}\,\mat{R}_{k+1}$.
+\item Project: remove components along the $N$ unwanted directions
+  (using the eigenvectors of $\mat{A}(\tau_{k+1})$ or, for slowly varying
+  $\mat{A}$, of a recent $\mat{A}$).
+\item Store $\mat{R}_{k+1}$ factors separately; maintain
+  $\log\det(\mat{R}_{\text{total}})$ for amplitude tracking.
+\end{enumerate}
+
+\textbf{Required eigendecomposition.}  The projection in step~3 requires
+knowing the growing/decaying eigenvectors at each step (or at least
+periodically).  For \emph{constant} $\mat{A}$ (all currently failing tests),
+a single eigendecomposition suffices.  For variable $\mat{A}(\tau)$, the
+eigenvectors must be tracked, adding $O(N^3)$ per step.
+
+\textbf{Transient growth bound.}  The roundoff contamination from the
+unwanted modes in each step is $O(\epsilon_{\text{mach}}\cdot\cond(\mat{V})^2
+\cdot e^{\lambda_{\max}h})$, where $\cond(\mat{V})\leq 3.7$ for the DISORT
+$\mat{A}$.  After projection, this contamination is removed.  The
+\emph{accumulated} error after $K$ steps is
+$O(K\cdot\epsilon_{\text{mach}}\cdot\cond(\mat{V})^2)$, which remains
+small ($\lesssim 10^{-12}$ for $K=1600$).
+
+\textbf{Advantages.}
+\begin{itemize}[nosep]
+\item Conceptually closer to the current code structure (still propagates
+  fundamental solutions, not R/T operators).
+\item The interface matching is a $2N\times 2N$ linear system, similar to
+  the current BC solver.
+\item For constant $\mat{A}$: only one eigendecomposition needed, and the
+  projection is exact.
+\end{itemize}
+
+\textbf{Disadvantages.}
+\begin{itemize}[nosep]
+\item Requires eigendecomposition (at least once), partially defeating the
+  purpose of the Magnus approach (which was to avoid eigendecomposition).
+  For variable $\mat{A}(\tau)$, eigendecompositions are needed periodically.
+\item More complex implementation: two sweeps, QR + projection at each step,
+  $\mat{R}$-factor accumulation, interface matching.
+\item The projection step is specific to the $\pm\lambda$ eigenvalue pairing
+  of the DISORT $\mat{A}$; it may not generalise to other ODE structures.
+\item Less tested than Approach~1 (no diagnostic prototype exists yet).
+\end{itemize}
+
+
+%======================================================================
+\section{Comparison of Approaches}\label{sec:comparison}
+%======================================================================
+
+\begin{table}[h]\centering
+\caption{Comparison of the two proposed approaches.}\label{tab:comparison}
+\begin{tabular}{lcc}
+\toprule
+Property & Approach 1 (Star product) & Approach 2 (Bidirectional) \\
+\midrule
+Stability           & Unconditional       & Conditional (needs projection) \\
+Eigendecomp needed? & No                  & Yes (at least once) \\
+Cost per step       & $O(N^3)$            & $O(N^3)$ \\
+BC system size      & $N\times N$         & $2N\times 2N$ \\
+Implementation      & Moderate rewrite    & Major rewrite \\
+Tested?             & Yes (diagnostics)   & No \\
+Variable $\omega(\tau)$? & Native          & Needs periodic eigendecomp \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+%======================================================================
+\section{Conclusion and Recommendation}
+%======================================================================
+
+The Magnus integrator is \textbf{mathematically viable} for thick atmospheres.
+The per-step matrix exponential is accurate whenever $h\|\mat{A}\|_2<\pi$,
+which is easily achievable by choosing a sufficient number of steps.  The
+obstacle is purely the \emph{propagator accumulation strategy}.
+
+\textbf{Primary recommendation: Approach 1 (star product).}  This approach
+is proven to work (diagnostic evidence for all failing test cases), is
+unconditionally stable, requires no eigendecomposition, naturally handles
+all boundary condition types, and has the same computational cost as the
+current approach.  The convergence is $O(h^2)$ with a clean ratio of 4.0.
+
+Approach~2 (bidirectional propagation) is a viable alternative that stays
+closer to the current code structure, but it requires eigendecomposition
+and has not been prototyped.  It may be preferable if the user wishes to
+preserve the current interface between the propagator and BC solver.
+
+The current diffusion-domain handoff (Attempt~3 / placeholder) is
+\emph{not recommended} as the primary strategy, because it requires a
+separate solver for $[\ttrans,\tbot]$ that would itself need to solve
+the same stability problem.  However, it could be used as a
+\emph{complement} to Approach~1 for extremely thick atmospheres where
+$K$ would otherwise be impractically large.
+
+
+%======================================================================
+\begin{thebibliography}{99}
+\bibitem{magnus1954}
+W.~Magnus, ``On the exponential solution of differential equations for a
+linear operator,'' \emph{Comm.\ Pure Appl.\ Math.}, 7:649--673, 1954.
+
+\bibitem{blanes2009}
+S.~Blanes, F.~Casas, J.A.~Oteo, J.~Ros, ``The Magnus expansion and some
+of its applications,'' \emph{Physics Reports}, 470(5--6):151--238, 2009.
+
+\bibitem{moan2008}
+P.C.~Moan and J.~Niesen, ``Convergence of the Magnus series,''
+\emph{Found.\ Comput.\ Math.}, 8(3):291--301, 2008.
+
+\bibitem{stamnes1988}
+K.~Stamnes, S.-C.~Tsay, W.~Wiscombe, K.~Jayaweera, ``Numerically stable
+algorithm for discrete-ordinate-method radiative transfer in multiple
+scattering and emitting layered media,'' \emph{Appl.\ Opt.}, 27(12):
+2502--2509, 1988.
+
+\bibitem{stamnes1984}
+K.~Stamnes and P.~Conklin, ``A new multi-layer discrete ordinate approach to
+radiative transfer in vertically inhomogeneous atmospheres,'' \emph{J.\ Quant.\
+Spectrosc.\ Radiat.\ Transfer}, 31(3):273--282, 1984.
+
+\bibitem{kreiss1962}
+H.-O.~Kreiss, ``\"Uber die Stabilit\"atsdefinition f\"ur
+Differenzengleichungen die partielle Differentialgleichungen
+approximieren,'' \emph{BIT}, 2:153--181, 1962.
+
+\bibitem{redheffer1962}
+R.~Redheffer, ``On the relation of transmission-line theory to scattering and
+transfer,'' \emph{J.\ Math.\ Phys.}, 41:1--41, 1962.
+
+\bibitem{grant1969}
+I.P.~Grant and G.E.~Hunt, ``Discrete space theory of radiative transfer.
+I.~Fundamentals,'' \emph{Proc.\ R.\ Soc.\ Lond.\ A}, 313(1513):183--197, 1969.
+
+\bibitem{bellman1960}
+R.~Bellman, R.~Kalaba, and M.~Prestrud, \emph{Invariant Imbedding and
+Radiative Transfer in Slabs of Finite Thickness}, American Elsevier, 1960.
+
+\bibitem{plass1973}
+G.N.~Plass, G.W.~Kattawar, and F.E.~Catchings, ``Matrix operator theory of
+radiative transfer.\ 1: Rayleigh scattering,'' \emph{Appl.\ Opt.}, 12(2):
+314--329, 1973.
+
+\bibitem{lacis1998}
+A.~Lacis and V.~Oinas, ``A description of the correlated $k$ distribution
+method for modeling nongray gaseous absorption,'' \emph{J.\ Geophys.\ Res.},
+96(D5):9027--9063, 1991.
+\end{thebibliography}
+
+\end{document}

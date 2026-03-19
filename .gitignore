@@ -97,6 +97,10 @@ celerybeat-schedule
 # mkdocs documentation
 /site
 
+# LaTeX
+*.pdf
+*.gz
+
 # mypy
 .mypy_cache/
 .dmypy.json
