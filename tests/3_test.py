@@ -63,3 +63,14 @@ def test_3c():
     flux_ref, u0_ref = get_reference("3c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
     flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=100)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_3d():
+    """Forward-peaked HG (g=0.85), moderate tau=1.5, high scattering (omega=0.95)."""
+    print("\n--- Test 3d ---")
+    tau_bot, omega, g = 1.5, 0.95, 0.85
+    mu0, I0, phi0 = 0.5, 1.0, 0.0
+    g_l = _make(g)
+    flux_ref, u0_ref = get_reference("3d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
+    flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=200)
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

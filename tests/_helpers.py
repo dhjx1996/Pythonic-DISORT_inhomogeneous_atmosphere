@@ -170,6 +170,71 @@ def assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3):
     )
 
 
+def make_cloud_profile(tau_bot, omega_top, omega_bot, g_top, g_bot, NLeg, NQuad):
+    """
+    Build (omega_func, g_l_func, D_m_funcs) for a linearly-interpolated cloud.
+
+    omega and g vary linearly from top (tau=0) to bottom (tau=tau_bot).
+    Phase function is Henyey-Greenstein: g_l(tau) = g(tau)^l.
+    """
+    omega_func = lambda tau: omega_top + (omega_bot - omega_top) * tau / tau_bot
+    g_func     = lambda tau: g_top + (g_bot - g_top) * tau / tau_bot
+    g_l_func   = lambda tau: g_func(tau) ** np.arange(NLeg)
+    D_m_funcs  = make_D_m_funcs(g_l_func, NLeg, NQuad)
+    return omega_func, g_l_func, D_m_funcs
+
+
+# ---------------------------------------------------------------------------
+# pydisort reference wrapper returning full phi-dependent intensity
+# ---------------------------------------------------------------------------
+
+def pydisort_toa_full_phi(
+    tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+    b_pos=0, b_neg=0, BDRF_Fourier_modes=(),
+):
+    """
+    Run pydisort for a single homogeneous layer and return
+    (flux_up_ToA, u0_ToA, u_func) where u_func = u(tau, phi).
+    """
+    from PythonicDISORT.pydisort import pydisort
+
+    mu_arr, Fp, Fm, u0f, uf = pydisort(
+        np.array([float(tau_bot)]),
+        np.array([float(omega)]),
+        int(NQuad),
+        np.atleast_2d(np.asarray(g_l, dtype=float)),
+        float(mu0), float(I0), float(phi0),
+        NLeg=NQuad, NFourier=NQuad,
+        only_flux=False,
+        b_pos=b_pos, b_neg=b_neg,
+        BDRF_Fourier_modes=list(BDRF_Fourier_modes),
+    )
+    return float(Fp(0)), u0f(0), uf
+
+
+# ---------------------------------------------------------------------------
+# Azimuthal intensity assertion helper
+# ---------------------------------------------------------------------------
+
+def assert_close_to_reference_phi(u_func_mag, u_func_ref, phi_values, N, rel_tol=5e-3):
+    """
+    Compare Magnus u_ToA_func(phi) vs pydisort u(0, phi) at several azimuthal angles.
+
+    Only upward-hemisphere intensities (first N elements) are compared.
+    u_func_mag: phi -> (NQuad,) from pydisort_magnus
+    u_func_ref: u(tau, phi) from pydisort (called at tau=0)
+    N: half the number of quadrature streams (upward hemisphere size)
+    """
+    for phi in phi_values:
+        u_mag = u_func_mag(phi)[:N]
+        u_ref = u_func_ref(0, phi)[:N]
+        scale = max(float(np.max(np.abs(u_ref))), 1e-8)
+        rel_err = float(np.max(np.abs(u_mag - u_ref))) / scale
+        assert rel_err < rel_tol, (
+            f"phi={phi:.4f}: u_ToA rel_err={rel_err:.3e} >= tol={rel_tol}"
+        )
+
+
 def assert_convergence(
     flux_ref, flux_coarse, flux_fine,
     u0_ref, u0_coarse, u0_fine,

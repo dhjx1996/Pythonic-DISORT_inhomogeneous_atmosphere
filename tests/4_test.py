@@ -80,3 +80,21 @@ def test_4c():
         N_magnus_steps=300, b_pos=b_pos, b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_4d():
+    """Purely absorbing (Beer's law): omega~0, no beam, b_neg=1/pi."""
+    print("\n--- Test 4d ---")
+    tau_bot, omega = 1.0, 1e-10
+    mu0, I0, phi0  = 0.5, 0.0, 0.0
+    b_neg = 1.0 / pi
+    g_l, D_m_funcs = _make_isotropic()
+
+    flux_ref, u0_ref = get_reference(
+        "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=200, b_neg=b_neg,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

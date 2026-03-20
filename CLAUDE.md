@@ -78,17 +78,21 @@ All output functions accept `is_antiderivative_wrt_tau=True` to switch to their 
 
 ### Tests
 
-`tests/` contains the PyTest suite for `pydisort_magnus` (25 tests across 7 files):
+`tests/` contains the PyTest suite for `pydisort_magnus` (43 tests across 11 files):
 
 | File | What it covers |
 |---|---|
 | `1_test.py` – `3_test.py` | Constant-ω Magnus vs pydisort reference (isotropic, Rayleigh-like, HG) |
-| `4_test.py` | Non-zero diffuse BCs (b_pos, b_neg) |
-| `5_test.py` | Lambertian BDRF surface (scalar and callable) |
+| `4_test.py` | Non-zero diffuse BCs (b_pos, b_neg, purely absorbing) |
+| `5_test.py` | Lambertian BDRF surface (scalar, callable, combined with BCs, high albedo) |
 | `6_test.py` | τ-varying ω convergence: multi-layer pydisort → Magnus reference |
 | `7_test.py` | τ-varying ω and g, including BDRF |
+| `8_test.py` | Thick atmospheres + BCs (constant ω, BDRF, b_pos) |
+| `9_test.py` | Thick atmospheres + τ-varying properties (convergence) |
+| `10_test.py` | Adiabatic cloud profiles (convergence) |
+| `11_test.py` | NQuad variation (4, 16) + azimuthal u_ToA_func validation |
 
-`tests/_helpers.py` provides `make_D_m_funcs`, `pydisort_toa`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, and `assert_convergence`.
+`tests/_helpers.py` provides `make_D_m_funcs`, `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, and `assert_convergence`.
 `tests/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
 
 The old `pydisotest/` (Stamnes DISORT test problems comparing against wrapped FORTRAN DISORT) has been removed.
@@ -175,6 +179,10 @@ contaminating the BC RHS even when the SC LHS was well-conditioned.
 
 - **Step-by-step SVD truncation for thick atmospheres**: stable Magnus propagation via
   incremental rank reduction (primary next task — see stability note above)
+- **Backward pass for bottom-source (b_pos) BCs**: When a significant b_pos is present,
+  the forward-only propagation cannot correctly propagate the upward source through a
+  thick atmosphere. A second (backward) pass is needed. Tests involving thick tau + b_pos
+  (8d, 8e) are secondary and expected to fail until this is implemented.
 - **Adaptive Magnus step control**: currently equidistant steps (`N_magnus_steps`)
 - **Delta-M scaling**: not applied in `pydisort_magnus`
 - **Nakajima-Tanaka (NT) corrections**: not applied; may be added in the future

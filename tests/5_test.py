@@ -95,3 +95,45 @@ def test_5c():
         N_magnus_steps=300, BDRF_Fourier_modes=BDRF_callable,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_5d():
+    """Combined BDRF + b_pos + b_neg, HG g=0.5, thin atmosphere."""
+    print("\n--- Test 5d ---")
+    tau_bot, omega, g = 1.0, 0.7, 0.5
+    mu0, I0, phi0 = 0.5, 1.0, 0.0
+    rho = 0.3
+    b_pos, b_neg = 0.2, 0.1
+    BDRF = [rho / pi]
+    g_l, D_m_funcs = _make_HG(g)
+
+    flux_ref, u0_ref = get_reference(
+        "5d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=200, b_pos=b_pos, b_neg=b_neg,
+        BDRF_Fourier_modes=BDRF,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+
+
+def test_5e():
+    """High surface albedo (rho=0.9), HG g=0.75, thin atmosphere."""
+    print("\n--- Test 5e ---")
+    tau_bot, omega, g = 0.5, 0.9, 0.75
+    mu0, I0, phi0 = 0.5, 1.0, 0.0
+    rho = 0.9
+    BDRF = [rho / pi]
+    g_l, D_m_funcs = _make_HG(g)
+
+    flux_ref, u0_ref = get_reference(
+        "5e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        BDRF_Fourier_modes=BDRF,
+    )
+    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+    )
+    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
