@@ -10,7 +10,7 @@ Fallback:  reference_results/3{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -25,7 +25,7 @@ def _make(g):
 def _run(tau_bot, omega, g, mu0, I0, phi0, N_steps):
     g_l = _make(g)
     D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
-    _, flux_up, u0_ToA, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_up, u0_ToA, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=N_steps,
     )
@@ -55,7 +55,7 @@ def test_3b():
 
 
 def test_3c():
-    """Thick atmosphere (tau=5), g=0.5, omega=0.8, mu0=0.6 — tests SVD stabilization."""
+    """Thick atmosphere (tau=5), g=0.5, omega=0.8, mu0=0.6."""
     print("\n--- Test 3c ---")
     tau_bot, omega, g = 5.0, 0.8, 0.5
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.9 * pi

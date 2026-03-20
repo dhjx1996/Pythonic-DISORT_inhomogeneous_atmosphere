@@ -12,14 +12,13 @@ See CLAUDE.md section "Magnus forward solver" for the design rationale and a lis
 of features that are intentionally deferred (delta-M scaling, NT corrections, etc.).
 """
 
-import warnings
 from math import pi
 
 import numpy as np
 
 from PythonicDISORT import subroutines
-from PythonicDISORT._magnus_propagator import _compute_magnus_propagator
-from PythonicDISORT._solve_bc_magnus import _solve_bc_magnus
+from _magnus_propagator import _compute_magnus_propagator
+from _solve_bc_magnus import _solve_bc_magnus
 
 
 def pydisort_magnus(

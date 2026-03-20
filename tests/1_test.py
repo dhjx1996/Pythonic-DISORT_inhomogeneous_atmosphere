@@ -3,15 +3,14 @@ Test suite 1: Isotropic scattering, beam source.
 
 Corresponds to Stamnes Test Problem 1.
 Tests 1a–1c: thin atmosphere (tau_bot = 0.03125).
-Tests 1d–1f: thick atmosphere (tau_bot = 32) — exercises the SVD-based
-             thick-atmosphere stabilization (step-by-step rank reduction).
+Tests 1d–1f: thick atmosphere (tau_bot = 32).
 
 Reference: pydisort (single-layer, exact eigendecomposition).
 Fallback:  reference_results/1{a-f}.npz
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -27,7 +26,7 @@ D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
 
 
 def _run(tau_bot, omega, N_steps):
-    _, flux_up, u0_ToA, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_up, u0_ToA, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=N_steps,
     )

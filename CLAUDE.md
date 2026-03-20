@@ -4,77 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Install (editable mode with test deps):**
+**Run all tests** (from the `tests/` directory; use the `twostream` conda env):
 ```bash
-pip install -e ".[pytest]"
-```
-
-**Run all tests** (from the `tests/` directory; use the `DISORT` conda env):
-```bash
-cd tests && conda run -n DISORT python -m pytest .
+cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest . -v
 ```
 
 **Run a single test file:**
 ```bash
-cd tests && conda run -n DISORT python -m pytest 1_test.py
+cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest 1_test.py -v
 ```
 
 **Run a single test function:**
 ```bash
-cd tests && conda run -n DISORT python -m pytest 1_test.py::test_1a
+cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest 1_test.py::test_1a -v
 ```
 
-**Regenerate .npz fallback reference files** (run once after changing tau values in generate_reference.py):
+**Regenerate .npz fallback reference files** (run once after changing tau values):
 ```bash
-cd tests && conda run -n DISORT python generate_reference.py
+cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" supplementary/generate_reference.py
 ```
 
-**Install notebook/example dependencies:**
-```bash
-pip install -e ".[notebook_dependencies]"
-```
+Note: Do NOT use `conda run` on Windows — it fails with UnicodeEncodeError (CP1252).
 
 ## Architecture
 
-The package lives in `src/PythonicDISORT/` and is a pure-Python reimplementation of Stamnes' FORTRAN DISORT — a Discrete Ordinates Solver for the 1D Radiative Transfer Equation (RTE) in a plane-parallel atmosphere.
+**PythonicDISORT** (the original Discrete Ordinates Solver) is an **external dependency**
+installed in the `twostream` conda env. It provides `pydisort()` and `subroutines`.
+See https://pythonic-disort.readthedocs.io for its documentation.
 
-### Call chain
-
-The user calls only `pydisort()` (re-exported from `__init__.py`). Internally:
-
-1. **`pydisort.py` → `pydisort()`**: Validates inputs, applies delta-M scaling (controlled by `f_arr`), rescales sources for numerical stability, generates double-Gauss quadrature nodes, and orchestrates the solve. If NT corrections are requested (`NT_cor=True`), it computes TMS and IMS post-hoc intensity corrections here before returning.
-
-2. **`_assemble_intensity_and_fluxes.py` → `_assemble_intensity_and_fluxes()`**: Calls the two solvers below, then assembles closures `flux_up(tau)`, `flux_down(tau)`, `u0(tau)`, and `u(tau, phi)` that are returned to the user.
-
-3. **`_solve_for_gen_and_part_sols.py` → `_solve_for_gen_and_part_sols()`**: Diagonalizes the ODE coefficient matrix for each Fourier mode (eigendecomposition), producing the general solution eigenpairs and particular solution coefficients.
-
-4. **`_solve_for_coeffs.py` → `_solve_for_coeffs()`**: Applies boundary conditions (Dirichlet BCs, BDRF surface reflection) to solve for the unknown coefficients. Uses `scipy.linalg.solve_banded` for multi-layer atmospheres (≥ `use_banded_solver_NLayers` layers) for efficiency.
-
-5. **`subroutines.py`**: Utility functions shared across all modules — quadrature generation, phase function evaluation, affine transforms, actinic flux helpers, and `_compare` (used in tests to compare against Stamnes' DISORT).
-
-### Key parameters
-
-| Parameter | Meaning |
-|---|---|
-| `tau_arr` | Optical depth of the lower boundary of each layer |
-| `omega_arr` | Single-scattering albedo per layer (must be in [0, 1)) |
-| `NQuad` | Number of streams (must be even, ≥ 2) |
-| `Leg_coeffs_all` | Phase function Legendre coefficients (NLayers × NLeg_all) |
-| `NLeg` | Number of Legendre coefficients used in solver (≤ NQuad) |
-| `NFourier` | Number of Fourier modes for intensity reconstruction (≤ NLeg) |
-| `f_arr` | Fractional forward-scattering peak for delta-M scaling |
-| `NT_cor` | Enable Nakajima-Tanaka intensity corrections |
-| `BDRF_Fourier_modes` | Surface BDRF as list of Fourier mode functions |
-
-### Output functions
-
-`pydisort()` returns `(mu_arr, Fp, Fm, u0[, u])`:
-- `Fp(tau)` — upward diffuse flux
-- `Fm(tau)` — tuple of (downward diffuse, downward direct) fluxes
-- `u0(tau)` — zeroth Fourier mode of intensity (useful for actinic flux)
-- `u(tau, phi)` — full intensity (only when `only_flux=False`)
-
-All output functions accept `is_antiderivative_wrt_tau=True` to switch to their τ-antiderivative (for layer-integrated quantities).
+The Magnus forward solver code lives in `src/` (3 files — not a package, just modules
+added to `sys.path` by `tests/conftest.py`).
 
 ### Tests
 
@@ -93,9 +52,8 @@ All output functions accept `is_antiderivative_wrt_tau=True` to switch to their 
 | `11_test.py` | NQuad variation (4, 16) + azimuthal u_ToA_func validation |
 
 `tests/_helpers.py` provides `make_D_m_funcs`, `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, and `assert_convergence`.
-`tests/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
-
-The old `pydisotest/` (Stamnes DISORT test problems comparing against wrapped FORTRAN DISORT) has been removed.
+`tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
+`tests/supplementary/` also contains star-product diagnostic/exploration scripts.
 
 ### Documentation
 
@@ -139,13 +97,13 @@ are retained only as sanity-check test cases (tests 1–5), not as a target use 
 The Redheffer star product naturally handles both forward and backward propagation through
 the N×N BC system — no separate backward pass is needed for `b_pos`.
 
-### New files
+### Magnus source files
 
 | File | Purpose |
 |---|---|
-| `src/PythonicDISORT/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
-| `src/PythonicDISORT/_magnus_propagator.py` | `_compute_magnus_propagator`: accumulates R/T/s operators via Redheffer star product |
-| `src/PythonicDISORT/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from star-product scattering operators |
+| `src/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
+| `src/_magnus_propagator.py` | `_compute_magnus_propagator`: accumulates R/T/s operators via Redheffer star product |
+| `src/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from star-product scattering operators |
 
 **NFourier** = `len(D_m_funcs)`. The m=0 callable handles isotropic/azimuth-symmetric scattering.
 

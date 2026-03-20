@@ -1,16 +1,15 @@
 """
 Test suite 9: Thick atmospheres with tau-varying optical properties (convergence).
 
-Exercises the diffusion-domain solver for optically thick atmospheres with
-continuously varying omega(tau) and/or g(tau).  Expected to fail with
-NotImplementedError until _solve_diffusion_domain is implemented.
+Exercises the star-product solver for optically thick atmospheres with
+continuously varying omega(tau) and/or g(tau).
 
 Verification strategy: multi-layer pydisort (20 / 200 layers) must converge
 toward the Magnus reference (2000 steps).
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import make_D_m_funcs, multilayer_pydisort_toa, assert_convergence
 
 NQuad = 8
@@ -28,7 +27,7 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
         lambda tau: g_func(tau) ** np.arange(NLeg), NLeg, NQuad
     )
 
-    _, flux_ref, u0_ref, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_ref, u0_ref, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=2000,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,

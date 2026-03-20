@@ -12,7 +12,7 @@ Fallback:  reference_results/11{a,b}.npz  (11c uses on-the-fly only)
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import (
     make_D_m_funcs, get_reference, assert_close_to_reference,
     pydisort_toa_full_phi, assert_close_to_reference_phi,
@@ -33,7 +33,7 @@ def test_11a():
     flux_ref, u0_ref = get_reference(
         "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )
@@ -58,7 +58,7 @@ def test_11b():
     flux_ref, u0_ref = get_reference(
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )
@@ -78,7 +78,7 @@ def test_11c():
     D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
 
     # Magnus: get u_ToA_func
-    _, _, _, u_ToA_func = PythonicDISORT.pydisort_magnus(
+    _, _, _, u_ToA_func = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )

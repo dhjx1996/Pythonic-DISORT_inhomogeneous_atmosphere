@@ -10,7 +10,7 @@ Fallback:  reference_results/5{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -41,7 +41,7 @@ def test_5a():
         "5a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
     )
@@ -61,7 +61,7 @@ def test_5b():
         "5b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
     )
@@ -90,7 +90,7 @@ def test_5c():
         "5c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_scalar,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=300, BDRF_Fourier_modes=BDRF_callable,
     )
@@ -111,7 +111,7 @@ def test_5d():
         "5d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=BDRF,
@@ -132,7 +132,7 @@ def test_5e():
         "5e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_mag, u0_mag, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
     )

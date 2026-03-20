@@ -5,15 +5,12 @@ Mimics realistic cloud microphysics where the effective radius r_e varies with
 optical depth, causing both omega(tau) and g(tau) to vary.  Uses linear
 interpolation profiles built by make_cloud_profile.
 
-Expected to fail with NotImplementedError until _solve_diffusion_domain is
-implemented (for thick cases 10b, 10d), while thin case 10a may pass.
-
 Verification strategy: multi-layer pydisort (20 / 200 layers) must converge
 toward the Magnus reference (2000 steps).
 """
 import numpy as np
 from math import pi
-import PythonicDISORT
+from pydisort_magnus import pydisort_magnus
 from _helpers import make_cloud_profile, multilayer_pydisort_toa, assert_convergence
 
 NQuad = 8
@@ -23,7 +20,7 @@ NLeg  = NQuad
 def _ref_and_layers(tau_bot, omega_func, g_l_func, D_m_funcs, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
     """Run Magnus@2000 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
-    _, flux_ref, u0_ref, _ = PythonicDISORT.pydisort_magnus(
+    _, flux_ref, u0_ref, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=2000,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
