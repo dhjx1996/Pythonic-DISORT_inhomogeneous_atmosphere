@@ -66,27 +66,27 @@ def test_1c():
 # ── moderate atmosphere ─────────────────────────────────────────────────────
 
 def test_1d():
-    """Thick atmosphere (tau=32), low scattering (omega=0.2) — tests SVD stabilization."""
+    """Thick atmosphere (tau=32), low scattering (omega=0.2)."""
     print("\n--- Test 1d ---")
     tau_bot, omega = 32.0, 0.2
     flux_ref, u0_ref = get_reference("1d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
 def test_1e():
-    """Thick atmosphere (tau=32), conservative scattering (omega~1) — tests SVD stabilization."""
+    """Thick atmosphere (tau=32), conservative scattering (omega~1)."""
     print("\n--- Test 1e ---")
     tau_bot, omega = 32.0, 1 - 1e-6
     flux_ref, u0_ref = get_reference("1e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
 def test_1f():
-    """Thick atmosphere (tau=32), high scattering (omega=0.99) — tests SVD stabilization."""
+    """Thick atmosphere (tau=32), high scattering (omega=0.99)."""
     print("\n--- Test 1f ---")
     tau_bot, omega = 32.0, 0.99
     flux_ref, u0_ref = get_reference("1f", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

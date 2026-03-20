@@ -78,7 +78,7 @@ All output functions accept `is_antiderivative_wrt_tau=True` to switch to their 
 
 ### Tests
 
-`tests/` contains the PyTest suite for `pydisort_magnus` (43 tests across 11 files):
+`tests/` contains the PyTest suite for `pydisort_magnus` (46 tests across 11 files):
 
 | File | What it covers |
 |---|---|
@@ -136,20 +136,16 @@ for atmospheres where ω(τ) and/or D^m(τ, ·, ·) vary continuously with optic
 are retained only as sanity-check test cases (tests 1–5), not as a target use case.
 
 **Bottom boundary condition: unrestricted.**  Arbitrary `b_pos` and BDRF are supported.
-Physical BDRFs (energy-conserving, ‖R‖₂ = O(1)) cannot resurrect SVD-truncated modes
-because the reflected amplitude of a truncated mode is still below the truncation threshold.
-The SVD rank reduction happens inside the propagator accumulation loop and is independent of
-the BC structure.  Note: for thick absorbing atmospheres, a non-zero `b_pos` has negligible
-influence on ToA flux via the decaying modes (suppressed by exp(−λ·τ_bot) → 0 going up);
-its contribution through the growing modes (always kept) reaches ToA correctly.
+The Redheffer star product naturally handles both forward and backward propagation through
+the N×N BC system — no separate backward pass is needed for `b_pos`.
 
 ### New files
 
 | File | Purpose |
 |---|---|
 | `src/PythonicDISORT/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
-| `src/PythonicDISORT/_magnus_propagator.py` | `_compute_magnus_propagator`: accumulates Φ^{hom} and φ^{part} via Magnus steps |
-| `src/PythonicDISORT/_solve_bc_magnus.py` | `_solve_bc_magnus`: solves N×N BC linear system from the propagator blocks |
+| `src/PythonicDISORT/_magnus_propagator.py` | `_compute_magnus_propagator`: accumulates R/T/s operators via Redheffer star product |
+| `src/PythonicDISORT/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from star-product scattering operators |
 
 **NFourier** = `len(D_m_funcs)`. The m=0 callable handles isotropic/azimuth-symmetric scattering.
 
@@ -157,32 +153,20 @@ its contribution through the growing modes (always kept) reaches ToA correctly.
 `D^m_pure(μ_i, μ_j; τ) = (1/2) Σ_l (2l+1) * poch_l * g_l^m(τ) * P_l^m(μ_i) * P_l^m(μ_j)`.
 Handles arbitrary signs of μ_i, μ_j with broadcasting support. ω is handled internally via `omega_func`.
 
-### Numerical stability limit
+### Numerical stability — Redheffer star product
 
-The forward-accumulation propagator Φ^{hom} (as currently implemented) has condition number
-≈ exp(2λ_max·τ_bot).  For τ_bot ≳ 2–3 this exceeds double precision and BOTH Φ^{hom} and
-φ^{part} are corrupted — fixing the BC solver alone is insufficient because the Magnus
-accumulator itself manufactures positive exponents.  Tests are currently limited to τ_bot ≤ 2.
+The Magnus propagator uses **Redheffer star-product accumulation** of N×N reflection /
+transmission / source operators.  All intermediates are O(1) — unconditionally stable for
+any τ_bot.  The per-step Magnus expm is unchanged; only how steps are combined changed
+(from 2N×2N propagator accumulation to N×N star product).
 
-The planned fix is **step-by-step SVD truncation** in the Magnus propagator: maintain
-Φ^{hom} in factored form (U, Σ, Vt) and after each step truncate singular values below
-machine epsilon, collapsing the rank of the propagator as modes die.  φ^{part} is
-maintained in the same reduced basis with the growing-mode component explicitly zeroed at
-each step (it is physically zero; only its numerical ghost causes instability).  This keeps
-all intermediate quantities ≤ O(1) — no positive exponents.
+Accuracy is controlled by `N_magnus_steps`: the first-order Magnus approximation requires
+h · λ_max ≲ 1, where h = τ_bot / N_steps and λ_max ≈ 14 for NQuad=8.  Convergence is O(h²).
 
-Previous failed approach (two-path SC with A_mid fallback): fixed only the BC solver, not
-the Magnus accumulator.  φ^{part} from the accumulator remained garbage for thick atmospheres,
-contaminating the BC RHS even when the SC LHS was well-conditioned.
+The BC solver is a simple N×N system (half the size of the old 2N×2N Stamnes–Conklin system).
 
 ### Deferred features (not yet implemented — do not forget)
 
-- **Step-by-step SVD truncation for thick atmospheres**: stable Magnus propagation via
-  incremental rank reduction (primary next task — see stability note above)
-- **Backward pass for bottom-source (b_pos) BCs**: When a significant b_pos is present,
-  the forward-only propagation cannot correctly propagate the upward source through a
-  thick atmosphere. A second (backward) pass is needed. Tests involving thick tau + b_pos
-  (8d, 8e) are secondary and expected to fail until this is implemented.
 - **Adaptive Magnus step control**: currently equidistant steps (`N_magnus_steps`)
 - **Delta-M scaling**: not applied in `pydisort_magnus`
 - **Nakajima-Tanaka (NT) corrections**: not applied; may be added in the future

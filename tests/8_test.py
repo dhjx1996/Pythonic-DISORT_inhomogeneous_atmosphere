@@ -1,20 +1,14 @@
 """
 Test suite 8: Thick atmospheres with boundary conditions (constant omega).
 
-Exercises the diffusion-domain solver for optically thick atmospheres
+Exercises the Redheffer star-product solver for optically thick atmospheres
 combined with surface BDRF and/or bottom sources (b_pos).
-
-Tests 8a-8c, 8f: forward-only (no b_pos) — expected to fail with
-    NotImplementedError until _solve_diffusion_domain is implemented.
-Tests 8d, 8e: secondary — require a backward pass for b_pos and are
-    skipped until that feature is implemented.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
 Fallback:  reference_results/8{a-f}.npz
 """
 import numpy as np
 from math import pi
-import pytest
 import PythonicDISORT
 from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
 
@@ -52,7 +46,7 @@ def test_8a():
     )
     _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+        N_magnus_steps=1000, BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -72,7 +66,7 @@ def test_8b():
     )
     _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+        N_magnus_steps=1000, BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -92,19 +86,13 @@ def test_8c():
     )
     _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+        N_magnus_steps=300, BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
-# --- SECONDARY tests: need backward pass for b_pos ---
-# These are skipped because propagating a significant b_pos through a thick
-# atmosphere requires a backward (bottom-to-top) propagation pass, which is
-# not yet implemented.
-
-@pytest.mark.skip(reason="needs backward pass for b_pos")
 def test_8d():
-    """Thick (tau=32), omega=0.5, isotropic, b_pos=0.5 — needs backward pass."""
+    """Thick (tau=32), omega=0.5, isotropic, b_pos=0.5."""
     print("\n--- Test 8d ---")
     tau_bot, omega = 32.0, 0.5
     mu0, I0, phi0 = 0.1, pi / 0.1, pi
@@ -116,14 +104,13 @@ def test_8d():
     )
     _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, b_pos=b_pos,
+        N_magnus_steps=2500, b_pos=b_pos,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
-@pytest.mark.skip(reason="needs backward pass for b_pos")
 def test_8e():
-    """Thick (tau=5), omega=0.8, HG g=0.5, callable BDRF rho=0.3 + b_pos=0.2 — needs backward pass."""
+    """Thick (tau=5), omega=0.8, HG g=0.5, callable BDRF rho=0.3 + b_pos=0.2."""
     print("\n--- Test 8e ---")
     tau_bot, omega, g = 5.0, 0.8, 0.5
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.9 * pi
@@ -160,6 +147,6 @@ def test_8f():
     )
     _, flux_mag, u0_mag, _ = PythonicDISORT.pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, BDRF_Fourier_modes=BDRF,
+        N_magnus_steps=400, BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

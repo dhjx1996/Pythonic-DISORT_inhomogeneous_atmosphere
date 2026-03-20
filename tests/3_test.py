@@ -61,7 +61,7 @@ def test_3c():
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.9 * pi
     g_l = _make(g)
     flux_ref, u0_ref = get_reference("3c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega, g, mu0, I0, phi0, N_steps=200)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 

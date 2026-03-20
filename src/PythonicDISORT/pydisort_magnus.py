@@ -227,10 +227,9 @@ def pydisort_magnus(
             def S_m_func(_tau):
                 return np.zeros(NQuad)
 
-        # ---- Magnus propagator (step-by-step SVD, no positive exponents) ----
-        U_m, Sigma_m, Vt_m, q_scaled_m = _compute_magnus_propagator(
-            A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad
-        )
+        # ---- Magnus propagator (Redheffer star product, unconditionally stable) ----
+        R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m = \
+            _compute_magnus_propagator(A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad)
 
         # ---- Boundary conditions --------------------------------------
         BDRF_mode_m = BDRF_list[m] if m < NBDRF else None
@@ -238,8 +237,8 @@ def pydisort_magnus(
         b_neg_m = b_neg_matrix[:, m]
 
         u_m = _solve_bc_magnus(
-            U_m, Sigma_m, Vt_m, q_scaled_m, N,
-            b_pos_m, b_neg_m,
+            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m,
+            N, b_pos_m, b_neg_m,
             BDRF_mode_m, mu_arr_pos, W,
             m, mu0, I0_div_4pi_scaled, tau_bot,
             there_is_beam_source,
