@@ -99,6 +99,10 @@ celerybeat-schedule
 /site
 
 # LaTeX
+*.aux
+*.log
+*.out
+*.toc
 *.pdf
 *.gz
 

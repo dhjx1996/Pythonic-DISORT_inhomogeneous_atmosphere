@@ -74,14 +74,28 @@ def _star_product(R_up, T_up, T_down, R_down, s_up, s_down,
     return R_up_new, T_up_new, T_down_new, R_down_new, s_up_new, s_down_new
 
 
+_GL_C1 = 0.5 - np.sqrt(3.0) / 6.0   # ≈ 0.2113
+_GL_C2 = 0.5 + np.sqrt(3.0) / 6.0   # ≈ 0.7887
+_COMM_COEFF = np.sqrt(3.0) / 12.0    # ≈ 0.1443
+
+
 def _compute_magnus_propagator(A_func, S_func, tau_bot, N_steps, NQuad):
     """
     Accumulates the full-domain scattering operators via Redheffer star product.
 
-    Uses first-order Magnus (midpoint rule) for each step, then combines steps
-    via the star product of N×N reflection/transmission/source operators.
+    Uses 4th-order Magnus integration (2-point Gauss-Legendre quadrature with
+    commutator correction) for each step, then combines steps via the star
+    product of N×N reflection/transmission/source operators.
+
+    Per step [τ_k, τ_k + h]:
+        Ω_A = (h/2)(A₁ + A₂) + (√3/12)h²[A₂, A₁]
+        Ω_S = (h/2)(S₁ + S₂) + (√3/12)h²(A₂S₁ − A₁S₂)
+    where A₁, A₂ are evaluated at the two GL nodes within the step.
+
+    For constant A: [A, A] = 0, so this reduces to midpoint (exact for constant).
+    For τ-varying A: achieves O(h⁴) convergence.
+
     All intermediates are O(1) — unconditionally stable for any tau_bot.
-    Accuracy controlled by N_steps; need h · λ_max ≲ 1.
 
     Arguments
     ---------
@@ -111,15 +125,27 @@ def _compute_magnus_propagator(A_func, S_func, tau_bot, N_steps, NQuad):
 
     ext   = NQuad + 1
     M_ext = np.zeros((ext, ext))  # reused each step; last row stays zero
+    h2_comm = _COMM_COEFF * h * h
 
     for k in range(N_steps):
-        tau_mid = (k + 0.5) * h
+        tau_k = k * h
 
-        A_k = A_func(tau_mid)   # (NQuad, NQuad)
-        S_k = S_func(tau_mid)   # (NQuad,)
+        # Evaluate A and S at the two Gauss-Legendre nodes
+        A1 = A_func(tau_k + _GL_C1 * h)
+        A2 = A_func(tau_k + _GL_C2 * h)
+        S1 = S_func(tau_k + _GL_C1 * h)
+        S2 = S_func(tau_k + _GL_C2 * h)
 
-        M_ext[:NQuad, :NQuad] = h * A_k
-        M_ext[:NQuad, NQuad]  = h * S_k
+        # 4th-order Magnus exponent: Ω = (h/2)(A₁+A₂) + (√3/12)h²[A₂, A₁]
+        Omega_A = 0.5 * h * (A1 + A2)
+        comm = A2 @ A1 - A1 @ A2       # [A₂, A₁]
+        Omega_A += h2_comm * comm
+
+        # Source correction: (h/2)(S₁+S₂) + (√3/12)h²(A₂S₁ − A₁S₂)
+        Omega_S = 0.5 * h * (S1 + S2) + h2_comm * (A2 @ S1 - A1 @ S2)
+
+        M_ext[:NQuad, :NQuad] = Omega_A
+        M_ext[:NQuad, NQuad]  = Omega_S
         # M_ext[NQuad, :] remains all zeros throughout
 
         Phi_ext  = scipy.linalg.expm(M_ext)        # (NQuad+1, NQuad+1)
@@ -137,3 +163,109 @@ def _compute_magnus_propagator(A_func, S_func, tau_bot, N_steps, NQuad):
         )
 
     return R_up, T_up, T_down, R_down, s_up, s_down
+
+
+_C_STAB = 1.5  # stability ceiling: max h·λ_max before cond(a) degrades
+
+
+def _compute_magnus_propagator_adaptive(A_func, S_func, tau_bot, NQuad, tol):
+    """
+    Adaptive 4th-order Magnus propagator with star-product accumulation.
+
+    Uses the commutator norm ‖[A₂, A₁]‖_F · h² · (√3/12) as a cheap error
+    indicator (no second expm).  For constant A the commutator vanishes exactly,
+    so the step size is limited only by the stability ceiling h ≤ c_stab/λ_max.
+
+    Arguments
+    ---------
+    A_func   : callable, tau -> (NQuad, NQuad) ndarray
+    S_func   : callable, tau -> (NQuad,) ndarray
+    tau_bot  : float > 0
+    NQuad    : int, 2N
+    tol      : float > 0, relative error tolerance for the commutator indicator
+
+    Returns
+    -------
+    R_up, T_up, T_down, R_down : (N, N) ndarrays
+    s_up, s_down : (N,) ndarrays
+    tau_grid : (K+1,) ndarray — step boundary points [0, τ₁, …, τ_bot]
+    """
+    N = NQuad // 2
+
+    # Estimate λ_max from A at midpoint (one eigenvalue computation)
+    A_mid = A_func(tau_bot / 2)
+    lambda_max = float(np.max(np.abs(np.linalg.eigvals(A_mid).real)))
+    lambda_max = max(lambda_max, 1e-10)
+
+    h_max = _C_STAB / lambda_max  # stability ceiling
+    h = min(tau_bot, h_max)
+
+    # Initialize identity slab
+    R_up   = np.zeros((N, N))
+    T_up   = np.eye(N)
+    T_down = np.eye(N)
+    R_down = np.zeros((N, N))
+    s_up   = np.zeros(N)
+    s_down = np.zeros(N)
+
+    tau_grid = [0.0]
+    tau_current = 0.0
+    ext = NQuad + 1
+    M_ext = np.zeros((ext, ext))
+
+    while tau_current < tau_bot - 1e-14:
+        # Clamp to boundary
+        final_step = (tau_current + h >= tau_bot - 1e-14)
+        if final_step:
+            h = tau_bot - tau_current
+
+        # Evaluate at the two Gauss-Legendre nodes
+        A1 = A_func(tau_current + _GL_C1 * h)
+        A2 = A_func(tau_current + _GL_C2 * h)
+
+        # Commutator and error indicator
+        comm = A2 @ A1 - A1 @ A2
+        h2_comm = _COMM_COEFF * h * h
+        comm_norm = np.linalg.norm(comm, 'fro') * h2_comm
+        err_rel = comm_norm / max(1.0, h * lambda_max)
+
+        if err_rel > tol and not final_step:
+            # Reject step, shrink
+            factor = max(0.2, 0.9 * (tol / err_rel) ** 0.25)
+            h = min(h * factor, h_max)
+            continue
+
+        # Accept step — evaluate source at GL nodes
+        S1 = S_func(tau_current + _GL_C1 * h)
+        S2 = S_func(tau_current + _GL_C2 * h)
+
+        # 4th-order Magnus exponent
+        Omega_A = 0.5 * h * (A1 + A2) + h2_comm * comm
+        Omega_S = 0.5 * h * (S1 + S2) + h2_comm * (A2 @ S1 - A1 @ S2)
+
+        M_ext[:NQuad, :NQuad] = Omega_A
+        M_ext[:NQuad, NQuad]  = Omega_S
+
+        Phi_ext  = scipy.linalg.expm(M_ext)
+        Phi_step = Phi_ext[:NQuad, :NQuad]
+        delta_p  = Phi_ext[:NQuad, NQuad]
+
+        r_up_k, t_up_k, t_down_k, r_down_k, s_up_k, s_down_k = \
+            _extract_slab_operators(Phi_step, delta_p, N)
+
+        R_up, T_up, T_down, R_down, s_up, s_down = _star_product(
+            R_up, T_up, T_down, R_down, s_up, s_down,
+            r_up_k, t_up_k, t_down_k, r_down_k, s_up_k, s_down_k, N,
+        )
+
+        tau_current += h
+        tau_grid.append(tau_current)
+
+        # Predict next step size
+        if err_rel > 0:
+            factor = min(2.0, max(0.2, 0.9 * (tol / err_rel) ** 0.25))
+        else:
+            factor = 2.0
+        h = min(h * factor, h_max)
+
+    return R_up, T_up, T_down, R_down, s_up, s_down, np.array(tau_grid)

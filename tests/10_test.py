@@ -20,7 +20,7 @@ NLeg  = NQuad
 def _ref_and_layers(tau_bot, omega_func, g_l_func, D_m_funcs, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
     """Run Magnus@2000 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
-    _, flux_ref, u0_ref, _ = pydisort_magnus(
+    _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=2000,
         BDRF_Fourier_modes=BDRF_Fourier_modes,

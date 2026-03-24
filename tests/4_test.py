@@ -38,7 +38,7 @@ def test_4a():
     flux_ref, u0_ref = get_reference(
         "4a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, b_neg=b_neg,
     )
@@ -56,7 +56,7 @@ def test_4b():
     flux_ref, u0_ref = get_reference(
         "4b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, b_pos=b_pos,
     )
@@ -75,7 +75,7 @@ def test_4c():
         "4c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=300, b_pos=b_pos, b_neg=b_neg,
     )
@@ -93,7 +93,7 @@ def test_4d():
     flux_ref, u0_ref = get_reference(
         "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200, b_neg=b_neg,
     )

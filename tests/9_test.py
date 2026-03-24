@@ -27,7 +27,7 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
         lambda tau: g_func(tau) ** np.arange(NLeg), NLeg, NQuad
     )
 
-    _, flux_ref, u0_ref, _ = pydisort_magnus(
+    _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=2000,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,

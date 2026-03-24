@@ -1,0 +1,1746 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% ── Notation macros (consistent with Pythonic-DISORT.ipynb) ──────────────
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\cond}{\operatorname{cond}}
+\newcommand{\expm}{\operatorname{expm}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\tbot}{\tau_{\mathrm{bot}}}
+\newcommand{\dd}{\,\mathrm{d}}
+
+\theoremstyle{definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+\newtheorem{definition}{Definition}
+
+\title{The Star-Product Magnus Integrator for Radiative Transfer\\
+with Continuously $\tau$-Varying Optical Properties}
+\author{Technical Report --- Extension to the Pythonic-DISORT\\
+Comprehensive Documentation}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents the \texttt{pydisort\_magnus} solver, a forward
+solver for the one-dimensional radiative transfer equation (RTE) in a
+plane-parallel atmosphere with continuously $\tau$-varying
+single-scattering albedo $\omega(\tau)$ and phase function.
+It combines first-order Magnus integration (midpoint-rule matrix
+exponential) with Redheffer star-product accumulation of
+$N\!\times\!N$ reflection, transmission, and source operators.
+The resulting algorithm is unconditionally numerically stable for
+arbitrary optical depth, achieves $O(h^2)$ global convergence, and
+requires no eigendecomposition.  We compare the Magnus approach
+mathematically and computationally with multi-layer DISORT (as used
+in SCIATRAN) and adding-doubling, discuss the fourth-order Magnus
+extension and the principle of solver-function smoothness matching,
+and outline an adaptive step-control strategy based on the matrix
+commutator.  This report extends sections~3--4 of the Pythonic-DISORT
+Comprehensive Documentation~\cite{HP2024doc} and assumes thorough
+familiarity with that document.
+\end{abstract}
+
+\tableofcontents
+\vspace{1em}
+
+%======================================================================
+\section{Introduction and Motivation}\label{sec:intro}
+%======================================================================
+
+The standard \texttt{pydisort} solver (sections~3--4 of the
+Comprehensive Documentation) handles multi-layer atmospheres by
+assuming piecewise-constant optical properties within each layer and
+performing an eigendecomposition of the coefficient matrix
+$\mat{A}$ in each layer.  This approach is exact for homogeneous
+layers and numerically stable via the Stamnes--Conklin
+substitution~\cite{stamnes1984}.
+
+However, for atmospheres where the single-scattering albedo
+$\omega(\tau)$ and the phase function $p(\nu;\tau)$ vary
+\emph{continuously} with optical depth---as arises in cloud
+microphysics when the effective radius $r_e$ varies with $\tau$---the
+piecewise-constant approximation introduces $O(h^2)$ discretisation
+error, where $h$ is the layer thickness.  While this error can be
+reduced by increasing the number of layers, the cost of an
+eigendecomposition per layer ($O(N^3)$ per layer per Fourier mode)
+makes this approach expensive for fine discretisations.
+
+The Magnus integrator~\cite{magnus1954,blanes2009} offers a
+natural alternative: it directly handles the variable-coefficient
+ODE $\vect{I}'(\tau)=\mat{A}(\tau)\vect{I}(\tau)+\vect{S}(\tau)$ via
+a midpoint-rule matrix exponential at each step, without
+eigendecomposition.  The first-order Magnus method is also $O(h^2)$
+accurate, but each step costs only a single matrix exponential
+(\texttt{scipy.linalg.expm}), which is cheaper than a full
+eigendecomposition for the same matrix size.
+
+The challenge is combining the per-step results across $K$ steps to
+obtain the solution over the full optical depth $[0,\tbot]$.
+Na\"ive accumulation of the $2N\!\times\!2N$ propagator fails for
+thick atmospheres because $\cond(\mat{\Phi})=
+e^{2\lambda_{\max}\tbot}$, which exceeds double precision for
+$\tbot\gtrsim\ln(10^{16})/\lambda_{\max}\approx 2.6$ when
+$\lambda_{\max}\approx 14$ (for $N\!=\!4$ streams).
+\Cref{sec:propagator_problem} analyses this failure in detail.
+
+The Redheffer star product~\cite{redheffer1962,grant1969}
+resolves this by reformulating the problem in terms of
+$N\!\times\!N$ reflection, transmission, and source operators,
+all of which remain $O(1)$ regardless of optical depth.
+\Cref{sec:star_product,sec:extraction,sec:algorithm} develop the
+full algorithm, and \Cref{sec:bc_solver} derives the boundary
+condition solver.  \Cref{sec:convergence} presents convergence
+analysis and numerical verification.
+\Cref{sec:comparison} places the algorithm in context by comparing
+it with multi-layer DISORT/SCIATRAN and adding-doubling, both
+mathematically and computationally.  \Cref{sec:higher_order} develops
+the fourth-order Magnus extension and the principle of solver-function
+smoothness matching, with application to adiabatic cloud profiles and
+profiles perturbed by precipitation.  \Cref{sec:adaptivity} outlines
+a commutator-based adaptive step-control strategy.
+
+
+%======================================================================
+\section{The Variable-Coefficient Discrete-Ordinate ODE}\label{sec:ode}
+%======================================================================
+
+We begin from the azimuthally decomposed, angularly discretised RTE
+as derived in sections~3.2--3.4 of the Comprehensive Documentation,
+but now with $\tau$-dependent optical properties.
+
+\subsection{Fourier decomposition}
+
+The diffuse intensity $u(\tau,\mu,\phi)$ is expanded in a Fourier
+cosine series (cf.\ section~3.2 of the Documentation):
+\begin{equation}\label{eq:fourier}
+  u(\tau,\mu,\phi)
+  = \sum_{m=0}^{M_F-1} u^m(\tau,\mu)\,\cos\bigl(m(\phi_0-\phi)\bigr),
+\end{equation}
+where $M_F$ is the number of Fourier modes.  Each mode $m$ is solved
+independently.
+
+\subsection{The coefficient matrix \texorpdfstring{$\mat{A}^m(\tau)$}{A\_m(tau)}}
+
+After double-Gauss quadrature discretisation with $2N$ streams
+(section~3.4 of the Documentation), each Fourier mode satisfies the
+$2N$-dimensional linear ODE
+\begin{equation}\label{eq:ode}
+  \frac{d}{d\tau}\begin{pmatrix}\vect{u}^+\\\vect{u}^-\end{pmatrix}
+  = \mat{A}^m(\tau)
+    \begin{pmatrix}\vect{u}^+\\\vect{u}^-\end{pmatrix}
+  + \vect{S}^m(\tau),
+  \qquad \tau\in[0,\tbot],
+\end{equation}
+where $\vect{u}^+ = (u^m(\tau,\mu_1),\dots,u^m(\tau,\mu_N))^T$ collects the
+upward intensities and $\vect{u}^- = (u^m(\tau,-\mu_1),\dots,u^m(\tau,-\mu_N))^T$
+the downward intensities.  The coefficient matrix has the block structure
+\begin{equation}\label{eq:A_block}
+  \mat{A}^m(\tau) = \begin{pmatrix}
+    -\mat{\alpha}^m(\tau) & -\mat{\beta}^m(\tau) \\
+     \mat{\beta}^m(\tau)  &  \mat{\alpha}^m(\tau)
+  \end{pmatrix},
+\end{equation}
+with
+\begin{equation}\label{eq:alpha_beta}
+  \mat{\alpha}^m(\tau)
+  = \mat{M}^{-1}\bigl(\mat{D}^{m,+}(\tau)\,\mat{W} - \mat{I}_N\bigr),
+  \qquad
+  \mat{\beta}^m(\tau)
+  = \mat{M}^{-1}\,\mat{D}^{m,-}(\tau)\,\mat{W},
+\end{equation}
+where $\mat{M}=\diag(\mu_1,\dots,\mu_N)$ and
+$\mat{W}=\diag(w_1,\dots,w_N)$ are the quadrature cosine and weight
+matrices, and the phase-function kernel matrices are
+\begin{equation}\label{eq:D_pm}
+  D^{m,+}_{ij}(\tau) = \omega(\tau)\,\mathcal{D}^m(\tau;\,\mu_i,\,\mu_j),
+  \qquad
+  D^{m,-}_{ij}(\tau) = \omega(\tau)\,\mathcal{D}^m(\tau;\,\mu_i,\,-\mu_j).
+\end{equation}
+Here $\mathcal{D}^m$ is the $\omega$-free phase-function kernel:
+\begin{equation}\label{eq:D_pure}
+  \mathcal{D}^m(\tau;\,\mu_i,\,\mu_j)
+  = \frac{1}{2}\sum_{\ell=m}^{L-1}(2\ell+1)\,
+    \frac{(\ell-m)!}{(\ell+m)!}\,
+    g_\ell(\tau)\,P_\ell^m(\mu_i)\,P_\ell^m(\mu_j),
+\end{equation}
+where $g_\ell(\tau)$ are the (unweighted) Legendre coefficients of the
+phase function at optical depth $\tau$, $P_\ell^m$ are the associated
+Legendre functions, and $L$ is the truncation order.
+
+\begin{remark}[Separation of $\omega$ from the kernel]
+The factorisation $D^{m,\pm}_{ij}=\omega(\tau)\cdot\mathcal{D}^m$
+in~\eqref{eq:D_pm} is a deliberate design choice: the user supplies
+$\omega(\tau)$ as a scalar function and $\mathcal{D}^m$ as a separate
+callable, enabling independent variation of absorption and scattering
+anisotropy.
+\end{remark}
+
+\subsection{The source vector \texorpdfstring{$\vect{S}^m(\tau)$}{S\_m(tau)}}
+
+For a collimated beam of intensity $I_0$ incident at cosine angle
+$\mu_0$ and azimuth $\phi_0$, the source vector for Fourier mode $m$
+is (cf.\ section~3.6.1 of the Documentation):
+\begin{equation}\label{eq:source}
+  \vect{S}^m(\tau) = \begin{pmatrix} -\vect{Q}^{m,+}(\tau)\\
+  \vect{Q}^{m,-}(\tau) \end{pmatrix},
+\end{equation}
+where the $i$-th component of $\vect{Q}^{m,+}$ is
+\begin{equation}\label{eq:Q_plus}
+  Q^{m,+}_i(\tau)
+  = \frac{I_0}{4\pi}\,(2-\delta_{m0})\,
+    \frac{\omega(\tau)}{\mu_i}\,
+    \mathcal{D}^m(\tau;\,\mu_i,\,-\mu_0)\,
+    e^{-\tau/\mu_0},
+\end{equation}
+and $Q^{m,-}_i(\tau)$ is the same expression with $\mu_i$ replaced by
+$-\mu_i$ in the $\mathcal{D}^m$ evaluation (and sign
+reversal as in section~3.4 of the Documentation).
+
+
+%======================================================================
+\section{First-Order Magnus Integration}\label{sec:magnus}
+%======================================================================
+
+\subsection{The Magnus expansion}
+
+The Magnus expansion~\cite{magnus1954} writes the solution of the
+matrix ODE $\vect{I}'=\mat{A}(\tau)\vect{I}$ as
+$\vect{I}(\tau)=\exp\bigl(\mat{\Omega}(\tau)\bigr)\vect{I}(0)$, where
+\begin{equation}
+  \mat{\Omega}(\tau) = \mat{\Omega}_1(\tau)
+  + \mat{\Omega}_2(\tau) + \cdots
+\end{equation}
+is an infinite series in nested integrals and commutators of $\mat{A}$.
+The first-order term is $\mat{\Omega}_1(\tau)=\int_0^\tau\mat{A}(s)\dd s$.
+Truncation at $\mat{\Omega}_1$ and approximation by the midpoint
+quadrature rule gives the first-order Magnus method:
+\begin{equation}\label{eq:magnus_step}
+  \mat{\Phi}_k = \exp\!\bigl(h\,\mat{A}(\tau_{k+1/2})\bigr),
+  \qquad \tau_{k+1/2}=(k+\tfrac{1}{2})h,
+  \qquad h=\tbot/K,
+\end{equation}
+where $K$ is the number of equidistant steps.
+
+The convergence radius of the Magnus series is
+$\int_0^h\|\mat{A}(s)\|_2\dd s < \pi$~\cite{blanes2009,moan2008}.
+For the DISORT coefficient matrix with
+$\|\mat{A}\|_2\approx\lambda_{\max}\approx 1/\mu_{\min}$
+(e.g.\ $\approx\!14.4$ for $N\!=\!4$), this requires
+$h < \pi/\lambda_{\max}\approx 0.22$.  This bounds the
+\emph{step size}, not the total depth: for any $\tbot$, choosing
+$K > \lambda_{\max}\tbot/\pi$ suffices.
+
+\subsection{The augmented matrix exponential}\label{sec:augmented}
+
+To handle the source term $\vect{S}(\tau)$ in~\eqref{eq:ode}
+simultaneously with the homogeneous propagator, we use the standard
+augmented-system technique (cf.\ Van Loan~\cite{vanloan1978}).
+Define the $(2N\!+\!1)\!\times\!(2N\!+\!1)$ matrix
+\begin{equation}\label{eq:augmented}
+  \mat{M}_k = \begin{pmatrix}
+    h\,\mat{A}(\tau_{k+1/2}) & h\,\vect{S}(\tau_{k+1/2}) \\
+    \vect{0}^T & 0
+  \end{pmatrix}.
+\end{equation}
+Then
+\begin{equation}\label{eq:augmented_expm}
+  \exp(\mat{M}_k) = \begin{pmatrix}
+    \mat{\Phi}_k & \vect{\delta}_k \\
+    \vect{0}^T   & 1
+  \end{pmatrix},
+\end{equation}
+where $\mat{\Phi}_k\in\R^{2N\times 2N}$ is the homogeneous step
+propagator and $\vect{\delta}_k\in\R^{2N}$ is the particular-solution
+increment from the source term over one step.  Both are obtained from
+a single call to \texttt{scipy.linalg.expm}.
+
+\subsection{Per-step accuracy}
+
+The local truncation error of the first-order Magnus step is $O(h^3)$
+(from the midpoint rule applied to $\mat{\Omega}_1$, plus the neglected
+$\mat{\Omega}_2$ term which is $O(h^3)$).  Over $K=\tbot/h$ steps,
+the global error is $O(h^2)$---i.e.\ second-order convergence.
+This is confirmed experimentally in \Cref{sec:convergence}.
+
+
+%======================================================================
+\section{The Propagator Accumulation Problem}\label{sec:propagator_problem}
+%======================================================================
+
+\subsection{Eigenvalue structure of $\mat{A}$}
+
+The block symmetry of~\eqref{eq:A_block} guarantees that the
+eigenvalues of $\mat{A}$ come in exact $\pm\lambda$ pairs
+(cf.\ section~3.5 of the Documentation):
+\begin{equation}
+  \lambda_1 > \lambda_2 > \cdots > \lambda_N > 0
+  > -\lambda_N > \cdots > -\lambda_1.
+\end{equation}
+For isotropic scattering with $N\!=\!4$ and $\omega=0.5$:
+$\lambda_{\max}\approx 13.77$, $\lambda_{\min}\approx 0.97$.
+
+\subsection{Condition number of the propagator}
+
+Na\"ive accumulation builds the full propagator
+$\mat{\Phi}(0\to\tbot)=\prod_{k=0}^{K-1}\mat{\Phi}_k$, which for
+constant $\mat{A}$ equals $\exp(\mat{A}\tbot)$.  Its condition number is
+\begin{equation}\label{eq:cond_propagator}
+  \cond\bigl(\exp(\mat{A}\tbot)\bigr)
+  \geq \frac{\sigma_{\max}}{\sigma_{\min}}
+  \geq \frac{e^{\lambda_{\max}\tbot}}{e^{-\lambda_{\max}\tbot}}
+  = e^{2\lambda_{\max}\tbot}.
+\end{equation}
+For $\lambda_{\max}=14$ and $\tbot=5$:
+$\cond\geq e^{140}\approx 10^{60.8}$, catastrophically exceeding
+double precision ($\epsilon_{\text{mach}}\approx 10^{-16}$).
+
+\subsection{Non-normality and transient growth}\label{sec:nonnormal}
+
+The $\mat{M}^{-1}$ factor in~\eqref{eq:alpha_beta} makes $\mat{A}$
+non-normal: $\mat{A}\mat{A}^T\neq\mat{A}^T\mat{A}$.
+For a normal matrix, the singular values of $e^{\mat{A}\tau}$ would be
+$e^{\text{Re}(\lambda_j)\tau}$---those with $\lambda_j>0$ grow while
+those with $\lambda_j<0$ decay.  For the non-normal DISORT matrix,
+however, non-orthogonality of the eigenvectors causes all singular
+values to eventually grow as $\sigma_j\sim C_j e^{\lambda_{\max}\tau}$
+for large $\tau$~\cite{kreiss1962}.  This
+``dip-and-rebound'' phenomenon means that all $2N$ modes eventually
+become large, precluding truncation of ``decaying'' modes.
+
+\subsection{Why this is fundamental}
+
+\emph{Any} algorithm that explicitly forms the $2N\!\times\!2N$
+propagator $\mat{\Phi}(0\to\tbot)$ will encounter the same problem.
+The solution is to avoid the propagator entirely and work with
+$N\!\times\!N$ scattering operators that remain bounded.
+
+
+%======================================================================
+\section{The Interaction Principle and Redheffer Star Product}
+\label{sec:star_product}
+%======================================================================
+
+\subsection{Scattering-matrix representation}
+
+A slab occupying $[0,\tbot]$ is characterised by how it transforms
+radiation incident from both sides.  Following Grant and
+Hunt~\cite{grant1969} and the matrix-operator method of Plass et
+al.~\cite{plass1973}, we define six $N\!\times\!N$ operators:
+\begin{definition}[Slab scattering operators]\label{def:slab_ops}
+Given a slab with reflection, transmission, and internal source
+properties, the \emph{scattering-matrix representation} is the
+system
+\begin{align}
+  \vect{u}^+(0) &= \mat{R}_\uparrow\,\vect{u}^-(0)
+                  + \mat{T}_\uparrow\,\vect{u}^+(\tbot)
+                  + \vect{s}_\uparrow, \label{eq:interaction_up}\\
+  \vect{u}^-(\tbot) &= \mat{T}_\downarrow\,\vect{u}^-(0)
+                      + \mat{R}_\downarrow\,\vect{u}^+(\tbot)
+                      + \vect{s}_\downarrow, \label{eq:interaction_down}
+\end{align}
+where:
+\begin{itemize}[nosep]
+\item $\mat{R}_\uparrow\in\R^{N\times N}$:
+  reflection of downwelling radiation, observed at the top;
+\item $\mat{T}_\uparrow\in\R^{N\times N}$:
+  upward transmission of upwelling radiation from the bottom to the top;
+\item $\mat{T}_\downarrow\in\R^{N\times N}$:
+  downward transmission of downwelling radiation from the top to the bottom;
+\item $\mat{R}_\downarrow\in\R^{N\times N}$:
+  reflection of upwelling radiation, observed at the bottom;
+\item $\vect{s}_\uparrow\in\R^N$:
+  upward source at the top from internal scattering of the
+  collimated beam;
+\item $\vect{s}_\downarrow\in\R^N$:
+  downward source at the bottom from internal scattering of the
+  collimated beam.
+\end{itemize}
+\end{definition}
+
+\begin{remark}[Connection to the Documentation's notation]
+In the piecewise-constant layer formulation of sections~3--4 of the
+Documentation, the boundary-condition system is expressed in terms of
+the eigenvectors $G^{\pm}$ and the Stamnes--Conklin-scaled
+coefficients.  The scattering-matrix
+operators~\eqref{eq:interaction_up}--\eqref{eq:interaction_down}
+encode the same input--output relation in a basis-free form, without
+requiring an eigendecomposition.
+\end{remark}
+
+\subsection{The Redheffer star product}
+
+Consider two adjacent slabs: slab~1 (accumulated, on top, operators
+with capital letters) and slab~2 (new step, below, operators with
+lowercase).  The combined slab's operators are given by the
+\emph{Redheffer star product}~\cite{redheffer1962}:
+
+\begin{definition}[Redheffer star product]\label{def:star_product}
+Let the resolvent be
+\begin{equation}\label{eq:resolvent}
+  \mat{E} = (\mat{I}_N - \mat{r}_\uparrow\,\mat{R}_\downarrow)^{-1}.
+\end{equation}
+Then the combined slab operators are:
+\begin{align}
+  \mat{R}_\uparrow^{\star}
+    &= \mat{R}_\uparrow
+     + \mat{T}_\uparrow\,\mat{E}\,\mat{r}_\uparrow\,\mat{T}_\downarrow,
+  \label{eq:star_Rup}\\
+  \mat{T}_\uparrow^{\star}
+    &= \mat{T}_\uparrow\,\mat{E}\,\mat{t}_\uparrow,
+  \label{eq:star_Tup}\\
+  \mat{T}_\downarrow^{\star}
+    &= \mat{t}_\downarrow\,(\mat{T}_\downarrow
+     + \mat{R}_\downarrow\,\mat{E}\,\mat{r}_\uparrow\,\mat{T}_\downarrow),
+  \label{eq:star_Tdn}\\
+  \mat{R}_\downarrow^{\star}
+    &= \mat{r}_\downarrow
+     + \mat{t}_\downarrow\,\mat{R}_\downarrow\,\mat{E}\,\mat{t}_\uparrow,
+  \label{eq:star_Rdn}\\
+  \vect{s}_\uparrow^{\star}
+    &= \vect{s}_\uparrow
+     + \mat{T}_\uparrow\,\mat{E}\,
+       (\mat{r}_\uparrow\,\vect{s}_\downarrow + \vect{s}_{\uparrow,k}),
+  \label{eq:star_sup}\\
+  \vect{s}_\downarrow^{\star}
+    &= \vect{s}_{\downarrow,k}
+     + \mat{t}_\downarrow\,
+       (\vect{s}_\downarrow + \mat{R}_\downarrow\,\mat{E}\,
+        (\mat{r}_\uparrow\,\vect{s}_\downarrow + \vect{s}_{\uparrow,k})).
+  \label{eq:star_sdn}
+\end{align}
+\end{definition}
+
+The physical interpretation is transparent:
+$\mat{E}=(\mat{I}-\mat{r}_\uparrow\mat{R}_\downarrow)^{-1}$
+is the resolvent for the multiple-reflection series between the
+bottom face of slab~1 and the top face of slab~2.
+Equation~\eqref{eq:star_Rup}, for example, says: the combined
+upward reflection is the original reflection $\mat{R}_\uparrow$
+plus radiation that transmits down through slab~1, reflects off
+slab~2, bounces between the two slabs (resolvent $\mat{E}$), and
+transmits back up through slab~1.
+
+\subsection{Boundedness of intermediates}
+
+\begin{proposition}\label{prop:bounded}
+For a non-conservative atmosphere ($\omega(\tau)<1$ for all $\tau$):
+\begin{enumerate}[nosep]
+\item The reflection operators satisfy $\|\mat{R}_\uparrow\|_2<1$
+  and $\|\mat{R}_\downarrow\|_2<1$ (by energy conservation---some
+  energy is absorbed at each scattering).
+\item The transmission operators decay:
+  $\|\mat{T}\|_2\leq e^{-\lambda_N\tau}$ (governed by the
+  smallest eigenvalue magnitude), bounded above by~1.
+\item The resolvent~\eqref{eq:resolvent} is well-conditioned:
+  $\cond(\mat{I}-\mat{r}_\uparrow\mat{R}_\downarrow)$ remains
+  close to~1 because the product
+  $\|\mat{r}_\uparrow\|\cdot\|\mat{R}_\downarrow\|<1$.
+\item The source vectors $\vect{s}_\uparrow$, $\vect{s}_\downarrow$
+  are $O(1)$ (bounded by the rescaled beam intensity).
+\end{enumerate}
+\end{proposition}
+
+\textbf{Crucial consequence.}  All intermediate $N\!\times\!N$
+quantities in the star product are $O(1)$.  No exponentially growing
+or decaying numbers appear anywhere.  This is the fundamental
+difference from the $2N\!\times\!2N$ propagator accumulation, and is
+the reason the star-product formulation is unconditionally stable.
+
+\subsection{Connection to invariant imbedding}
+
+The scattering-matrix representation is closely related to the
+\emph{invariant imbedding} formulation of Bellman, Kalaba, and
+Prestrud~\cite{bellman1960}.  In that framework, the reflection
+matrix $\mat{R}(\tau)$ for the slab $[0,\tau]$ satisfies the matrix
+Riccati ODE
+\begin{equation}\label{eq:riccati}
+  \frac{d\mat{R}}{d\tau}
+  = -\mat{\alpha}\mat{R} - \mat{R}\mat{\alpha}
+    - \mat{R}\mat{\beta}\mat{R} - \mat{\beta}.
+\end{equation}
+The Riccati equation is the \emph{infinitesimal generator} of the
+star-product semigroup: the exact Riccati step from $\tau$ to
+$\tau+h$ is given by the M\"obius transformation
+\begin{equation}\label{eq:mobius}
+  \mat{R}(\tau+h)
+  = (\mat{a}\,\mat{R}(\tau)+\mat{b})\,
+    (\mat{c}\,\mat{R}(\tau)+\mat{d})^{-1},
+\end{equation}
+where $\bigl[\begin{smallmatrix}\mat{a}&\mat{b}\\
+\mat{c}&\mat{d}\end{smallmatrix}\bigr]=\exp(h\mat{A})$.
+The star product~\eqref{eq:star_Rup}--\eqref{eq:star_sdn}
+generalises this to include transmission and source operators.
+
+
+%======================================================================
+\section{Extracting Slab Operators from a Magnus Step}
+\label{sec:extraction}
+%======================================================================
+
+Each Magnus step produces a $2N\!\times\!2N$ homogeneous propagator
+$\mat{\Phi}_k$ and a $2N$-vector particular increment
+$\vect{\delta}_k$ via~\eqref{eq:augmented_expm}.  We now derive the
+extraction of the six $N\!\times\!N$ scattering operators.
+
+\subsection{Block decomposition}
+
+Write
+\begin{equation}\label{eq:block_decomp}
+  \mat{\Phi}_k = \begin{pmatrix}\mat{a}&\mat{b}\\\mat{c}&\mat{d}\end{pmatrix},
+  \qquad
+  \vect{\delta}_k = \begin{pmatrix}\vect{\delta}^+\\\vect{\delta}^-\end{pmatrix},
+\end{equation}
+where $\mat{a},\mat{b},\mat{c},\mat{d}\in\R^{N\times N}$ and
+$\vect{\delta}^+,\vect{\delta}^-\in\R^N$.  The propagator relates
+the intensities at the step boundaries:
+\begin{equation}
+  \begin{pmatrix}\vect{u}^+(\tau_{k+1})\\\vect{u}^-(\tau_{k+1})\end{pmatrix}
+  = \begin{pmatrix}\mat{a}&\mat{b}\\\mat{c}&\mat{d}\end{pmatrix}
+    \begin{pmatrix}\vect{u}^+(\tau_k)\\\vect{u}^-(\tau_k)\end{pmatrix}
+  + \begin{pmatrix}\vect{\delta}^+\\\vect{\delta}^-\end{pmatrix}.
+\end{equation}
+
+\subsection{Extraction formulas}
+
+Solving for $\vect{u}^+(\tau_k)$ from the top row and substituting
+into the interaction
+form~\eqref{eq:interaction_up}--\eqref{eq:interaction_down}
+(with the convention that $\tau_k$ is the top and $\tau_{k+1}$
+the bottom of the step slab), we obtain:
+\begin{align}
+  \mat{t}_\uparrow   &= \mat{a}^{-1},
+  &\mat{r}_\uparrow   &= -\mat{a}^{-1}\mat{b},
+  \label{eq:extract_up}\\
+  \mat{r}_\downarrow  &= \mat{c}\,\mat{a}^{-1},
+  &\mat{t}_\downarrow  &= \mat{d}-\mat{c}\,\mat{a}^{-1}\mat{b},
+  \label{eq:extract_down}\\
+  \vect{s}_\uparrow   &= -\mat{a}^{-1}\vect{\delta}^+,
+  &\vect{s}_\downarrow &= \vect{\delta}^-
+                         - \mat{c}\,\mat{a}^{-1}\vect{\delta}^+.
+  \label{eq:extract_source}
+\end{align}
+
+\begin{proposition}[Conditioning of $\mat{a}$]\label{prop:cond_a}
+For a single Magnus step of size $h$:
+\begin{equation}
+  \cond(\mat{a}) \approx 1 + O(\lambda_{\max}h).
+\end{equation}
+Specifically, for the DISORT matrix with $\lambda_{\max}\approx 14$
+and typical step size $h\leq 0.05$:
+$\cond(\mat{a})\leq 1.30$.  The extraction~\eqref{eq:extract_up}--\eqref{eq:extract_source}
+is therefore numerically stable.
+\end{proposition}
+
+\subsection{Efficient batched solve}\label{sec:batched_solve}
+
+All six operators
+in~\eqref{eq:extract_up}--\eqref{eq:extract_source} depend on
+$\mat{a}^{-1}$ applied to different right-hand sides.  Rather than
+computing $\mat{a}^{-1}$ explicitly, we solve the single
+$N\!\times\!(2N\!+\!1)$ system
+\begin{equation}\label{eq:batched_extract}
+  \mat{a}\,\mat{X}
+  = \bigl[\,\mat{I}_N \;\big|\; \mat{b} \;\big|\; \vect{\delta}^+\,\bigr],
+\end{equation}
+yielding
+$\mat{X}=[\mat{a}^{-1}\mid\mat{a}^{-1}\mat{b}\mid\mat{a}^{-1}\vect{\delta}^+]$,
+from which all operators are read off directly.  This costs a single
+\texttt{numpy.linalg.solve} call (an $N\!\times\!N$ LU factorisation
+with $2N\!+\!1$ right-hand sides), which is more efficient and
+numerically stabler than explicit inversion.
+
+
+%======================================================================
+\section{The Complete Algorithm}\label{sec:algorithm}
+%======================================================================
+
+\subsection{Initialisation}
+
+The identity slab (zero-thickness, no scattering, no source) has
+operators
+\begin{equation}\label{eq:identity_slab}
+  \mat{R}_\uparrow = \mat{0},\quad
+  \mat{T}_\uparrow = \mat{I}_N,\quad
+  \mat{T}_\downarrow = \mat{I}_N,\quad
+  \mat{R}_\downarrow = \mat{0},\quad
+  \vect{s}_\uparrow = \vect{0},\quad
+  \vect{s}_\downarrow = \vect{0}.
+\end{equation}
+
+\subsection{Accumulation loop}
+
+\begin{algorithm}[H]
+\caption{Star-product Magnus accumulation}\label{alg:accumulation}
+\begin{algorithmic}[1]
+\Require $\mat{A}^m(\cdot)$, $\vect{S}^m(\cdot)$, $\tbot$, $K$, $N$
+\State Initialise $(\mat{R}_\uparrow,\mat{T}_\uparrow,\mat{T}_\downarrow,
+       \mat{R}_\downarrow,\vect{s}_\uparrow,\vect{s}_\downarrow)$
+       as in~\eqref{eq:identity_slab}
+\State $h \gets \tbot/K$
+\For{$k=0,\dots,K-1$}
+  \State $\tau_{\text{mid}} \gets (k+\tfrac{1}{2})h$
+  \State Build augmented matrix $\mat{M}_k$ per~\eqref{eq:augmented}
+  \State $\exp(\mat{M}_k) \to (\mat{\Phi}_k,\,\vect{\delta}_k)$
+         \Comment{Single \texttt{expm} call}
+  \State Extract $(\mat{r}_\uparrow,\mat{t}_\uparrow,\mat{t}_\downarrow,
+         \mat{r}_\downarrow,\vect{s}_{\uparrow,k},\vect{s}_{\downarrow,k})$
+         via~\eqref{eq:batched_extract}
+  \State Update accumulated operators via
+         star product~\eqref{eq:star_Rup}--\eqref{eq:star_sdn}
+\EndFor
+\State \Return $(\mat{R}_\uparrow,\mat{T}_\uparrow,\mat{T}_\downarrow,
+       \mat{R}_\downarrow,\vect{s}_\uparrow,\vect{s}_\downarrow)$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{remark}[Efficient resolvent computation]
+The star-product update requires the resolvent
+$\mat{E}=(\mat{I}-\mat{r}_\uparrow\mat{R}_\downarrow)^{-1}$
+applied to multiple vectors.  As with the extraction step, we
+form a single $N\!\times\!(2N\!+\!1)$ batched solve:
+\begin{equation}\label{eq:batched_star}
+  (\mat{I}-\mat{r}_\uparrow\mat{R}_\downarrow)\,\mat{Y}
+  = \bigl[\,\mat{r}_\uparrow\mat{T}_\downarrow
+    \;\big|\; \mat{t}_\uparrow
+    \;\big|\; \mat{r}_\uparrow\vect{s}_\downarrow
+              + \vect{s}_{\uparrow,k}\,\bigr],
+\end{equation}
+yielding $\mat{E}\mat{r}_\uparrow\mat{T}_\downarrow$,
+$\mat{E}\mat{t}_\uparrow$, and
+$\mat{E}(\mat{r}_\uparrow\vect{s}_\downarrow+\vect{s}_{\uparrow,k})$
+in a single factorisation.
+\end{remark}
+
+\subsection{Cost analysis}
+
+\begin{itemize}[nosep]
+\item \textbf{Per step}: one $(2N\!+\!1)\!\times\!(2N\!+\!1)$ matrix
+  exponential ($O(N^3)$ via Pad\'e scaling and
+  squaring~\cite{higham2005,moler2003}), two $N\!\times\!N$ solves
+  ($O(N^3)$ each), and $O(N^2)$ matrix--matrix and matrix--vector
+  products.  Total: $O(N^3)$ per step.
+\item \textbf{Overall}: $O(K\cdot M_F\cdot N^3)$, where $K$ is the
+  number of Magnus steps and $M_F$ the number of Fourier modes.
+\item \textbf{Memory}: $O(N^2)$---only the current accumulated
+  operators are stored.  No history is needed.
+\end{itemize}
+
+\subsection{Source rescaling}
+
+Following section~1.4 of the Documentation, all boundary sources
+and beam intensity are divided by
+$\rho=\max(I_0,\,\max(b_{\text{pos}}),\,\max(b_{\text{neg}}))$
+before entering the solver, and the output intensities are rescaled
+by $\rho$ upon exit.  This prevents numerical issues when source
+magnitudes span many orders of magnitude.
+
+\subsection{Fourier mode loop}
+
+The outer loop over Fourier modes $m=0,\dots,M_F-1$ proceeds as
+in sections~3.7--3.8 of the Documentation.  Each mode $m$ has its
+own coefficient matrix $\mat{A}^m(\tau)$ and source vector
+$\vect{S}^m(\tau)$ (via the mode-$m$ phase-function kernel
+$\mathcal{D}^m$), and produces its own accumulated scattering
+operators.  After the boundary-condition solve (\Cref{sec:bc_solver}),
+the full intensity at $\tau=0$ is reconstructed by
+\begin{equation}\label{eq:fourier_recon}
+  u(\tau\!=\!0,\,\mu_i,\,\phi)
+  = \sum_{m=0}^{M_F-1} u^m_i(0)\,\cos\bigl(m(\phi_0-\phi)\bigr).
+\end{equation}
+
+
+%======================================================================
+\section{Boundary-Condition Solver}\label{sec:bc_solver}
+%======================================================================
+
+After the accumulation loop, the six operators encode the full slab's
+input--output relation.  The boundary conditions
+(cf.\ section~3.7 of the Documentation) are:
+\begin{itemize}[nosep]
+\item \emph{Top}: $\vect{u}^-(0)=\vect{b}_{\text{neg}}$
+  (prescribed downwelling diffuse intensity at the top of atmosphere).
+\item \emph{Bottom}: $\vect{u}^+(\tbot)=\mat{R}_{\text{surf}}\,
+  \vect{u}^-(\tbot)+\vect{b}_{\text{pos}}^{\text{eff}}$
+  (surface reflection via BDRF plus thermal/isotropic emission).
+\end{itemize}
+
+\subsection{BDRF surface matrix}
+
+For Fourier mode $m$, the surface reflection matrix is
+\begin{equation}\label{eq:R_surf}
+  [\mat{R}_{\text{surf}}]_{ij}
+  = (1+\delta_{m0})\,q^m(\mu_i,\mu_j)\,w_j\mu_j,
+\end{equation}
+where $q^m(\mu,\mu')$ is the $m$-th Fourier mode of the BDRF.  The
+factor $(1+\delta_{m0})$ accounts for the $\frac{1}{2}$ in the cosine
+series normalisation (cf.\ section~3.7.2 of the Documentation).
+If no BDRF is specified, $\mat{R}_{\text{surf}}=\mat{0}$ (black
+surface).
+
+The effective bottom source includes the direct-beam surface
+reflection:
+\begin{equation}\label{eq:bpos_eff}
+  \vect{b}_{\text{pos}}^{\text{eff}}
+  = \vect{b}_{\text{pos}}
+  + \mu_0\,\frac{I_0}{4\pi}\cdot 4\cdot
+    q^m(\mu_i,\mu_0)\,e^{-\tbot/\mu_0}\cdot\vect{1},
+\end{equation}
+where the second term represents the collimated beam reflecting
+off the surface (the factor of~4 absorbs the $(2-\delta_{m0})\cdot 2$
+from the phase-function convention and Fourier normalisation).
+
+\subsection{The $N\!\times\!N$ boundary system}
+
+Substituting the surface BC into~\eqref{eq:interaction_down}:
+\begin{align}
+  \vect{u}^+(\tbot)
+  &= \mat{R}_{\text{surf}}\,\vect{u}^-(\tbot)
+   + \vect{b}_{\text{pos}}^{\text{eff}} \nonumber\\
+  &= \mat{R}_{\text{surf}}\,
+     \bigl(\mat{T}_\downarrow\,\vect{b}_{\text{neg}}
+     + \mat{R}_\downarrow\,\vect{u}^+(\tbot)
+     + \vect{s}_\downarrow\bigr)
+   + \vect{b}_{\text{pos}}^{\text{eff}}.
+\end{align}
+Rearranging for $\vect{u}^+(\tbot)$:
+\begin{equation}\label{eq:bc_system}
+  \bigl(\mat{I}_N - \mat{R}_{\text{surf}}\,\mat{R}_\downarrow\bigr)\,
+  \vect{u}^+(\tbot)
+  = \mat{R}_{\text{surf}}\,
+    \bigl(\mat{T}_\downarrow\,\vect{b}_{\text{neg}}
+    + \vect{s}_\downarrow\bigr)
+  + \vect{b}_{\text{pos}}^{\text{eff}}.
+\end{equation}
+This is an $N\!\times\!N$ linear system---\emph{half} the size
+of the $2N\!\times\!2N$ Stamnes--Conklin boundary system in the
+standard eigendecomposition approach.  It is well-conditioned because
+$\|\mat{R}_{\text{surf}}\|\cdot\|\mat{R}_\downarrow\|<1$ for
+$\omega<1$.
+
+\subsection{Recovery of the ToA intensity}
+
+Having solved~\eqref{eq:bc_system} for $\vect{u}^+(\tbot)$,
+the upward intensity at the top of atmosphere is recovered by
+direct substitution into~\eqref{eq:interaction_up}:
+\begin{equation}\label{eq:recovery}
+  \vect{u}^+(0)
+  = \mat{R}_\uparrow\,\vect{b}_{\text{neg}}
+  + \mat{T}_\uparrow\,\vect{u}^+(\tbot)
+  + \vect{s}_\uparrow.
+\end{equation}
+The downward intensity at the top is simply
+$\vect{u}^-(0)=\vect{b}_{\text{neg}}$ (the prescribed boundary
+condition).
+
+\subsection{Flux computation}
+
+The upward diffuse flux at $\tau=0$ is
+\begin{equation}
+  F_{\text{up}}(0)
+  = 2\pi\sum_{i=1}^{N} w_i\,\mu_i\,u^{m=0}_i(0),
+\end{equation}
+using only the $m\!=\!0$ Fourier mode (higher modes integrate to zero
+over azimuth; cf.\ section~3.8 of the Documentation).
+
+
+%======================================================================
+\section{Convergence and Numerical Properties}\label{sec:convergence}
+%======================================================================
+
+\subsection{$O(h^2)$ convergence}
+
+The first-order Magnus method with midpoint quadrature has global error
+$O(h^2)$, where $h=\tbot/K$.  This means doubling $K$ should reduce
+the error by a factor of~4.  \Cref{tab:convergence} confirms this
+experimentally for representative test cases spanning thin to very
+thick atmospheres.
+
+\begin{table}[h]\centering
+\caption{Convergence of the star-product Magnus integrator.  ``Ratio''
+is $\text{err}(K)/\text{err}(2K)$; the theoretical value is 4.0 for
+$O(h^2)$.}\label{tab:convergence}
+\begin{tabular}{llccc}
+\toprule
+Test & Parameters
+  & $K\!=\!400$ & $K\!=\!800$ & Ratio \\
+\midrule
+2c & $\tbot\!=\!5$, $\omega\!=\!0.5$, Rayleigh
+  & $9.2\times 10^{-4}$ & $2.3\times 10^{-4}$ & 4.00 \\
+1d & $\tbot\!=\!32$, $\omega\!=\!0.2$, isotropic
+  & $4.0\times 10^{-2}$ & $1.0\times 10^{-2}$ & 3.89 \\
+1f & $\tbot\!=\!32$, $\omega\!=\!0.99$, isotropic
+  & $2.7\times 10^{-2}$ & $7.0\times 10^{-3}$ & 3.94 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Step-size requirements}
+
+Two constraints determine the minimum number of steps $K$:
+\begin{enumerate}[nosep]
+\item \textbf{Magnus convergence radius}: $h\cdot\|\mat{A}\|_2 < \pi$,
+  i.e.\ $K > \lambda_{\max}\tbot/\pi$.
+\item \textbf{Per-step conditioning}: $\cond(\mat{a})$ should remain
+  modest; empirically $h\cdot\lambda_{\max}\lesssim 1$--$2$ suffices,
+  i.e.\ $K \gtrsim \lambda_{\max}\tbot/2$.
+\end{enumerate}
+The second constraint is typically the binding one.  For $\tbot=32$ and
+$\lambda_{\max}\approx 14$: $K\gtrsim 224$.  In the test suite,
+$K=2500$ is used for $\tbot=32$ to achieve $<0.5\%$ relative error.
+
+\subsection{Boundedness verification}
+
+Across all 46 test cases in the test suite (spanning $\tbot$ from
+0.03125 to 32, $\omega$ from $10^{-10}$ to $1\!-\!10^{-6}$, isotropic
+to HG $g\!=\!0.85$, with and without BDRF and boundary sources), the
+following invariants hold at every step of the accumulation:
+\begin{itemize}[nosep]
+\item $\cond(\mat{a}_k) \leq 1.30$
+  (block of each Magnus step),
+\item $\cond(\mat{I}-\mat{r}_\uparrow\mat{R}_\downarrow) \leq 1.06$
+  (resolvent in star product),
+\item $\|\mat{R}_\uparrow\|_2 \leq 0.94$
+  (reflection always sub-unitary for $\omega<1$),
+\item $\|\mat{T}\|_2 \leq 1.0$
+  (transmission bounded).
+\end{itemize}
+No numerical instability has been observed for any optical depth or
+albedo combination.
+
+\subsection{Comparison with pydisort eigendecomposition}
+
+For constant-$\omega$ / constant-phase-function problems (test suites
+1--5, 8, 11), the pydisort eigendecomposition solver provides an exact
+single-layer reference.  The Magnus solver matches this reference
+to within the expected $O(h^2)$ discretisation error:
+\begin{itemize}[nosep]
+\item Thin atmospheres ($\tbot\leq 2$): relative errors $< 5\times 10^{-3}$
+  with $K=100$--$200$.
+\item Thick atmospheres ($\tbot=5$--$32$): relative errors $< 5\times 10^{-3}$
+  with $K=200$--$2500$.
+\end{itemize}
+
+For $\tau$-varying problems (test suites 6--7, 9--10), the Magnus
+solver serves as the reference, and the multi-layer pydisort
+approximation (piecewise-constant midpoint rule with $N_L$ layers)
+converges toward the Magnus solution as $N_L\to\infty$, confirming
+consistency between the two approaches.
+
+
+%======================================================================
+\section{Comparison with Related Methods}\label{sec:comparison}
+%======================================================================
+
+The star-product Magnus integrator is not the only algorithm for
+vertically inhomogeneous atmospheres.  This section compares it with
+two established approaches: the piecewise-homogeneous eigendecomposition
+used by SCIATRAN and standard DISORT variants, and the adding-doubling
+method.
+
+\subsection{First-order Magnus and multi-layer DISORT}\label{sec:magnus_equiv}
+
+A key observation is that the first-order Magnus integrator is
+\emph{mathematically equivalent} to a multi-layer discrete-ordinate
+solver with midpoint evaluation of optical properties.
+
+In the standard multi-layer DISORT approach~\cite{stamnes1988}, the
+atmosphere is divided into $K$ homogeneous layers, each with constant
+optical properties evaluated at some representative depth.  Within layer
+$k$, the coefficient matrix $\mat{A}_k$ is constant, and the solution
+is $\exp(h\mat{A}_k)$.  When the representative depth is the
+midpoint $\tau_{k+1/2}$, this is \emph{identical} to the first-order
+Magnus step~\eqref{eq:magnus_step}:
+\begin{equation}\label{eq:equiv}
+  \underbrace{\exp\bigl(h\,\mat{A}(\tau_{k+1/2})\bigr)}_{\text{first-order Magnus}}
+  \;=\;
+  \underbrace{\exp\bigl(h\,\mat{A}_k\bigr)\big|_{\mat{A}_k\,=\,\mat{A}(\tau_{k+1/2})}}_{\text{multi-layer DISORT, midpoint rule}}.
+\end{equation}
+Both yield $O(h^2)$ global convergence.  The difference is purely
+\emph{implementational}: DISORT computes $\exp(h\mat{A}_k)$ via
+eigendecomposition and the Stamnes--Conklin substitution, while the
+Magnus integrator uses \texttt{scipy.linalg.expm} (Pad\'e
+scaling-and-squaring).  For the $\tau$-independent case, the
+eigendecomposition is preferable because a \emph{single} decomposition
+yields the exact solution; the Magnus approach should not be used for
+such problems.  For $\tau$-varying problems, both implementations yield
+the same mathematical approximation at first order.
+
+\subsection{SCIATRAN's approach}\label{sec:sciatran}
+
+The SCIATRAN radiative transfer model~\cite{rozanov2014} is among the
+most widely used operational solvers for vertically inhomogeneous
+atmospheres in the UV--visible--SWIR range.  Its plane-parallel
+discrete-ordinate solver employs:
+\begin{enumerate}[nosep]
+\item \textbf{Profile discretisation}: optical properties (extinction
+  coefficient, single-scattering albedo, phase-function moments) are
+  specified at a set of altitude grid points.  Between grid points, the
+  properties are interpolated---typically by \emph{linear
+  interpolation} in optical depth~\cite{rozanov2014,rozanov2005}.
+\item \textbf{Piecewise-constant layers}: each interpolation interval is
+  treated as a homogeneous layer with properties evaluated at the
+  midpoint (or at the bounding grid point, depending on the
+  configuration).
+\item \textbf{Eigendecomposition}: within each homogeneous layer, the
+  coefficient matrix $\mat{A}$ is diagonalised, yielding the eigenpairs
+  $(\lambda_j, \vect{g}_j)$.  The solution within the layer is a linear
+  combination of exponentials $e^{\pm\lambda_j\tau}$, with coefficients
+  determined by the inter-layer boundary conditions.
+\item \textbf{Boundary coupling}: the layers are coupled via a
+  banded linear system (the Stamnes--Conklin
+  approach~\cite{stamnes1984}) or via matrix-operator/adding
+  coupling.
+\end{enumerate}
+
+The profile representation by linear splines gives $O(h^2)$
+approximation of the underlying continuous profile, which is
+well-matched to the $O(h^2)$ error of the piecewise-constant solver.
+This is a sound design: a higher-order profile interpolation (e.g.\
+cubic splines) would be \emph{wasted} if the solver still treats each
+layer as homogeneous, since the solver error would dominate.
+
+\begin{remark}[CDIPI is unrelated]
+SCIATRAN's ``CDIPI'' solver~\cite{rozanov2005} (Combined
+Differential-Integral approach involving Picard Iterative approximation)
+is designed for \emph{spherical geometry}, not for improving the
+discrete-ordinate solver in plane-parallel geometry.  It should not be
+confused with the matrix-exponential formalism discussed in
+\Cref{sec:matexp_rt}.
+\end{remark}
+
+\subsection{The adding-doubling method}\label{sec:adding_doubling}
+
+The adding-doubling method~\cite{hansen1974,vandehulst1980,
+evans1991} computes the reflection and transmission of a slab by:
+\begin{enumerate}[nosep]
+\item \textbf{Initialisation}: compute $\mat{R}$ and $\mat{T}$ for a
+  very thin slab (small $\Delta\tau$) using a local method---either
+  first-principles single-scattering, eigendecomposition, or a
+  truncated Peano--Baker (Neumann) series.
+\item \textbf{Doubling}: for a homogeneous slab, combine the thin-slab
+  operators with themselves via the interaction principle (star product)
+  to double the optical depth.  After $s$ doublings, the slab has
+  $\Delta\tau\cdot 2^s$ optical thickness.
+\item \textbf{Adding}: for an inhomogeneous atmosphere, combine
+  \emph{different} thin slabs via the same interaction principle.
+\end{enumerate}
+
+The star product used in step~3 is \emph{identical} to the Redheffer
+star product of \Cref{sec:star_product}.  The difference from our
+Magnus approach is in the initialisation (step~1): adding-doubling
+typically uses eigendecomposition or first-order scattering, while we
+use the Magnus matrix exponential.
+
+\begin{remark}[Sub-step doubling for large $N$]
+For large numbers of streams ($N \gg 4$), the Magnus step size is
+constrained by $h \cdot \lambda_{\max} \lesssim 1$, where
+$\lambda_{\max} \sim 1/\mu_{\min} \sim O(N^2)$.  An alternative is
+\emph{sub-step doubling}: compute the Magnus exponential for a very thin
+sub-step where $h'\cdot\lambda_{\max}\lesssim 1$, then self-double via
+the star product $s=\lceil\log_2(h/h')\rceil$ times.  This is
+precisely the doubling step of adding-doubling, with the Magnus
+exponential serving as the initialisation.  It decouples the accuracy
+step size (set by the rate of change of $\mat{A}(\tau)$) from the
+conditioning step size (set by $\lambda_{\max}$).
+\end{remark}
+
+\subsection{The matrix-exponential formalism in radiative transfer}
+\label{sec:matexp_rt}
+
+The use of matrix exponentials as a unifying framework for radiative
+transfer was developed systematically by Doicu and
+Trautmann~\cite{doicu2009}.  Efremenko et
+al.~\cite{efremenko2017} proved the formal equivalence of three
+approaches under the same optical-property discretisation:
+\begin{enumerate}[nosep]
+\item the \textbf{discrete-ordinate method} (eigendecomposition of
+  $\mat{A}$),
+\item the \textbf{matrix-operator method} (adding-doubling with
+  $\mat{R}$, $\mat{T}$ operators), and
+\item the \textbf{matrix Riccati equation}~\eqref{eq:riccati}
+  (invariant imbedding).
+\end{enumerate}
+All three are different \emph{implementations} of $\exp(h\mat{A})$:
+eigendecomposition computes it via diagonalisation, the matrix-operator
+method via repeated squaring of thin-slab operators, and the Riccati
+equation via the associated M\"obius
+transformation~\eqref{eq:mobius}~\cite{efremenko2017}.
+
+The Magnus expansion provides a fourth implementation: direct
+Pad\'e approximation of $\exp(\mat{\Omega})$.  Its distinctive
+advantage is not at first order (where all methods are equivalent) but
+at \emph{higher orders}, where the commutator structure of the Magnus
+expansion has no analog in piecewise-constant frameworks
+(\Cref{sec:higher_order}).
+
+\subsection{Computational comparison}\label{sec:comp_cost}
+
+\Cref{tab:comparison} summarises the key properties of the three
+approaches for a $\tau$-varying atmosphere with $2N$ streams and $K$
+steps/layers.
+
+\begin{table}[h]\centering
+\caption{Comparison of methods for vertically inhomogeneous atmospheres.}
+\label{tab:comparison}
+\begin{tabular}{lccc}
+\toprule
+& \textbf{Multi-layer DISORT} & \textbf{Adding-doubling} & \textbf{Magnus} \\
+\midrule
+Per-step init.
+  & eigendecomp.\ $O(N^3)$
+  & eigendecomp.\ $O(N^3)$
+  & \texttt{expm}\ $O(N^3)$ \\
+Step combination
+  & banded solve
+  & star product
+  & star product \\
+Overall cost
+  & $O(K N^3)$
+  & $O(K N^3)$
+  & $O(K N^3)$ \\
+Large-$N$ constraint
+  & none\textsuperscript{a}
+  & $\Delta\tau\!\cdot\!\lambda_{\max}\!\lesssim\!1$
+  & $h\!\cdot\!\lambda_{\max}\!\lesssim\!1$\textsuperscript{b} \\
+Higher-order ext.
+  & Richardson extrap.
+  & not standard
+  & 4th-order Magnus \\
+Profile repr.
+  & piecewise const.
+  & piecewise const.
+  & continuous \\
+Adaptive error est.
+  & none standard
+  & none standard
+  & commutator norm \\
+\bottomrule
+\end{tabular}
+\par\smallskip
+{\footnotesize\textsuperscript{a}Eigendecomposition is exact for
+constant $\mat{A}$; step size limited only by profile
+resolution.\quad\textsuperscript{b}Remedied by sub-step doubling
+(\Cref{sec:adding_doubling}).}
+\end{table}
+
+The Peano--Baker series (the Volterra--Neumann series of nested
+integrals) provides yet another representation of the
+solution.  However, it converges more slowly than the Magnus expansion
+at the same truncation order: the Peano--Baker series at order $p$
+is equivalent to the Taylor expansion of $\exp(\mat{\Omega})$, while
+the Magnus expansion at order $p$ preserves the Lie-group structure
+of the solution manifold (the group of invertible
+matrices)~\cite{iserles2000,blanes2009}.  In practice, this means the
+Magnus expansion gives better accuracy per function evaluation.
+
+
+%======================================================================
+\section{Higher-Order Magnus and Solver-Function Smoothness}
+\label{sec:higher_order}
+%======================================================================
+
+\subsection{The fourth-order Magnus integrator}\label{sec:magnus4}
+
+The first-order Magnus method uses a single midpoint evaluation of
+$\mat{A}(\tau)$ per step, yielding
+$\mat{\Omega}\approx h\mat{A}(\tau_{k+1/2})$.
+The \emph{fourth-order} Magnus method~\cite{blanes2009,iserles2000}
+uses two Gauss--Legendre quadrature points within each step:
+\begin{equation}\label{eq:GL_points}
+  \tau_1 = \tau_k + \bigl(\tfrac{1}{2}-\tfrac{\sqrt{3}}{6}\bigr)h,
+  \qquad
+  \tau_2 = \tau_k + \bigl(\tfrac{1}{2}+\tfrac{\sqrt{3}}{6}\bigr)h,
+\end{equation}
+and approximates the Magnus exponent as
+\begin{equation}\label{eq:magnus4}
+  \mat{\Omega} \approx \frac{h}{2}\bigl(\mat{A}_1+\mat{A}_2\bigr)
+  + \frac{\sqrt{3}\,h^2}{12}\bigl[\mat{A}_2,\,\mat{A}_1\bigr],
+\end{equation}
+where $\mat{A}_j=\mat{A}(\tau_j)$ and $[\mat{A}_2,\mat{A}_1]=
+\mat{A}_2\mat{A}_1-\mat{A}_1\mat{A}_2$ is the matrix commutator.
+
+The first term, $(h/2)(\mat{A}_1+\mat{A}_2)$, is a two-point
+Gauss--Legendre quadrature of $\int\mat{A}\dd\tau$ (which alone would
+give a fourth-order Runge--Kutta-type method for a scalar or commuting
+$\mat{A}$).  The second term, the commutator correction, captures the
+\emph{non-commutativity} of scattering at different depths---i.e.\ the
+fact that the order in which radiation encounters different scattering
+regimes matters.  The global convergence is $O(h^4)$.
+
+\begin{remark}[No piecewise-constant analog]
+The commutator correction~\eqref{eq:magnus4} has no counterpart in
+piecewise-constant frameworks (multi-layer DISORT, standard
+adding-doubling).  Within a homogeneous layer, $\mat{A}$ is constant,
+so $[\mat{A},\mat{A}]=\mat{0}$---the commutator vanishes identically.
+Between layers, the inter-layer coupling (boundary conditions or star
+product) handles the transition, but it does not capture the continuous
+non-commutativity that the Magnus commutator encodes within each step.
+To achieve $O(h^4)$ convergence with a piecewise-constant method, one
+must take $K\propto h^{-1}\propto\varepsilon^{-1/2}$ layers (for
+tolerance $\varepsilon$), whereas the fourth-order Magnus achieves
+$K\propto\varepsilon^{-1/4}$---a substantial reduction in the number
+of steps for the same accuracy.
+\end{remark}
+
+\subsection{Solver-function smoothness matching}\label{sec:smoothness}
+
+A $p$-th order numerical integrator can only achieve its full
+convergence rate if the integrand is sufficiently smooth.
+Specifically, an $O(h^p)$ Magnus integrator applied to
+$\vect{I}'=\mat{A}(\tau)\vect{I}+\vect{S}(\tau)$ requires
+$\mat{A}\in C^{p-1}$ to achieve its full convergence rate.  If
+$\mat{A}(\tau)$ is only $C^{q-1}$ with $q<p$, the method saturates at
+$O(h^q)$ because the higher derivatives appearing in the truncation
+error are unbounded or
+discontinuous~\cite{blanes2009,hairer2006}.  In particular, the
+fourth-order method ($p\!=\!4$) requires $\mat{A}\in C^3$---i.e.\ a
+locally cubic profile---since the two-point Gauss--Legendre quadrature
+integrates cubic polynomials exactly, and the leading error involves the
+fourth derivative of $\mat{A}$.
+
+This creates a \emph{matching principle}: the order of the numerical
+solver should be matched to the smoothness of the optical-property
+profile representation:
+\begin{itemize}[nosep]
+\item \textbf{Linear spline profile ($C^0$) + first-order Magnus}:
+  $O(h^2)$ convergence.  The profile has slope discontinuities at
+  grid points, limiting the useful Taylor expansion of $\mat{A}(\tau)$
+  to the constant and linear terms.  A first-order Magnus (or
+  equivalently, multi-layer DISORT with midpoint evaluation) is
+  perfectly matched.
+
+\item \textbf{Cubic spline profile ($C^2$) + fourth-order Magnus}:
+  $O(h^3)$ convergence.  The cubic spline has continuous second
+  derivatives but discontinuous third derivatives at knots, so the
+  method does not quite achieve its full $O(h^4)$ rate.
+  For the full $O(h^4)$, a $C^3$ representation (e.g.\ quintic Hermite
+  splines) would be needed.
+
+\item \textbf{$C^3$ or smoother profile + fourth-order Magnus}:
+  $O(h^4)$ convergence.  This is the natural pairing for retrieval
+  problems where the physical profile is smooth (e.g.\ adiabatic
+  clouds, where $\omega(\tau)$ and $g(\tau)$ are $C^\infty$).
+
+\item \textbf{Linear spline + fourth-order Magnus}: the solver achieves
+  only $O(h^2)$, because the commutator correction amplifies the slope
+  discontinuities at the spline knots, producing no net accuracy gain
+  over first-order.  The additional cost of evaluating
+  $[\mat{A}_2,\mat{A}_1]$ is wasted.
+
+\item \textbf{Cubic spline + first-order Magnus}: the solver achieves
+  $O(h^2)$ despite the profile being $C^2$.  The smooth profile
+  information is not exploited; the smooth data justifies a
+  higher-order solver that is not being used.
+\end{itemize}
+
+This matching principle explains the design of existing solvers:
+SCIATRAN's use of linear spline profiles with a piecewise-constant
+eigendecomposition solver is well-matched at $O(h^2)$.  Neither
+component limits the other.
+
+\subsection{Application to adiabatic cloud profiles}\label{sec:adiabatic}
+
+In an adiabatic liquid water cloud, the liquid water content increases
+linearly with height from cloud base~\cite{brenguier2000}, and the
+effective radius $r_e$ increases monotonically from cloud top to cloud
+base (in optical depth coordinates).  The mapping $r_e\to(\omega,g)$
+through Mie scattering theory~\cite{hansen1974} is smooth (analytic,
+in fact), so the resulting profiles $\omega(\tau)$ and $g(\tau)$ inherit
+the smoothness of $r_e(\tau)$.
+
+For a purely adiabatic cloud with a smooth $r_e(\tau)$ profile:
+\begin{itemize}[nosep]
+\item $\omega(\tau)$ and $g_\ell(\tau)$ are $C^\infty$ within the cloud.
+\item The coefficient matrix $\mat{A}(\tau)$ inherits this smoothness.
+\item A fourth-order Magnus integrator achieves its full $O(h^4)$
+  convergence, requiring far fewer steps than a first-order method for
+  the same accuracy.
+\end{itemize}
+
+This is the primary intended use case for higher-order Magnus: cloud
+retrieval problems where the microphysical profile is smooth and the
+forward model must be evaluated repeatedly (e.g.\ in an iterative
+inversion), making the step-count reduction from $O(\varepsilon^{-1/2})$
+to $O(\varepsilon^{-1/4})$ operationally significant.
+
+\subsection{Profiles with precipitation perturbations}\label{sec:precip}
+
+When precipitation develops within a cloud (drizzle or rain), large
+drops from higher altitudes fall through lower cloud layers, creating a
+bimodal drop size distribution.  The effective radius and scattering
+properties change abruptly at the precipitation onset
+level~\cite{pruppacher1997}, introducing:
+\begin{itemize}[nosep]
+\item A discontinuity or near-discontinuity in $dr_e/d\tau$
+  (the profile is continuous but its derivative is not).
+\item A corresponding $C^0$ or worse discontinuity in $\mat{A}(\tau)$.
+\end{itemize}
+
+At such boundaries, the fourth-order Magnus commutator correction
+encounters a large or undefined $\mat{A}'(\tau)$, and the convergence
+degrades to $O(h^2)$ or worse unless the step boundaries are aligned
+with the discontinuity.
+
+The practical strategy for mixed profiles is:
+\begin{enumerate}[nosep]
+\item \textbf{Detect discontinuities} in the prescribed $r_e(\tau)$
+  profile (locations where the profile or its derivative changes
+  abruptly).
+\item \textbf{Align step boundaries} with these discontinuities---i.e.\
+  place a star-product interface at each $C^0$ boundary.
+\item \textbf{Use higher-order Magnus within smooth segments} and
+  first-order across discontinuities.
+\end{enumerate}
+
+This mixed-order strategy is a natural extension of the solver and
+requires no fundamental changes to the algorithm: the star product
+combines arbitrary slabs regardless of how each slab's operators were
+computed.
+
+
+%======================================================================
+\section{Toward Adaptive Step Control}\label{sec:adaptivity}
+%======================================================================
+
+\subsection{Adaptivity in existing methods}\label{sec:adapt_existing}
+
+Neither SCIATRAN nor standard adding-doubling implementations include
+adaptive layer/step placement:
+\begin{itemize}[nosep]
+\item \textbf{SCIATRAN}~\cite{rozanov2014}: the altitude grid is
+  user-specified.  While the user can choose a finer grid in regions of
+  rapid variation (e.g.\ near cloud boundaries), the solver itself does
+  not adjust the grid automatically.  No built-in local error estimator
+  is available.
+\item \textbf{Adding-doubling}~\cite{hansen1974}: the standard method
+  uses uniform doubling (powers of~2 in optical depth).  For
+  inhomogeneous atmospheres, non-uniform adding is possible in
+  principle, but there is no standard local error indicator to guide
+  step placement.
+\end{itemize}
+
+Neither method is fundamentally \emph{prevented} from being
+adaptive---the mathematics admits variable step sizes.  The obstacle is
+the lack of a cheap, reliable local error estimator.
+
+\subsection{The commutator error indicator}\label{sec:commutator}
+
+The Magnus expansion provides a natural and essentially free error
+indicator: the commutator
+\begin{equation}\label{eq:commutator_indicator}
+  \eta_k = h_k^2\,\bigl\|\bigl[\mat{A}(\tau_k),\;\mat{A}(\tau_k+h_k)\bigr]\bigr\|_F,
+\end{equation}
+where $\|\cdot\|_F$ is the Frobenius norm.
+
+\textbf{Interpretation.}  The commutator measures how much $\mat{A}$
+changes \emph{direction} (not just magnitude) across a step:
+\begin{itemize}[nosep]
+\item \textbf{Exactly zero} when $\mat{A}$ is constant---i.e.\ in a
+  homogeneous atmosphere, or within a homogeneous layer.  In such
+  regions, arbitrarily large steps are safe (up to the Magnus
+  convergence radius).
+\item \textbf{Small} when $\mat{A}$ varies slowly and smoothly---e.g.\
+  in the interior of an adiabatic cloud, where $r_e(\tau)$ changes
+  gradually.
+\item \textbf{Large} at cloud boundaries, precipitation onset levels,
+  or any region where the scattering regime changes rapidly.
+\end{itemize}
+
+For the fourth-order Magnus~\eqref{eq:magnus4}, the commutator
+$[\mat{A}_2,\mat{A}_1]$ is \emph{already computed} as part of the
+step.  Its norm therefore provides an error indicator at
+\emph{zero additional cost}.  Even for the first-order Magnus, evaluating
+$[\mat{A}(\tau_k),\mat{A}(\tau_k+h_k)]$ requires only two matrix
+multiplications ($O(N^3)$), which is negligible compared to the
+\texttt{expm} cost.
+
+\subsection{Embedded-pair error estimation}\label{sec:embedded_pair}
+
+The most rigorous approach to adaptive step control uses an
+\emph{embedded pair}: two methods of different order applied to the same
+step, whose difference provides a direct local truncation error
+estimate.  For Magnus integration, a natural embedded pair combines the
+first-order (midpoint) and fourth-order (Gauss--Legendre) methods.
+
+Given a step $[\tau_k,\,\tau_k+h_k]$, the first-order Magnus exponent
+is
+\begin{equation}\label{eq:magnus1_embed}
+  \mat{\Omega}_2 = h_k\,\mat{A}\bigl(\tau_k+\tfrac{h_k}{2}\bigr),
+\end{equation}
+while the fourth-order exponent~\eqref{eq:magnus4} is
+\begin{equation}\label{eq:magnus4_embed}
+  \mat{\Omega}_4 = \frac{h_k}{2}(\mat{A}_1+\mat{A}_2)
+  + \frac{\sqrt{3}\,h_k^2}{12}[\mat{A}_2,\mat{A}_1],
+\end{equation}
+where $\mat{A}_1,\mat{A}_2$ are evaluated at the two Gauss--Legendre
+points~\eqref{eq:GL_points}.  Both exponents are computed from the same
+step, and the local truncation error is estimated by
+\begin{equation}\label{eq:embed_error}
+  \varepsilon_k = \bigl\|\operatorname{expm}(\mat{\Omega}_4)
+  - \operatorname{expm}(\mat{\Omega}_2)\bigr\|.
+\end{equation}
+
+\textbf{Cost.}  The fourth-order method requires two $\mat{A}$
+evaluations (at the Gauss--Legendre points) plus one commutator (two
+$N\!\times\!N$ multiplications).  The first-order method adds one
+$\mat{A}$ evaluation (at the midpoint) and one \texttt{expm} call.  The
+total per-step overhead is approximately $2\times$ the cost of a single
+first-order step.  However, since the fourth-order result is used to
+\emph{advance} the solution (not merely to estimate the error), each
+accepted step achieves $O(h^4)$ accuracy, and far fewer steps are needed
+in smooth regions.
+
+\textbf{Relation to the commutator indicator.}  When the dominant
+source of error is the commutator correction, the embedded error
+$\varepsilon_k$ is well-approximated by
+$\|\operatorname{expm}(\mat{\Omega}_4)
+-\operatorname{expm}(\mat{\Omega}_2)\|\approx C\,\eta_k$, where
+$\eta_k$ is the commutator indicator~\eqref{eq:commutator_indicator}.
+In such regions, $\eta_k$ is a reliable and cheaper proxy for
+$\varepsilon_k$.  The full embedded error is needed only where the
+commutator-based estimate is unreliable (e.g.\ near discontinuities in
+$\mat{A}$, where higher-order terms dominate).
+
+\subsection{Adaptive Magnus step control}\label{sec:adapt_magnus}
+
+Based on the embedded-pair error estimator, we outline an adaptive
+strategy for the Magnus integrator (not yet implemented):
+
+\begin{enumerate}
+\item \textbf{Step-size ceiling}: regardless of the accuracy criterion,
+  the step size must satisfy the \emph{stability} constraint from
+  \Cref{sec:convergence}:
+  \begin{equation}\label{eq:h_max}
+    h_k \;\leq\; h_{\max} \;=\; \frac{c}{\lambda_{\max}},
+    \qquad c \approx 1\text{--}2,
+  \end{equation}
+  where $\lambda_{\max}\approx 1/\mu_{\min}$ is the spectral radius of
+  $\mat{A}$ (\Cref{sec:convergence}).  This ceiling is a hard constraint
+  that cannot be relaxed by any accuracy criterion---even in a perfectly
+  homogeneous atmosphere ($\eta_k=0$), the step size may not exceed
+  $h_{\max}$.
+
+\item \textbf{Step acceptance}: at each step, compute the embedded
+  error~\eqref{eq:embed_error}.
+  \begin{itemize}[nosep]
+  \item If $\varepsilon_k < \varepsilon_{\text{tol}}$: \textbf{accept}
+    the step (using the fourth-order result to advance the solution) and
+    attempt to \textbf{grow} the next step to
+    $\min(\alpha\,h_k,\,h_{\max})$ with $\alpha\in(1,2]$.
+  \item If $\varepsilon_k > \varepsilon_{\text{tol}}$: \textbf{reject}
+    the step, halve $h$, and retry.
+  \end{itemize}
+  Where the commutator indicator $\eta_k$ is a reliable proxy (smooth
+  regions), it may be used in place of the full embedded error to avoid
+  the second \texttt{expm} call.
+
+\item \textbf{Order selection}: in smooth regions (small
+  $\varepsilon_k$), use fourth-order Magnus for maximum efficiency.
+  Near detected discontinuities (large $\varepsilon_k$ that does not
+  decrease sufficiently under halving), fall back to first-order Magnus,
+  which remains $O(h^2)$ for any $\mat{A}\in L^1$.
+
+\item \textbf{Star-product accumulation}: the Redheffer star product is
+  agnostic to step size---each step produces slab operators that are
+  combined regardless of their width.  Variable step sizes and
+  mixed-order steps require no changes to the star product machinery.
+\end{enumerate}
+
+The effective step size at each point is
+\begin{equation}\label{eq:h_effective}
+  h_k = \min\bigl(h_{\text{accuracy}}(\varepsilon_k,
+  \varepsilon_{\text{tol}}),\;h_{\max}\bigr).
+\end{equation}
+In smooth regions (e.g.\ the interior of an adiabatic cloud), the
+accuracy criterion allows large steps but the stability ceiling
+$h_{\max}$ is binding.  In rapidly varying regions (e.g.\ cloud
+boundaries), the accuracy criterion demands refinement well below
+$h_{\max}$, and the stability ceiling is inactive.
+
+\subsection{The diffusion-domain stability ceiling}
+\label{sec:diffusion_ceiling}
+
+The interplay between accuracy and stability
+in~\eqref{eq:h_effective} reveals a fundamental limitation of Magnus
+integration in the \emph{diffusion domain}---regions where the
+atmosphere is optically thick and highly scattering ($\omega\to 1$).
+
+The coefficient matrix $\mat{A}(\tau)$ has eigenvalues $\pm k_j$ where
+$k_{\max}\approx 1/\mu_{\min}$ (ballistic modes) and
+$k_{\min}\approx\sqrt{3(1-\omega)(1-\omega g)}$ (diffusion mode).  In
+the diffusion domain, the accuracy of the solution is governed by
+$k_{\min}$: the physical observable (diffuse reflectance) converges at a
+rate proportional to $\exp(-2k_{\min}\tau)$, so steps of size
+$h\sim 1/k_{\min}$ suffice for accuracy.  However, the Magnus stability
+ceiling~\eqref{eq:h_max} enforces $h\leq c/\lambda_{\max}$ with
+$\lambda_{\max}\approx k_{\max}$, which is independent of $\omega$.
+
+The \emph{eigenvalue gap ratio}
+\begin{equation}\label{eq:gap_ratio}
+  \gamma = \frac{k_{\max}}{k_{\min}}
+  \approx \frac{1/\mu_{\min}}{\sqrt{3(1-\omega)(1-\omega g)}}
+\end{equation}
+measures the severity of this mismatch.  For $\omega=0.999$, $g=0.85$,
+$N_{\text{Quad}}=8$: $k_{\max}\approx 14$, $k_{\min}\approx 0.067$,
+giving $\gamma\approx 210$.  The Magnus integrator must take at least
+$K\geq\lambda_{\max}\tau_{\text{bot}}$ steps, even though only
+$K\sim k_{\min}\tau_{\text{bot}}$ steps would suffice for accuracy.  The
+adaptive strategy of \Cref{sec:adapt_magnus} cannot help: the stability
+ceiling $h_{\max}$ is the binding constraint, and no amount of
+accuracy-based step selection can overcome it.
+
+This observation motivates a fundamentally different integration
+approach in the diffusion domain, developed in detail in
+Report~II~\cite{report2}.
+
+\subsection{Hybrid adaptive strategy}\label{sec:hybrid_adaptive}
+
+The limitations identified in \Cref{sec:diffusion_ceiling} lead
+naturally to a \emph{hybrid} strategy that uses the most efficient
+method in each regime:
+\begin{itemize}[nosep]
+\item \textbf{Non-diffusive regions} (beam-dominated, cloud boundaries,
+  optically thin layers): adaptive fourth-order Magnus with
+  embedded-pair step control (\Cref{sec:adapt_magnus}).  The beam
+  source $\propto e^{-\tau/\mu_0}$ varies on scale $\mu_0$, the
+  accuracy criterion is binding, and the stability ceiling $h_{\max}$
+  is typically inactive.
+\item \textbf{Diffusion domain} (deep interior of thick, highly
+  scattering slabs): the matrix Riccati equation
+  \begin{equation}\label{eq:riccati_preview}
+    \frac{d\mat{R}}{d\sigma}
+    = \mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
+      + \mat{R}\mat{\beta}\mat{R} + \mat{\beta},
+    \qquad \mat{R}(0) = \mat{0},
+  \end{equation}
+  where $\sigma$ is optical depth measured from the bottom of the
+  domain, is solved with a Rosenbrock--Euler method that exploits the
+  Sylvester structure of the linearised
+  equation~\cite{hairer1996,bartels1972}.  The Jacobian of
+  the Riccati right-hand side has the Kronecker-sum form
+  $\mat{J}(\mat{E})
+  = (\mat{\alpha}+\mat{R}\mat{\beta})\mat{E}
+  + \mat{E}(\mat{\alpha}+\mat{\beta}\mat{R})$
+  (a Sylvester operator), so each implicit step reduces to a
+  Sylvester equation solvable in $O(N^3)$ via Bartels--Stewart.
+  The resulting integrator is L-stable: its step size is limited only
+  by accuracy ($h\sim 1/k_{\min}$), not by the spectral
+  radius~$\lambda_{\max}$.
+  An embedded pair (Rosenbrock--Euler vs.\ Richardson extrapolation)
+  provides adaptive step-size control analogous to the Magnus embedded
+  pair.  Report~II~\cite{report2} develops this approach in detail and
+  benchmarks it against the Magnus integrator, demonstrating a
+  $\sim\!14\!\times$ reduction in step count for representative cloud
+  parameters ($\omega=0.99$, $g=0.85$, $\tau_{\text{sub}}=20$,
+  $N_{\text{Quad}}=32$).
+\end{itemize}
+
+The two domains are coupled via the Redheffer star product, which
+combines arbitrary slab operators regardless of how they were computed.
+Each domain independently produces its
+$(\mat{R}_{\text{up}},\mat{T}_{\text{up}},\mat{T}_{\text{down}},
+\mat{R}_{\text{down}},\vect{s}_{\text{up}},\vect{s}_{\text{down}})$
+operators, and the star product assembles the full-atmosphere response.
+This is a natural extension of the framework of
+\Cref{sec:star_product}: the product does not depend on the internal
+method used within each slab.
+
+\textbf{Automatic domain detection.}  The transition between regimes
+can be detected automatically during integration: when the adaptive
+Magnus step controller repeatedly hits the stability ceiling $h_{\max}$
+while the embedded error $\varepsilon_k$ is far below tolerance, this
+signals that the step count is stability-limited rather than
+accuracy-limited---precisely the signature of the diffusion domain.
+
+\subsection{Expected benefits}\label{sec:adapt_benefits}
+
+For the target application---cloud microphysics retrieval with adiabatic
+profiles---the hybrid adaptive strategy provides:
+\begin{itemize}[nosep]
+\item \textbf{Automatic coarsening} in smooth regions, where
+  $\omega(\tau)$ and $g(\tau)$ vary slowly and large steps suffice
+  (limited by either the accuracy criterion or the stability ceiling,
+  whichever is tighter).
+\item \textbf{Automatic refinement} near cloud boundaries and
+  precipitation onset levels, where optical properties change rapidly
+  and the accuracy criterion demands small steps.
+\item \textbf{Diffusion-domain efficiency}: in the deep interior of
+  thick clouds where $\omega\to 1$, the Rosenbrock--Sylvester integrator
+  breaks through the Magnus stability ceiling, reducing the step count
+  by a factor of up to~$\gamma$.  For $\omega=0.999$, $g=0.85$,
+  $N_{\text{Quad}}=8$, this is a $\sim\!200\!\times$ reduction in the
+  diffusion domain (Report~II, \S8.5).
+\item \textbf{Robustness}: the solver adjusts to the profile complexity
+  without user intervention, unlike SCIATRAN where the grid must be
+  manually tuned.  Even if the diffusion-domain solver is inaccurate,
+  the star-product coupling bounds errors at $O(\varepsilon)$ rather
+  than $O(e^{k_{\max}\tau}\varepsilon)$---there is no catastrophic
+  failure mode.
+\item \textbf{Compound savings in retrieval}: since the forward solver
+  sits inside an iterative retrieval loop, the step-count reduction
+  compounds across evaluations, potentially dominating total computation
+  time.
+\end{itemize}
+
+
+%======================================================================
+\section{Deferred Features}\label{sec:deferred}
+%======================================================================
+
+The following features are intentionally deferred from the current
+implementation:
+\begin{itemize}[nosep]
+\item \textbf{Adaptive step control}: currently the $K$ equidistant
+  steps are specified by the user.  \Cref{sec:adaptivity} outlines an
+  embedded-pair adaptive strategy for Magnus, and a hybrid scheme
+  coupling Magnus with Rosenbrock--Sylvester integration in the
+  diffusion domain; implementation is deferred.
+\item \textbf{Fourth-order Magnus}: the commutator-corrected
+  integrator~\eqref{eq:magnus4} is derived in \Cref{sec:magnus4} but
+  not yet implemented; only the first-order method is available.
+\item \textbf{Delta-$M$ scaling}~\cite{wiscombe1977}: not applied in
+  \texttt{pydisort\_magnus}.  For strongly forward-peaked phase
+  functions, the effective $\lambda_{\max}$ is smaller after delta-$M$
+  scaling, reducing the required $K$.
+\item \textbf{Nakajima--Tanaka corrections}~\cite{NT1988}: the TMS/IMS
+  post-hoc intensity corrections (section~3.7.3 of the Documentation)
+  are not applied.
+\item \textbf{Isotropic internal source}: only the collimated beam is
+  handled; thermal emission would enter as an additional source term
+  in~\eqref{eq:source}.
+\item \textbf{Non-ToA evaluation}: currently only $\tau\!=\!0$
+  intensities are returned.  Evaluation at intermediate depths would
+  require storing per-step operators and performing a partial
+  star-product accumulation.
+\end{itemize}
+
+
+%======================================================================
+\section{Summary}\label{sec:summary}
+%======================================================================
+
+The star-product Magnus integrator resolves the fundamental numerical
+stability problem that prevents na\"ive propagator accumulation from
+working in thick atmospheres.  Its key properties are:
+
+\begin{enumerate}[nosep]
+\item \textbf{Unconditional stability}: all intermediate quantities
+  are $O(1)$, regardless of total optical depth.
+  No positive exponents appear anywhere.
+\item \textbf{No eigendecomposition}: the algorithm uses only matrix
+  exponentials (via \texttt{expm}) and linear solves---no
+  diagonalisation of $\mat{A}$ is needed at any point.
+\item \textbf{$O(h^2)$ convergence}: the first-order Magnus midpoint
+  rule gives clean second-order convergence, confirmed experimentally
+  with convergence ratios $\approx 4.0$.
+\item \textbf{Native support for $\tau$-varying properties}: the
+  coefficient matrix $\mat{A}(\tau)$ and source vector $\vect{S}(\tau)$
+  are evaluated at the midpoint of each step, naturally handling
+  continuously varying $\omega(\tau)$ and phase function.
+\item \textbf{$N\!\times\!N$ boundary system}: the BC solve
+  is half the size of the standard Stamnes--Conklin system, and
+  naturally handles BDRF, $b_{\text{pos}}$, and $b_{\text{neg}}$.
+\item \textbf{Cost}: $O(K\cdot M_F\cdot N^3)$ with $O(N^2)$ memory.
+\end{enumerate}
+
+At first order, the Magnus integrator is mathematically equivalent to a
+multi-layer discrete-ordinate solver with midpoint evaluation
+(\Cref{sec:magnus_equiv}), sharing the same $O(h^2)$ convergence as
+SCIATRAN's piecewise-constant approach.  The genuine advantages of the
+Magnus framework emerge at higher orders: the fourth-order
+method~\eqref{eq:magnus4} captures non-commutativity of scattering at
+different depths via the matrix commutator, achieving $O(h^4)$
+convergence with no piecewise-constant analog.  This higher-order
+extension is most effective when matched with sufficiently smooth
+profiles (\Cref{sec:smoothness})---for example, the $C^\infty$
+profiles arising from adiabatic cloud microphysics.  The commutator provides a natural
+adaptive error indicator (\Cref{sec:commutator}), and an embedded
+order-2/4 pair (\Cref{sec:embedded_pair}) gives a rigorous local
+truncation error estimate for automatic step-size control---a capability
+unavailable in standard DISORT or adding-doubling implementations.
+In the diffusion domain, where the Magnus stability ceiling is the
+binding constraint, a hybrid strategy coupling Magnus with
+Rosenbrock--Sylvester integration (\Cref{sec:hybrid_adaptive}) breaks
+through this ceiling, potentially reducing step counts by orders of
+magnitude for highly scattering atmospheres.
+
+
+%======================================================================
+\begin{thebibliography}{99}
+
+\bibitem{HP2024doc}
+D.J.X.~Ho, ``Pythonic-DISORT: Comprehensive Documentation,''
+\texttt{docs/Pythonic-DISORT.ipynb} in the PythonicDISORT repository,
+2024.
+\url{https://pythonic-disort.readthedocs.io}
+
+\bibitem{HP2024}
+D.J.X.~Ho and R.~Pincus, ``Two-Streams Revisited: General Equations,
+Exact Coefficients, and Optimized Closures,'' \emph{J.\ Adv.\ Model.\
+Earth Syst.}, 16(10):e2024MS004504, 2024.
+\url{https://doi.org/10.1029/2024MS004504}
+
+\bibitem{magnus1954}
+W.~Magnus, ``On the exponential solution of differential equations for
+a linear operator,'' \emph{Comm.\ Pure Appl.\ Math.}, 7:649--673,
+1954.
+
+\bibitem{blanes2009}
+S.~Blanes, F.~Casas, J.A.~Oteo, and J.~Ros, ``The Magnus expansion
+and some of its applications,'' \emph{Physics Reports},
+470(5--6):151--238, 2009.
+
+\bibitem{moan2008}
+P.C.~Moan and J.~Niesen, ``Convergence of the Magnus series,''
+\emph{Found.\ Comput.\ Math.}, 8(3):291--301, 2008.
+
+\bibitem{stamnes1988}
+K.~Stamnes, S.-C.~Tsay, W.~Wiscombe, and K.~Jayaweera, ``Numerically
+stable algorithm for discrete-ordinate-method radiative transfer in
+multiple scattering and emitting layered media,'' \emph{Appl.\ Opt.},
+27(12):2502--2509, 1988.
+
+\bibitem{stamnes1984}
+K.~Stamnes and P.~Conklin, ``A new multi-layer discrete ordinate
+approach to radiative transfer in vertically inhomogeneous
+atmospheres,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+31(3):273--282, 1984.
+
+\bibitem{redheffer1962}
+R.~Redheffer, ``On the relation of transmission-line theory to
+scattering and transfer,'' \emph{J.\ Math.\ Phys.}, 41:1--41, 1962.
+
+\bibitem{grant1969}
+I.P.~Grant and G.E.~Hunt, ``Discrete space theory of radiative
+transfer.\ I.~Fundamentals,'' \emph{Proc.\ R.\ Soc.\ Lond.\ A},
+313(1513):183--197, 1969.
+
+\bibitem{plass1973}
+G.N.~Plass, G.W.~Kattawar, and F.E.~Catchings, ``Matrix operator
+theory of radiative transfer.\ 1: Rayleigh scattering,''
+\emph{Appl.\ Opt.}, 12(2):314--329, 1973.
+
+\bibitem{bellman1960}
+R.~Bellman, R.~Kalaba, and M.~Prestrud, \emph{Invariant Imbedding and
+Radiative Transfer in Slabs of Finite Thickness}, American Elsevier,
+1960.
+
+\bibitem{kreiss1962}
+H.-O.~Kreiss, ``\"Uber die Stabilit\"atsdefinition f\"ur
+Differenzengleichungen die partielle Differentialgleichungen
+approximieren,'' \emph{BIT}, 2:153--181, 1962.
+
+\bibitem{vanloan1978}
+C.F.~Van~Loan, ``Computing integrals involving the matrix
+exponential,'' \emph{IEEE Trans.\ Automat.\ Control},
+23(3):395--404, 1978.
+
+\bibitem{moler2003}
+C.~Moler and C.~Van~Loan, ``Nineteen dubious ways to compute the
+exponential of a matrix, twenty-five years later,'' \emph{SIAM
+Review}, 45(1):3--49, 2003.
+
+\bibitem{higham2005}
+N.J.~Higham, ``The scaling and squaring method for the matrix
+exponential revisited,'' \emph{SIAM J.\ Matrix Anal.\ Appl.},
+26(4):1179--1193, 2005.
+
+\bibitem{wiscombe1977}
+W.J.~Wiscombe, ``The Delta--$M$ Method: Rapid Yet Accurate Radiative
+Flux Calculations for Strongly Asymmetric Phase Functions,''
+\emph{J.\ Atmos.\ Sci.}, 34(9):1408--1422, 1977.
+
+\bibitem{NT1988}
+T.~Nakajima and M.~Tanaka, ``Algorithms for radiative intensity
+calculations in moderately thick atmospheres using a truncation
+approximation,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+40(1):51--69, 1988.
+
+\bibitem{chandrasekhar1960}
+S.~Chandrasekhar, \emph{Radiative Transfer}, Dover, 1960.
+
+\bibitem{rozanov2014}
+V.V.~Rozanov, A.V.~Rozanov, A.A.~Kokhanovsky, and J.P.~Burrows,
+``Radiative transfer through terrestrial atmosphere and ocean: Software
+package SCIATRAN,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+133:13--71, 2014.
+
+\bibitem{rozanov2005}
+A.~Rozanov, V.~Rozanov, M.~Buchwitz, A.~Kokhanovsky, and
+J.P.~Burrows, ``SCIATRAN 2.0---A new radiative transfer model for
+geophysical applications in the 175--2400~nm spectral region,''
+\emph{Adv.\ Space Res.}, 36(5):1015--1019, 2005.
+
+\bibitem{hansen1974}
+J.E.~Hansen and L.D.~Travis, ``Light scattering in planetary
+atmospheres,'' \emph{Space Sci.\ Rev.}, 16(4):527--610, 1974.
+
+\bibitem{vandehulst1980}
+H.C.~van~de~Hulst, \emph{Multiple Light Scattering: Tables, Formulas,
+and Applications}, vols.\ 1--2, Academic Press, 1980.
+
+\bibitem{evans1991}
+K.F.~Evans and G.L.~Stephens, ``A new polarized atmospheric radiative
+transfer model,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+46(5):413--423, 1991.
+
+\bibitem{doicu2009}
+A.~Doicu and T.~Trautmann, ``Discrete-ordinate method with matrix
+exponential for a pseudo-spherical atmosphere: Scalar case,''
+\emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+110(1--2):146--158, 2009.
+
+\bibitem{efremenko2017}
+D.S.~Efremenko, V.~Molina~Garc\'\i a, S.~Gimeno~Garc\'\i a, and
+A.~Doicu, ``A review of the matrix-exponential formalism in radiative
+transfer,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+196:17--45, 2017.
+
+\bibitem{iserles2000}
+A.~Iserles, H.Z.~Munthe-Kaas, S.P.~N\o rsett, and A.~Zanna,
+``Lie-group methods,'' \emph{Acta Numerica}, 9:215--365, 2000.
+
+\bibitem{hairer2006}
+E.~Hairer, C.~Lubich, and G.~Wanner, \emph{Geometric Numerical
+Integration}, 2nd ed., Springer, 2006.
+
+\bibitem{brenguier2000}
+J.-L.~Brenguier, H.~Pawlowska, L.~Sch\"uller, R.~Preusker,
+J.~Fischer, and Y.~Fouquart, ``Radiative properties of boundary layer
+clouds: Droplet effective radius versus number concentration,''
+\emph{J.\ Atmos.\ Sci.}, 57(6):803--821, 2000.
+
+\bibitem{pruppacher1997}
+H.R.~Pruppacher and J.D.~Klett, \emph{Microphysics of Clouds and
+Precipitation}, 2nd ed., Kluwer Academic Publishers, 1997.
+
+\bibitem{report2}
+D.~Halberstadt, ``Diffusion-Domain Decomposition for the Star-Product
+Magnus Integrator,'' companion report (Report~II), 2026.
+
+\bibitem{hairer1996}
+E.~Hairer and G.~Wanner, \emph{Solving Ordinary Differential
+Equations~II: Stiff and Differential-Algebraic Problems}, 2nd ed.,
+Springer, 1996.
+
+\bibitem{bartels1972}
+R.H.~Bartels and G.W.~Stewart, ``Solution of the matrix equation
+$AX+XB=C$,'' \emph{Comm.\ ACM}, 15(9):820--826, 1972.
+
+\end{thebibliography}
+
+\end{document}

@@ -20,11 +20,11 @@ from _helpers import (
 
 
 def test_11a():
-    """NQuad=4, thin isotropic (tau=0.5, omega=0.5)."""
+    """NQuad=4, medium-thick isotropic (tau=3.0, omega=0.5)."""
     print("\n--- Test 11a ---")
     NQuad = 4
     NLeg  = NQuad
-    tau_bot, omega = 0.5, 0.5
+    tau_bot, omega = 3.0, 0.5
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = np.zeros(NLeg); g_l[0] = 1.0
@@ -33,7 +33,7 @@ def test_11a():
     flux_ref, u0_ref = get_reference(
         "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )
@@ -41,15 +41,12 @@ def test_11a():
 
 
 def test_11b():
-    """NQuad=16, thin HG (tau=0.5, omega=0.9, g=0.75).
-
-    tau_bot=0.5 (not 1.0) because NQuad=16 has much wider eigenvalue range,
-    hitting the diffusion threshold at tau~0.77.
+    """NQuad=16, medium-thick HG (tau=3.0, omega=0.9, g=0.75).
     """
     print("\n--- Test 11b ---")
     NQuad = 16
     NLeg  = NQuad
-    tau_bot, omega, g = 0.5, 0.9, 0.75
+    tau_bot, omega, g = 3.0, 0.9, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
@@ -58,7 +55,7 @@ def test_11b():
     flux_ref, u0_ref = get_reference(
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _ = pydisort_magnus(
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )
@@ -71,14 +68,14 @@ def test_11c():
     NQuad = 8
     NLeg  = NQuad
     N     = NQuad // 2
-    tau_bot, omega, g = 0.5, 0.8, 0.75
+    tau_bot, omega, g = 3.0, 0.8, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
     D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
 
     # Magnus: get u_ToA_func
-    _, _, _, u_ToA_func = pydisort_magnus(
+    _, _, _, u_ToA_func, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=200,
     )

@@ -28,7 +28,7 @@ D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
 
 
 def _run(tau_bot, omega, N_steps):
-    _, flux_up, u0_ToA, _ = pydisort_magnus(
+    _, flux_up, u0_ToA, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
         N_magnus_steps=N_steps,
     )

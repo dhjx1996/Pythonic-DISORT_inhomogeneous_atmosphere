@@ -1,0 +1,1260 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+% ── Notation macros (consistent with report 1 and Pythonic-DISORT.ipynb) ───
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\cond}{\operatorname{cond}}
+\newcommand{\expm}{\operatorname{expm}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\tbot}{\tau_{\mathrm{bot}}}
+\newcommand{\tsub}{\tau_{\mathrm{sub}}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\kmax}{k_{\max}}
+\newcommand{\kmin}{k_{\min}}
+\newcommand{\Rinf}{\mat{R}_\infty}
+
+\theoremstyle{definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+\newtheorem{definition}{Definition}
+
+\title{Diffusion-Domain Decomposition for the Star-Product Magnus Integrator:\\
+Eigenvalue Structure, Matrix Riccati Equation, and Implicit Solvers}
+\author{Technical Report~II --- Extension to the Pythonic-DISORT\\
+Comprehensive Documentation}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The star-product Magnus integrator of Report~I~\cite{report1} is
+unconditionally stable for arbitrary optical depth, but the step
+count $K$ is governed by the constraint $h\cdot\lambda_{\max}\lesssim 1$,
+where $\lambda_{\max}\sim 1/\mu_{\min}$ is the fastest (ballistic)
+eigenvalue of the coefficient matrix.  In the diffusion regime---thick,
+highly scattering atmospheres where the physics is governed by the much
+smaller diffusion eigenvalue $\kmin$---this constraint forces
+$K\propto\lambda_{\max}\tbot$, even though $\kmin\ll\lambda_{\max}$.
+This report investigates whether the resulting eigenvalue gap $\gamma
+=\kmax/\kmin$ can be exploited via domain decomposition combined with
+stiff-aware solvers.
+
+We develop the matrix Riccati equation (invariant imbedding) formulation
+for the reflection operator, prove that it is stiff with the same
+eigenvalue gap $\gamma$, and show that explicit integrators (RK4) offer
+\emph{no speedup} over the Magnus approach.  Implicit solvers
+(Radau~IIA) handle the stiffness efficiently: for $N\!=\!8$ streams
+($\text{NQuad}=16$), the Radau solver requires $\approx 5000$ function
+evaluations independent of $\omega$, compared to $K\approx 914$ Magnus
+steps.  The wall-time advantage is modest (${\sim}1.5\times$) and does
+not scale with $\gamma$, because the Riccati Jacobian is
+$N^2\!\times\!N^2$ and its formation and factorisation dominate the cost.
+A three-domain star-product decomposition (non-diffusive/diffusive/non-diffusive)
+is validated as exact to discretisation accuracy.
+
+A Rosenbrock method that exploits the Sylvester structure of the
+Riccati Jacobian reduces each implicit step to an $N\!\times\!N$
+Sylvester equation (cost $O(N^3)$), avoiding the $N^2\!\times\!N^2$
+Jacobian entirely.  This method is L-stable and unconditionally stable
+at $h\cdot\lambda_{\max}$ up to 181; at $K=200$ steps it achieves a
+$14\times$ wall-time speedup over Magnus, with step count independent
+of NQuad.  Richardson extrapolation raises the reflection operator to
+second order at cost $3K$, further reducing the required $K$ by
+${\sim}10\times$ for $10^{-3}$ accuracy; the overall convergence is
+then limited by the first-order companion transmission equation, which
+a proper two-stage Rosenbrock method would resolve.
+
+These results establish the theoretical and numerical foundations for
+diffusion-domain methods while honestly delineating their current
+limitations for the problem sizes of interest.
+\end{abstract}
+
+\tableofcontents
+\vspace{1em}
+
+%======================================================================
+\section{Introduction and Motivation}\label{sec:intro}
+%======================================================================
+
+\subsection{The stability ceiling}
+
+Report~I~\cite{report1} established that the star-product Magnus
+integrator requires $K\gtrsim\lambda_{\max}\tbot$ steps to maintain
+per-step conditioning $\cond(\mat{a})\lesssim 1.3$.  Here
+$\lambda_{\max}$ is the spectral radius of the DISORT coefficient
+matrix $\mat{A}$, $h=\tbot/K$ is the step size, and the constraint is
+$h\cdot\lambda_{\max}\lesssim 1$.  For NQuad${}=8$ ($N\!=\!4$),
+$\lambda_{\max}\approx 14$; for NQuad${}=16$ ($N\!=\!8$),
+$\lambda_{\max}\approx 45$.
+
+For thick, highly scattering atmospheres---the diffusion domain---the
+physics is governed by the \emph{diffusion eigenvalue} $\kmin$, which
+is much smaller than $\lambda_{\max}$.  The step-count constraint
+$K\propto\lambda_{\max}\tbot$ forces the solver to resolve
+eigenmodes that decay on a scale $\sim 1/\lambda_{\max}$, even though
+the observable reflectance and flux change on the much longer scale
+$\sim 1/\kmin$.
+
+\begin{remark}[Numerical example]
+For $\omega=0.999$, $g=0.85$, NQuad${}=16$: $\lambda_{\max}\approx 45$,
+$\kmin\approx 0.021$, gap $\gamma\approx 2128$.  A slab of
+$\tsub=20$ requires $K\approx 913$ Magnus steps.  If the solver
+could step at the diffusion rate, $K\sim\kmin\cdot\tsub\approx 0.4$
+would suffice for accuracy---a factor of ${\sim}2000$ fewer steps.
+\end{remark}
+
+\subsection{Context: two failed approaches}
+
+Before the star-product formulation of Report~I, two approaches to
+thick-atmosphere integration were attempted and failed:
+\begin{enumerate}[nosep]
+\item \textbf{Step-by-step SVD propagator}: attempted to track
+  singular values of the $2N\!\times\!2N$ propagator at each step to
+  separate growing and decaying modes.  Failed because the DISORT
+  matrix $\mat{A}$ is non-normal, causing the per-step SVD to diverge
+  from the true singular values for $\tau\gtrsim 1.65$.
+\item \textbf{Frozen-mode propagator}: attempted to freeze the mode
+  structure from an initial eigendecomposition and propagate in the
+  eigenbasis.  Failed for the same fundamental reason: non-normality
+  of $\mat{A}$ means its eigenvectors are not orthogonal, and
+  small perturbations in the fast-decaying modes contaminate the
+  slow modes.
+\end{enumerate}
+Both approaches operated on the $2N\!\times\!2N$ propagator, where
+exponentially growing and decaying modes coexist.  The star-product
+formulation eliminates this by working entirely with $O(1)$-bounded
+$N\!\times\!N$ operators.  The question is whether the
+\emph{step-count} constraint can also be relaxed.
+
+\subsection{Outline}
+
+\Cref{sec:eigenvalue_gap} quantifies the eigenvalue gap across
+parameter space.  \Cref{sec:riccati} derives the matrix Riccati
+equation from invariant imbedding.  \Cref{sec:R_inf} develops the
+semi-infinite reflectance and its computation via iterative doubling.
+\Cref{sec:companion} presents the companion equations for
+transmission and source.  \Cref{sec:decomposition} formulates the
+three-domain star-product decomposition.  \Cref{sec:safety} addresses
+why this approach is safe compared to the failed alternatives.
+\Cref{sec:solvers} presents the numerical benchmarks comparing
+explicit and implicit solvers.  \Cref{sec:open} discusses open
+questions.
+
+
+%======================================================================
+\section{Eigenvalue Structure and the Diffusion Gap}
+\label{sec:eigenvalue_gap}
+%======================================================================
+
+\subsection{Eigenvalue reduction}
+
+The $2N\!\times\!2N$ coefficient matrix has the block structure
+(Report~I, eq.~(5)):
+\begin{equation}\label{eq:A_blocks}
+  \mat{A} = \begin{pmatrix}-\mat{\alpha} & -\mat{\beta}\\
+  \mat{\beta} & \mat{\alpha}\end{pmatrix},
+\end{equation}
+where $\mat{\alpha},\mat{\beta}\in\R^{N\times N}$ depend on $\omega$,
+the phase function, and the quadrature.  The eigenvalues of $\mat{A}$
+come in $\pm k_j$ pairs.  Defining sum and difference variables
+$\vect{v}=\vect{u}^+ + \vect{u}^-$ and $\vect{w}=\vect{u}^+ - \vect{u}^-$,
+the $2N$-dimensional eigenvalue problem decouples into two
+$N$-dimensional problems:
+\begin{equation}\label{eq:k_reduction}
+  k_j^2 = \text{eigenvalues of}\;\;
+  (\mat{\alpha}-\mat{\beta})(\mat{\alpha}+\mat{\beta}).
+\end{equation}
+All $k_j^2$ are real and non-negative for physical $\omega\in[0,1)$.
+We order $k_1 \geq k_2 \geq \cdots \geq k_N > 0$ and define:
+\begin{itemize}[nosep]
+\item $\kmax = k_1$: the \emph{ballistic} eigenvalue (fastest mode),
+\item $\kmin = k_N$: the \emph{diffusion} eigenvalue (slowest mode),
+\item $\gamma = \kmax/\kmin$: the \emph{eigenvalue gap ratio}.
+\end{itemize}
+
+\subsection{Asymptotic behaviour}
+
+The ballistic eigenvalue scales with the quadrature:
+\begin{equation}
+  \kmax \approx \frac{1}{\mu_{\min}} \quad\text{(weakly dependent on $\omega$, $g$)},
+\end{equation}
+where $\mu_{\min}$ is the smallest quadrature abscissa.  Since
+$\mu_{\min}\sim O(N^{-2})$ for Gauss--Legendre quadrature, $\kmax$
+grows as $O(N^2)$.
+
+The diffusion eigenvalue, by contrast, is a \emph{physical} quantity
+that converges rapidly with $N$.  The two-stream approximation gives
+the closed-form prediction:
+\begin{equation}\label{eq:k_2s}
+  k_{2\mathrm{s}} = \sqrt{3(1-\omega)(1-\omega g)},
+\end{equation}
+and the multi-stream $\kmin$ satisfies $\kmin/k_{2\mathrm{s}}\to 1$ as
+$\omega\to 1$ (the diffusion limit).  \Cref{tab:eigenvalues} confirms
+this numerically.
+
+\begin{table}[h]\centering
+\caption{Eigenvalue gap for representative atmospheres (NQuad${}=8$,
+$N\!=\!4$, $g=0.85$).  $k_{2\mathrm{s}}$ is the two-stream prediction~\eqref{eq:k_2s}.}
+\label{tab:eigenvalues}
+\begin{tabular}{cccccc}
+\toprule
+$\omega$ & $\kmax$ & $\kmin$ & $\gamma$ & $k_{2\mathrm{s}}$ & $\kmin/k_{2\mathrm{s}}$ \\
+\midrule
+0.50   & 12.40 & 0.661 &  18.8 & 0.929 & 0.712 \\
+0.90   & 10.68 & 0.237 &  45.1 & 0.266 & 0.893 \\
+0.99   & 10.28 & 0.068 & 151.1 & 0.069 & 0.986 \\
+0.999  & 10.23 & 0.021 & 481.8 & 0.021 & 0.999 \\
+0.9999 & 10.23 & 0.007 & 1524.9 & 0.007 & 1.000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{NQuad dependence}
+
+The gap ratio grows as $\gamma\sim O(N^2)$ because $\kmax$ grows with
+$1/\mu_{\min}$ while $\kmin$ is approximately constant.
+\Cref{tab:nquad_gap} shows this for $\omega=0.99$, $g=0.85$.
+
+\begin{table}[h]\centering
+\caption{NQuad dependence of the eigenvalue gap ($\omega=0.99$,
+$g=0.85$).}
+\label{tab:nquad_gap}
+\begin{tabular}{ccccc}
+\toprule
+NQuad & $N$ & $\kmax$ & $\kmin$ & $\gamma$ \\
+\midrule
+ 4 &  2 &   1.82 & 0.068 &   26.9 \\
+ 8 &  4 &  10.28 & 0.068 &  151.1 \\
+16 &  8 &  45.24 & 0.068 &  665.4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For operational retrievals with NQuad${}=32$ ($N\!=\!16$):
+$\kmax\sim 250$, $\gamma\sim 3700$ for $\omega=0.99$, and
+$\gamma\sim 37000$ for $\omega=0.999$.  The step-count
+$K\gtrsim\lambda_{\max}\tbot$ becomes prohibitive for thick clouds.
+
+\subsection{Variation along a cloud profile}
+
+For an adiabatic cloud profile (linear $\omega(\tau)$ and $g(\tau)$),
+the eigenvalue gap varies smoothly: from $\gamma\approx 37$ at cloud top
+($\omega=0.85$) to $\gamma\approx 69$ at cloud base ($\omega=0.96$)
+for NQuad${}=8$.  The smoothness of $\gamma(\tau)$ supports the idea
+that a diffusion-domain solver can track the slowly varying physics
+without resolving the fast modes at every step.
+
+
+%======================================================================
+\section{The Matrix Riccati Equation}\label{sec:riccati}
+%======================================================================
+
+\subsection{Derivation from invariant imbedding}
+
+The matrix Riccati equation describes how the reflection operator
+$\mat{R}(\sigma)$ of a slab of thickness $\sigma$ evolves as
+the slab is built up from below, one infinitesimal layer at a time.
+This is the \emph{invariant imbedding} formulation of
+Bellman, Kalaba, and Prestrud~\cite{bellman1960}.
+
+Consider a slab of thickness $\sigma$ with reflection operator
+$\mat{R}(\sigma)$, and append an infinitesimal layer of thickness
+$d\sigma$ at the bottom.  The infinitesimal layer has:
+\begin{align}
+  \mat{r}_\uparrow &= \mat{\beta}\dd\sigma + O(d\sigma^2), &
+  \mat{t}_\uparrow &= \mat{I} + \mat{\alpha}\dd\sigma + O(d\sigma^2), \\
+  \mat{r}_\downarrow &= \mat{\beta}\dd\sigma + O(d\sigma^2), &
+  \mat{t}_\downarrow &= \mat{I} + \mat{\alpha}\dd\sigma + O(d\sigma^2),
+\end{align}
+where $\mat{\alpha}$ and $\mat{\beta}$ are the absorption--scattering
+blocks of \eqref{eq:A_blocks}.
+
+Applying the star product (Report~I, Definition~2) to combine the
+existing slab (on top) with the infinitesimal layer (below) and
+retaining terms to first order in $d\sigma$:
+\begin{equation}\label{eq:riccati_derivation}
+  \mat{R}(\sigma+d\sigma)
+  = \mat{R} + \bigl(\mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
+    + \mat{R}\mat{\beta}\mat{R} + \mat{\beta}\bigr)\dd\sigma
+    + O(d\sigma^2).
+\end{equation}
+This yields the \textbf{matrix Riccati ODE}:
+\begin{equation}\label{eq:riccati_pos}
+  \boxed{
+  \frac{d\mat{R}}{d\sigma}
+  = \mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
+    + \mat{R}\mat{\beta}\mat{R} + \mat{\beta},
+  \qquad \mat{R}(0)=\mat{0}.
+  }
+\end{equation}
+Here $\sigma$ is the slab thickness increasing from $0$ to $\tsub$.
+
+\begin{remark}[Sign convention]\label{rem:sign_convention}
+The sign in~\eqref{eq:riccati_pos} is \emph{positive} because the slab
+is built from below: $\sigma$ increases as material is added at the
+bottom.  Report~I, equation~(16), presents the same equation with
+\emph{negative} signs; that convention describes $\mat{R}(\tau)$ as a
+function of the optical-depth coordinate $\tau$ increasing
+\emph{downward into the slab from the top}.  The two forms are related
+by $\sigma=\tsub-\tau$ (i.e., $d\sigma = -d\tau$), and both describe
+the same physical process.  For \emph{numerical integration}, the
+positive-sign form~\eqref{eq:riccati_pos} is the natural choice: one
+integrates forward from $\sigma=0$ (empty slab) to $\sigma=\tsub$
+(full sub-domain), with $\mat{R}(\sigma)$ monotonically increasing in
+norm from $\mat{0}$ toward $\Rinf$.
+\end{remark}
+
+\subsection{Connection to the M\"obius transformation}
+
+The exact one-step Riccati update is the M\"obius transformation
+(Report~I, equation~(17)):
+\begin{equation}
+  \mat{R}(\sigma+h)
+  = (\mat{a}\,\mat{R}(\sigma)+\mat{b})\,
+    (\mat{c}\,\mat{R}(\sigma)+\mat{d})^{-1},
+\end{equation}
+where $\bigl[\begin{smallmatrix}\mat{a}&\mat{b}\\
+\mat{c}&\mat{d}\end{smallmatrix}\bigr]=\exp(h\mat{A})$.
+The Magnus integrator computes this via \texttt{expm} and the
+star product, which is equivalent to applying the M\"obius
+transformation at each step.  The Riccati ODE~\eqref{eq:riccati_pos}
+is the infinitesimal generator of this M\"obius semigroup.
+
+\subsection{Linearisation and stiffness}\label{sec:linearisation}
+
+As $\sigma\to\infty$, the reflection operator converges to the
+semi-infinite reflectance $\Rinf$ (\Cref{sec:R_inf}).  Linearising
+around $\Rinf$ with $\mat{R}=\Rinf+\mat{E}$:
+\begin{equation}\label{eq:linearised}
+  \frac{d\mat{E}}{d\sigma}
+  = (\mat{\alpha}+\Rinf\mat{\beta})\mat{E}
+  + \mat{E}(\mat{\alpha}+\mat{\beta}\Rinf)
+  + \mat{E}\mat{\beta}\mat{E}.
+\end{equation}
+Dropping the quadratic term and vectorising $\vect{e}=\operatorname{vec}(\mat{E})$
+(row-major, following numpy's C-order \texttt{ravel}):
+\begin{equation}\label{eq:linearised_vec}
+  \frac{d\vect{e}}{d\sigma}
+  = \bigl[
+    (\mat{\alpha}+\Rinf\mat{\beta})\otimes\mat{I}_N
+    + \mat{I}_N\otimes(\mat{\alpha}+\mat{\beta}\Rinf)^T
+  \bigr]\,\vect{e},
+\end{equation}
+where $\otimes$ denotes the Kronecker product.  The eigenvalues of
+the coefficient matrix in~\eqref{eq:linearised_vec} are
+$\{k_i+k_j : 1\leq i,j\leq N\}$, all positive (since
+each $k_j>0$).
+
+\begin{proposition}[Stiffness of the Riccati ODE]\label{prop:stiffness}
+The Riccati ODE~\eqref{eq:riccati_pos} has the following
+eigenvalue structure near $\Rinf$:
+\begin{enumerate}[nosep]
+\item Slowest mode: eigenvalue $2\kmin$ (diffusion--diffusion
+  interaction);
+\item Fastest mode: eigenvalue $2\kmax$ (ballistic--ballistic
+  interaction);
+\item Stiffness ratio: $\kmax/\kmin = \gamma$, the same eigenvalue gap
+  as the original coefficient matrix.
+\end{enumerate}
+The Riccati ODE is therefore \emph{stiff} with stiffness ratio $\gamma$.
+For $\omega=0.99$, $g=0.85$, NQuad${}=16$: $\gamma\approx 665$.
+\end{proposition}
+
+\begin{remark}[Critical consequence for explicit integrators]
+An explicit integrator (e.g., RK4) applied to~\eqref{eq:riccati_pos}
+must satisfy the CFL-type constraint $h\cdot 2\kmax \lesssim C$ for
+stability, where $C\approx 2.8$ for RK4.  This gives
+$K\gtrsim 2\kmax\tsub/C$---the \emph{same} step constraint as the
+Magnus integrator.  The Riccati reformulation does not improve the
+situation for explicit methods.
+\end{remark}
+
+\subsection{Jacobian for implicit solvers}
+
+Vectorising the full nonlinear Riccati
+ODE~\eqref{eq:riccati_pos} with
+$\vect{r}=\operatorname{vec}(\mat{R})$ (row-major):
+\begin{equation}\label{eq:riccati_vec}
+  \frac{d\vect{r}}{d\sigma}
+  = \operatorname{vec}\bigl(
+    \mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
+    + \mat{R}\mat{\beta}\mat{R} + \mat{\beta}
+  \bigr).
+\end{equation}
+The Jacobian (required by implicit solvers such as Radau~IIA) is:
+\begin{equation}\label{eq:jac_riccati}
+  \mat{J}_R
+  = (\mat{\alpha}+\mat{R}\mat{\beta})\otimes\mat{I}_N
+  + \mat{I}_N\otimes(\mat{\alpha}+\mat{\beta}\mat{R})^T.
+\end{equation}
+This is an $N^2\!\times\!N^2$ matrix.  For $N=4$ (NQuad${}=8$):
+$16\times 16$, trivially cheap.  For $N=8$ (NQuad${}=16$):
+$64\times 64$, still manageable.  For $N=16$ (NQuad${}=32$):
+$256\times 256$, feasible but not negligible.
+
+
+%======================================================================
+\section{Semi-Infinite Reflectance}\label{sec:R_inf}
+%======================================================================
+
+\subsection{The algebraic Riccati equation}
+
+As $\sigma\to\infty$, $d\mat{R}/d\sigma\to\mat{0}$, and
+$\mat{R}\to\Rinf$ satisfying the \emph{algebraic Riccati equation}:
+\begin{equation}\label{eq:ARE}
+  \mat{\alpha}\Rinf + \Rinf\mat{\alpha}
+  + \Rinf\mat{\beta}\Rinf + \mat{\beta} = \mat{0}.
+\end{equation}
+For a homogeneous atmosphere, $\Rinf$ is the reflectance of a
+semi-infinite slab.  It exists and is unique for $\omega\in(0,1)$
+and $g\in[0,1)$~\cite{bittanti1991,lancaster1995}.  Its spectral norm satisfies
+$\|\Rinf\|_2 < 1$ (energy conservation: some energy is absorbed at
+each scattering event in the infinite slab).
+
+\subsection{Computation via iterative doubling}
+
+$\Rinf$ can be computed without solving the
+ARE~\eqref{eq:ARE} directly, by exploiting the star product.
+Start with the operators $(\mat{R},\mat{T}_\uparrow,\mat{T}_\downarrow,\mat{R}_\downarrow,\vect{s}_\uparrow,\vect{s}_\downarrow)$ for a finite slab of thickness $\tau_0$
+(computed by the Magnus star-product algorithm of Report~I).  Then
+\emph{self-double}: combine the slab with itself via the star product.
+After $s$ doublings, the slab has thickness $\tau_0\cdot 2^s$, and
+$\mat{R}_\uparrow\to\Rinf$ exponentially fast.
+
+\Cref{tab:doubling} shows convergence for three representative cases.
+
+\begin{table}[h]\centering
+\caption{Iterative doubling convergence to $\Rinf$ (NQuad${}=8$,
+initial $\tau_0=1$ with 200 Magnus steps).  $\|\Delta\mat{R}\|$ is
+$\|\mat{R}_{2\tau}-\mat{R}_\tau\|_2$.}\label{tab:doubling}
+\begin{tabular}{lccc}
+\toprule
+$\tau$ & $\omega=0.9,\;g=0.5$ & $\omega=0.99,\;g=0.85$ & $\omega=0.999,\;g=0.85$ \\
+\midrule
+  2  & $8.1\times 10^{-2}$ & $9.5\times 10^{-2}$ & $1.0\times 10^{-1}$ \\
+  4  & $5.0\times 10^{-2}$ & $1.1\times 10^{-1}$ & $1.3\times 10^{-1}$ \\
+  8  & $1.3\times 10^{-2}$ & $1.3\times 10^{-1}$ & $1.6\times 10^{-1}$ \\
+ 16  & $6.0\times 10^{-4}$ & $9.9\times 10^{-2}$ & $1.6\times 10^{-1}$ \\
+ 32  & $1.3\times 10^{-6}$ & $4.1\times 10^{-2}$ & $1.3\times 10^{-1}$ \\
+ 64  & $5.5\times 10^{-12}$ & $5.0\times 10^{-3}$ & $6.7\times 10^{-2}$ \\
+128  & $< 10^{-15}$ & $6.4\times 10^{-5}$ & $1.8\times 10^{-2}$ \\
+256  & ---          & $1.1\times 10^{-8}$ & $1.2\times 10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As expected, the convergence slows as $\omega\to 1$ ($\kmin\to 0$),
+since the number of doublings required scales as
+$s\gtrsim \log_2(1/\kmin)$.
+
+\subsection{Convergence rate}
+
+\begin{proposition}[Convergence of $\mat{R}(\tau)$ to $\Rinf$]
+\label{prop:convergence_R_inf}
+For a homogeneous slab:
+\begin{equation}
+  \|\mat{R}(\tau) - \Rinf\|_2 \leq C\,e^{-2\kmin\tau},
+\end{equation}
+where $C$ depends on the initial mismatch $\|\mat{R}(0)-\Rinf\|$.
+The rate $2\kmin$ follows from the slowest eigenvalue of the
+linearisation~\eqref{eq:linearised_vec}.
+\end{proposition}
+
+Numerically, for $\omega=0.99$, $g=0.85$ ($\kmin=0.068$):
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+$\tau$ & $\|\mat{R}(\tau)-\Rinf\|_2$ & $e^{-2\kmin\tau}$ \\
+\midrule
+0.5  & $5.3\times 10^{-1}$ & $9.3\times 10^{-1}$ \\
+5.0  & $2.3\times 10^{-1}$ & $5.1\times 10^{-1}$ \\
+20.0 & $2.6\times 10^{-2}$ & $6.6\times 10^{-2}$ \\
+50.0 & $4.3\times 10^{-4}$ & $1.1\times 10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The ratio $\|\mat{R}-\Rinf\|/e^{-2\kmin\tau}$ is approximately
+constant (${\approx}0.4$), confirming the predicted decay rate.
+
+\subsection{$\Rinf$ for $\tau$-varying atmospheres}
+
+For a $\tau$-varying atmosphere, $\mat{\alpha}(\tau)$ and
+$\mat{\beta}(\tau)$ change with depth, and the global $\Rinf$ does not
+exist.  However, one can define the \emph{local} $\Rinf(\tau)$: the
+solution to~\eqref{eq:ARE} using the frozen local values of
+$\mat{\alpha}(\tau)$, $\mat{\beta}(\tau)$.
+
+Along an adiabatic cloud profile ($\omega$ from 0.85 to 0.96, $g$ from
+0.865 to 0.820 over $\tbot=30$), the local $\|\Rinf(\tau)\|_2$
+varies smoothly from 0.27 to 0.47, with
+$\|\Rinf(\tau_j)-\Rinf(\tau_{j-1})\|\lesssim 0.04$.  This
+supports the physical picture of \emph{adiabatic tracking}: in the
+diffusion domain, $\mat{R}(\sigma)$ approximately tracks the slowly
+varying $\Rinf(\tau)$ without needing to resolve the fast transient
+modes.
+
+
+%======================================================================
+\section{Companion Equations for T and s}
+\label{sec:companion}
+%======================================================================
+
+The reflection operator $\mat{R}$ is only one of the six slab
+operators needed for the star-product coupling.  The transmission
+operator $\mat{T}_\uparrow$ and source vector $\vect{s}_\uparrow$
+satisfy companion ODEs that are \emph{linear} given $\mat{R}(\sigma)$.
+
+\subsection{Transmission equation}
+
+\begin{proposition}[Companion T equation]\label{prop:companion_T}
+The upward transmission operator satisfies
+\begin{equation}\label{eq:T_ode}
+  \frac{d\mat{T}}{d\sigma} = \mat{T}\,(\mat{\alpha}+\mat{\beta}\mat{R}),
+  \qquad \mat{T}(0) = \mat{I}_N.
+\end{equation}
+\end{proposition}
+
+\begin{proof}[Derivation]
+The star product for combining the accumulated slab with an
+infinitesimal layer gives, to first order:
+\begin{equation}
+  \mat{T}_\uparrow(\sigma+d\sigma)
+  = \mat{T}_\uparrow\,(\mat{I}+\mat{\alpha}\dd\sigma)
+    \,(\mat{I}-\mat{\beta}\dd\sigma\cdot\mat{R}_\downarrow)^{-1}
+    \cdot\mat{t}_\uparrow.
+\end{equation}
+Expanding and using $\mat{R}_\downarrow\approx\mat{R}_\uparrow$
+(which holds for homogeneous slabs by symmetry of the $\mat{A}$
+block structure) and $\mat{t}_\uparrow=\mat{I}+\mat{\alpha}\dd\sigma$:
+\begin{equation}
+  d\mat{T} = \mat{T}\,(\mat{\alpha}+\mat{\beta}\mat{R})\dd\sigma.
+\end{equation}
+\end{proof}
+
+\begin{remark}[Right multiplication]
+The right multiplication in~\eqref{eq:T_ode} (as opposed to left
+multiplication $(\mat{\alpha}+\mat{\beta}\mat{R})\mat{T}$) is
+essential.  It follows from the star-product structure: the
+accumulated transmission $\mat{T}_\uparrow$ acts first, then the
+infinitesimal layer modifies the result.
+\end{remark}
+
+Vectorising $\vect{t}=\operatorname{vec}(\mat{T})$ (row-major):
+\begin{equation}\label{eq:T_vec}
+  \frac{d\vect{t}}{d\sigma}
+  = \bigl[\mat{I}_N\otimes(\mat{\alpha}+\mat{\beta}\mat{R})^T\bigr]\,\vect{t}.
+\end{equation}
+The Jacobian is the $N^2\!\times\!N^2$ matrix
+$\mat{J}_T = \mat{I}_N\otimes(\mat{\alpha}+\mat{\beta}\mat{R})^T$,
+which has the same eigenvalues $\{k_j : j=1,\ldots,N\}$ (each with
+multiplicity $N$).  The stiffness ratio is again $\kmax/\kmin=\gamma$.
+
+\subsection{Source equation}
+
+For completeness, the source vector satisfies the inhomogeneous ODE:
+\begin{equation}\label{eq:s_ode}
+  \frac{d\vect{s}_\uparrow}{d\sigma}
+  = (\mat{\alpha}+\mat{R}\mat{\beta})\,\vect{s}_\uparrow
+  + \text{(beam source terms)},
+  \qquad \vect{s}_\uparrow(0) = \vect{0}.
+\end{equation}
+This is an $N$-dimensional linear ODE (given $\mat{R}(\sigma)$) with
+the same stiffness structure.
+
+\subsection{Total degrees of freedom}
+
+The full Riccati + companion system has:
+\begin{itemize}[nosep]
+\item $N^2$ DOFs for $\mat{R}$ (symmetric: could be reduced to
+  $N(N+1)/2$, but this complicates the Jacobian),
+\item $N^2$ DOFs for $\mat{T}_\uparrow$,
+\item $N$ DOFs for $\vect{s}_\uparrow$,
+\end{itemize}
+totalling $2N^2+N$.  Compare this with $4N^2$ for the
+$2N\!\times\!2N$ propagator.  For $N=8$: $136$ vs $256$ DOFs.
+
+
+%======================================================================
+\section{Domain Decomposition via Star Product}
+\label{sec:decomposition}
+%======================================================================
+
+\subsection{Three-domain structure}
+
+We decompose the atmosphere $[0,\tbot]$ into three domains:
+\begin{center}
+\begin{tabular}{lll}
+\textbf{Domain~I}   & $[0, \tau_1]$         & Non-diffusive (beam active) \\
+\textbf{Domain~II}  & $[\tau_1, \tau_2]$    & Diffusion domain \\
+\textbf{Domain~III} & $[\tau_2, \tbot]$     & Non-diffusive (near surface)
+\end{tabular}
+\end{center}
+Domain~II is the optically thick, highly scattering interior where the
+direct beam is negligible ($e^{-\tau_1/\mu_0}\ll 1$) and the physics
+is dominated by the diffusion eigenvalue $\kmin$.  The boundaries
+$\tau_1$ and $\tau_2$ are chosen so that the beam attenuation at
+$\tau_1$ is negligible (e.g., $e^{-\tau_1/\mu_0}<10^{-8}$).
+
+\subsection{Independent solution of each domain}
+
+Each domain is solved independently, producing its own 6-tuple of
+$N\!\times\!N$ scattering operators:
+\begin{align}
+  \text{Domain~I:}\quad  &(\mat{R}_{\uparrow}^{\mathrm{I}},\;\mat{T}_{\uparrow}^{\mathrm{I}},\;\mat{T}_{\downarrow}^{\mathrm{I}},\;\mat{R}_{\downarrow}^{\mathrm{I}},\;\vect{s}_{\uparrow}^{\mathrm{I}},\;\vect{s}_{\downarrow}^{\mathrm{I}}), \\
+  \text{Domain~II:}\quad &(\mat{R}_{\uparrow}^{\mathrm{II}},\;\mat{T}_{\uparrow}^{\mathrm{II}},\;\mat{T}_{\downarrow}^{\mathrm{II}},\;\mat{R}_{\downarrow}^{\mathrm{II}},\;\vect{s}_{\uparrow}^{\mathrm{II}},\;\vect{s}_{\downarrow}^{\mathrm{II}}), \\
+  \text{Domain~III:}\quad &(\mat{R}_{\uparrow}^{\mathrm{III}},\;\mat{T}_{\uparrow}^{\mathrm{III}},\;\mat{T}_{\downarrow}^{\mathrm{III}},\;\mat{R}_{\downarrow}^{\mathrm{III}},\;\vect{s}_{\uparrow}^{\mathrm{III}},\;\vect{s}_{\downarrow}^{\mathrm{III}}).
+\end{align}
+The choice of solver for each domain is arbitrary:
+\begin{itemize}[nosep]
+\item Domain~I: full Magnus star product (beam source is active),
+\item Domain~II: implicit Riccati solver \emph{or} Magnus star product,
+\item Domain~III: full Magnus star product.
+\end{itemize}
+
+\subsection{Coupling via star product}
+
+The three domains are coupled by two star-product operations:
+\begin{equation}
+  (\text{I}\star\text{II})\star\text{III}
+  = \text{I}\star(\text{II}\star\text{III})
+  \;\longrightarrow\;
+  (\mat{R}_\uparrow,\mat{T}_\uparrow,\mat{T}_\downarrow,\mat{R}_\downarrow,\vect{s}_\uparrow,\vect{s}_\downarrow)_{\text{total}}.
+\end{equation}
+The star product is associative (Report~I, Definition~2),
+so the order does not matter.  The total operators then enter the
+standard BC solver (Report~I, \S6).
+
+\subsection{Numerical validation}
+
+\Cref{tab:3domain} compares the three-domain decomposition with a
+single full-atmosphere Magnus solve for $\tbot=50$, $\omega=0.99$,
+$g=0.85$, NQuad${}=16$, $\mu_0=0.5$, $I_0=1$, with $\tau_1=10$,
+$\tau_2=30$.
+
+\begin{table}[h]\centering
+\caption{Three-domain decomposition vs full Magnus
+($\tbot=50$, $\omega=0.99$, $g=0.85$, NQuad${}=16$).}
+\label{tab:3domain}
+\begin{tabular}{lcc}
+\toprule
+& Full Magnus & 3-Domain \\
+\midrule
+Total steps $K$ & 2272 & 462+914+914=2290 \\
+Flux at ToA & $2.9957\times 10^{-1}$ & $2.9957\times 10^{-1}$ \\
+Rel.\ err.\ vs pydisort & $9.0\times 10^{-5}$ & $8.7\times 10^{-5}$ \\
+$\|\vect{u}_{\text{3d}}-\vect{u}_{\text{full}}\|/\|\vect{u}_{\text{full}}\|$ & --- & $2.1\times 10^{-5}$ \\
+Wall time (s) & 2.69 & 2.71 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The three-domain coupling introduces no additional error beyond the
+$O(h^2)$ discretisation error of each domain's solver.  The star
+product is exact---it couples the domains without any approximation.
+
+
+%======================================================================
+\section{Why This Approach Is Safe}\label{sec:safety}
+%======================================================================
+
+The two previous approaches to thick atmospheres (SVD propagator,
+frozen modes) failed catastrophically.  It is important to explain
+why the Riccati/star-product domain decomposition is fundamentally
+different, and where it is \emph{not} different.
+
+\subsection{What failed before}
+
+Both previous approaches operated on the $2N\!\times\!2N$ propagator
+$\mat{\Phi}(\tau)$, which contains both growing and decaying modes.
+For thick slabs, $\cond(\mat{\Phi})=e^{2\lambda_{\max}\tau}\gg 1$.
+Any numerical error in the growing modes contaminates the decaying
+modes (and vice versa), because $\mat{A}$ is non-normal and its
+eigenvectors are not orthogonal.
+
+\begin{itemize}[nosep]
+\item \textbf{SVD approach}: tracked singular values per step, hoping
+  to separate fast/slow modes.  But the per-step SVD singular values
+  (which are all near~1 for small $h$) bear no relation to the
+  cumulative singular values (which span $e^{\pm\lambda_{\max}\tau}$).
+  The approach diverged for $\tau\gtrsim 1.65$.
+\item \textbf{Frozen-mode approach}: diagonalised $\mat{A}$ once and
+  propagated in the eigenbasis.  But the non-orthogonality of the
+  eigenvectors means that projecting onto ``slow modes'' while
+  discarding ``fast modes'' is ill-conditioned.  Small errors in the
+  projection grew exponentially.
+\end{itemize}
+
+\subsection{Why $N\!\times\!N$ operators are safe}
+
+The Riccati/star-product formulation works entirely with $N\!\times\!N$
+operators: $\mat{R}$, $\mat{T}$, $\vect{s}$.  All of these are
+bounded by energy conservation (Proposition~1 of Report~I):
+\begin{itemize}[nosep]
+\item $\|\mat{R}\|_2 < 1$ (reflection is sub-unitary for $\omega<1$),
+\item $\|\mat{T}\|_2 \leq 1$ (transmission cannot exceed unity),
+\item $\|\vect{s}\|$ is $O(1)$ (bounded by the source intensity).
+\end{itemize}
+No exponentially growing quantities appear anywhere.  The star product
+preserves these bounds at each step.
+
+\subsection{Error containment}
+
+\begin{proposition}[Error containment in the star product]
+If a diffusion-domain solver produces $\mat{R}^{\mathrm{II}}$ with
+error $\|\mat{R}^{\mathrm{II}}-\mat{R}^{\mathrm{II}}_{\text{exact}}\|
+= \epsilon$, then the error in the total coupled operators is
+$O(\epsilon)$---not $O(e^{\kmax\tau}\epsilon)$.
+\end{proposition}
+
+This follows from the star product being a \emph{contraction}:
+bounded inputs produce bounded outputs, with Lipschitz constant
+depending on $\|\mat{R}\|_2<1$ and $\cond(\mat{I}-\mat{r}\mat{R})$.
+The worst case is a modest error amplification factor, not an
+exponential blowup.
+
+\subsection{What is NOT different}
+
+The Riccati ODE~\eqref{eq:riccati_pos} is stiff with the same
+eigenvalue gap $\gamma$ as the original problem.  An explicit
+integrator applied to the Riccati ODE has the same step-count
+constraint as the Magnus integrator.  The improvement comes only
+from using an \emph{implicit} solver that can handle stiff
+systems---and even then, the improvement is in the number of
+\emph{function evaluations}, not necessarily in wall time.
+
+The critical safety guarantee is: if the diffusion-domain solver
+fails or is inaccurate, the errors remain $O(\epsilon)$, not
+$O(e^{\kmax\tau}\epsilon)$.  One can always fall back to the full
+Magnus star product---the worst case is the same step count, not
+a catastrophic failure.
+
+
+%======================================================================
+\section{Candidate Solvers and Stiffness Analysis}\label{sec:solvers}
+%======================================================================
+
+This section presents the numerical benchmark comparing three solvers
+on the diffusion sub-domain $[\tau_1,\tau_2]=[10,30]$ of a thick slab
+($\tbot=50$, $\omega=0.99$, $g=0.85$, NQuad${}=16$, $N=8$).  The
+sub-domain boundary conditions $\vect{b}_{\text{neg}}$ (downwelling
+at $\tau_1$) and $\vect{b}_{\text{pos}}$ (upwelling at $\tau_2$) are
+extracted from the exact pydisort solution, providing a known reference.
+
+\subsection{Explicit RK4 on the Riccati ODE}
+
+\Cref{tab:rk4} shows the behaviour of classical RK4 applied
+to~\eqref{eq:riccati_pos}.
+
+\begin{table}[h]\centering
+\caption{RK4 stability on the Riccati ODE ($\tsub=20$,
+$\kmax=45.2$, NQuad${}=16$).}\label{tab:rk4}
+\begin{tabular}{cccc}
+\toprule
+$K$ & $h\cdot\kmax$ & Status & Rel.\ err. \\
+\midrule
+50  & 18.1  & blowup & --- \\
+100 & 9.0   & blowup & --- \\
+200 & 4.5   & blowup & --- \\
+400 & 2.3   & blowup & --- \\
+600 & 1.5   & OK & $3.4\times 10^{-3}$ \\
+800 & 1.1   & OK & $4.6\times 10^{-5}$ \\
+1500 & 0.6  & OK & $9.8\times 10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The stability boundary is at $h\cdot\kmax\approx 1.5$, consistent
+with the RK4 stability region applied to the fastest eigenvalue
+$2\kmax$.  The minimum step count ($K\approx 600$) is comparable
+to the Magnus step count ($K=914$).
+
+\textbf{Critical negative result}: explicit integration of the
+Riccati ODE offers no speedup over the Magnus star product.  Both
+are constrained by the same ballistic eigenvalue $\kmax$.
+
+\subsection{Implicit Radau~IIA on the Riccati ODE}
+
+The implicit Radau~IIA solver (\texttt{scipy.integrate.solve\_ivp}
+with \texttt{method='Radau'}) handles stiff systems by allowing the
+step size to be determined by accuracy rather than stability.  The
+$N^2=64$ DOFs for $\mat{R}$ are vectorised, and the analytical
+Jacobian~\eqref{eq:jac_riccati} is provided.
+
+After solving $\mat{R}(\sigma)$, the companion $\mat{T}(\sigma)$
+equation~\eqref{eq:T_vec} is integrated as a separate linear ODE (also
+via Radau, with its own Jacobian).
+
+Results:
+\begin{itemize}[nosep]
+\item Riccati $\mat{R}$: 1925 function evaluations, 4 Jacobian
+  evaluations, 84 LU factorisations.
+\item Companion $\mat{T}$: 2895 function evaluations.
+\item Total: $\approx 4820$ function evaluations.
+\item Accuracy: $\|\vect{u}_{\text{Radau}}-\vect{u}_{\text{ref}}\|/\|\vect{u}_{\text{ref}}\| = 5.1\times 10^{-9}$.
+\item Wall time: 0.34~s (vs 0.68~s for Magnus).
+\end{itemize}
+
+The accuracy matches the Magnus solver to within discretisation error.
+The wall-time advantage is modest (${\sim}2\times$).
+
+\subsection{Scaling with $\omega$}\label{sec:omega_scaling}
+
+The key question is whether the implicit solver's advantage grows
+with the eigenvalue gap $\gamma$ (i.e., as $\omega\to 1$).
+\Cref{tab:scaling} presents the results.
+
+\begin{table}[h]\centering
+\caption{Scaling with $\omega$ for the diffusion sub-domain
+($\tsub=20$, $g=0.85$, NQuad${}=16$).  $K_{\text{M}}$ is the Magnus
+step count, $n_{\text{R}}$ is the total Radau function evaluations.}
+\label{tab:scaling}
+\begin{tabular}{ccccccc}
+\toprule
+$\omega$ & $\kmin$ & $\gamma$ & $K_{\text{M}}$ & $n_{\text{R}}$
+& $t_{\text{M}}$ (s) & $t_{\text{R}}$ (s) \\
+\midrule
+0.9    & 0.237 &   193 & 924  & 5123 & 0.66 & 0.45 \\
+0.99   & 0.068 &   665 & 914  & 4820 & 0.71 & 0.42 \\
+0.999  & 0.021 &  2128 & 913  & 4770 & 0.65 & 0.39 \\
+0.9999 & 0.007 &  6736 & 913  & 4770 & 0.71 & 0.37 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observation}: the Radau function evaluation count is
+approximately \emph{constant} across four orders of magnitude of the
+eigenvalue gap ($\gamma$ from 193 to 6736).  However, it does not
+\emph{decrease} dramatically either.  The Radau solver requires
+$n_{\text{R}}\approx 5000$ evaluations regardless of $\omega$,
+while the Magnus solver requires $K_{\text{M}}\approx 914$ steps
+(also roughly constant, since $\kmax$ depends weakly on $\omega$).
+
+The Radau wall time is consistently ${\sim}1.5$--$2\times$ faster
+than Magnus.  But the advantage does \emph{not} scale with $\gamma$
+as originally hoped.
+
+\subsection{Analysis}
+
+There are two reasons the implicit solver does not achieve the
+theoretically expected speedup of $O(\gamma)$:
+
+\begin{enumerate}
+\item \textbf{Jacobian cost}: the Radau solver must form and
+  factorise the $64\times 64$ Jacobian at each step.  While the
+  step count is small ($\sim 80$ LU factorisations), each
+  factorisation involves $O(N^6)$ work (forming the $N^2\times N^2$
+  Kronecker product and computing the LU decomposition).  For $N=8$
+  this is manageable but not negligible.
+
+\item \textbf{Companion T equation}: the $\mat{T}$ equation is
+  integrated as a separate ODE after $\mat{R}$ is known.  This
+  second integration adds $\sim 2900$ function evaluations.  A
+  coupled solver integrating $\mat{R}$ and $\mat{T}$ simultaneously
+  could potentially reduce this overhead.
+
+\item \textbf{Constant $\kmax$}: the dominant cost in both the Magnus
+  and Radau approaches is set by $\kmax$, which depends on the
+  quadrature (NQuad) rather than the single-scattering albedo.  The
+  implicit solver amortises the fast modes via implicit treatment, but
+  the startup cost (initial Jacobian, establishing the step size) is
+  comparable to the steady-state cost of the Magnus approach.
+\end{enumerate}
+
+\begin{remark}[Where the Riccati approach would shine]
+The implicit Riccati solver would show a stronger advantage for
+larger NQuad ($N\gg 8$), where $\kmax\sim O(N^2)$ pushes the Magnus
+step count much higher while the Radau step count remains
+approximately constant.  For NQuad${}=32$ ($N=16$): $\kmax\sim 250$,
+and the Magnus solver would need $K\sim 5000$ steps for $\tsub=20$,
+while the Radau solver should still need $\sim 5000$ function
+evaluations.  However, the Jacobian is now $256\times 256$,
+and its cost must be carefully assessed.
+\end{remark}
+
+
+\subsection{Exploiting the Sylvester structure}
+\label{sec:sylvester}
+
+The Radau solver's $N^2\!\times\!N^2$ Jacobian bottleneck can be
+circumvented entirely by observing that the Riccati
+Jacobian~\eqref{eq:jac_riccati} is a \emph{Kronecker sum}:
+\begin{equation}
+  \mat{J}_R
+  = \underbrace{(\mat{\alpha}+\mat{R}\mat{\beta})}_{\mat{A}_n}
+    \otimes\mat{I}_N
+  + \mat{I}_N\otimes
+    \underbrace{(\mat{\alpha}+\mat{\beta}\mat{R})^T}_{\mat{B}_n^T}.
+\end{equation}
+This means that each implicit step of a linearly-implicit (Rosenbrock)
+method reduces to a \emph{Sylvester equation}---an
+$N\!\times\!N$ problem, not an $N^2\!\times\!N^2$ one.
+
+\subsubsection{Rosenbrock--Euler with Sylvester solve}
+
+The linearly-implicit Euler method (Rosenbrock--Euler, $\gamma=1$)
+applied to~\eqref{eq:riccati_vec} solves at each step:
+\begin{equation}\label{eq:sylvester_step}
+  (\mat{I}_N - h\mat{A}_n)\,\Delta\mat{R}
+  + \Delta\mat{R}\,(-h\mat{B}_n) = h\,\mat{F}_n,
+\end{equation}
+where $\mat{F}_n = \mat{\alpha}\mat{R}_n + \mat{R}_n\mat{\alpha}
++ \mat{R}_n\mat{\beta}\mat{R}_n + \mat{\beta}$ is the Riccati
+right-hand side, and
+$\mat{A}_n=\mat{\alpha}+\mat{R}_n\mat{\beta}$,
+$\mat{B}_n=\mat{\alpha}+\mat{\beta}\mat{R}_n$.
+Equation~\eqref{eq:sylvester_step} is a standard Sylvester equation
+$\mat{C}\mat{X}+\mat{X}\mat{D}=\mat{E}$, solvable in $O(N^3)$ via
+the Bartels--Stewart algorithm~\cite{bartels1972} (real Schur
+decomposition of $\mat{C}$ and $\mat{D}$, followed by
+back-substitution).
+
+The companion $\mat{T}$ equation~\eqref{eq:T_ode} has a simpler
+implicit step:
+$\mat{T}_{n+1}=\mat{T}_n(\mat{I}_N-h\mat{B}_n)^{-1}$,
+a single $N\!\times\!N$ linear solve.
+
+\textbf{Cost per step}: one Sylvester solve + one linear solve, both
+$O(N^3)$.  No $N^2\!\times\!N^2$ matrix is ever formed.
+
+\subsubsection{Unconditional stability}
+
+The Rosenbrock--Euler method with $\gamma=1$ is L-stable: its
+amplification factor $R(z)=1/(1-z)$ satisfies $|R(z)|\to 0$ as
+$|z|\to\infty$ in the left half-plane.  For the Riccati ODE, the
+fast ballistic modes (eigenvalue $\sim\!-2\kmax$) are immediately
+damped, regardless of step size $h$.
+
+\Cref{tab:sylvester} demonstrates this: the method is stable even at
+$h\cdot\kmax = 181$, where RK4 and the exponential Euler both fail.
+
+\begin{table}[h]\centering
+\caption{Rosenbrock--Euler (Sylvester) on the diffusion sub-domain
+($\tsub=20$, $\kmax=45.2$, NQuad${}=16$).  Compare with RK4
+stability boundary at $h\cdot\kmax\approx 1.5$ (\Cref{tab:rk4}).}
+\label{tab:sylvester}
+\begin{tabular}{cccc}
+\toprule
+$K$ & $h\cdot\kmax$ & Rel.\ err. & Wall (s) \\
+\midrule
+  5  & 181   & $5.6\times 10^{-2}$ & 0.005 \\
+ 10  &  90   & $2.4\times 10^{-2}$ & 0.006 \\
+ 20  &  45   & $1.1\times 10^{-2}$ & 0.014 \\
+ 50  &  18   & $4.4\times 10^{-3}$ & 0.029 \\
+100  &   9   & $2.2\times 10^{-3}$ & 0.054 \\
+200  & 4.5   & $1.1\times 10^{-3}$ & 0.10 \\
+500  & 1.8   & $4.7\times 10^{-4}$ & 0.22 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The convergence is first-order ($O(h)$), as expected for
+Rosenbrock--Euler.  At $K=200$ (wall time 0.10~s), the error is
+$1.1\times 10^{-3}$---a $14\times$ wall-time speedup over Magnus
+($K=914$, wall time 1.43~s) at the cost of lower accuracy.
+
+\subsubsection{Second-order via Richardson extrapolation}
+\label{sec:richardson}
+
+Richardson extrapolation of the first-order Rosenbrock--Euler provides
+an interim second-order method: solve the Riccati ODE at step counts
+$K$ and $2K$, then form
+$\mat{R}_{\text{Rich}}=2\mat{R}_{2K}-\mat{R}_K$.
+The companion $\mat{T}$ is computed at the finer resolution ($2K$
+steps) but is \emph{not} extrapolated, since it depends on the
+$\mat{R}(\sigma)$ trajectory.  Total cost: $3K$ Sylvester solves.
+
+\begin{table}[h]\centering
+\caption{Richardson extrapolation (cost $3K$ Sylvester solves) on the
+diffusion sub-domain ($\tsub=20$, $\kmax=45.2$, NQuad${}=16$).
+Compare with Rosenbrock--Euler (\Cref{tab:sylvester}).}
+\label{tab:richardson}
+\begin{tabular}{cccc}
+\toprule
+$K$ & $h\cdot\kmax$ & Rel.\ err. & Wall (s) \\
+\midrule
+  5  & 181   & $6.8\times 10^{-3}$ & 0.005 \\
+ 10  &  90   & $1.8\times 10^{-3}$ & 0.010 \\
+ 20  &  45   & $1.0\times 10^{-3}$ & 0.024 \\
+ 50  &  18   & $6.5\times 10^{-4}$ & 0.053 \\
+100  &   9   & $4.2\times 10^{-4}$ & 0.117 \\
+200  & 4.5   & $2.5\times 10^{-4}$ & 0.225 \\
+500  & 1.8   & $1.2\times 10^{-4}$ & 0.568 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At $K=5$ (only 15 Sylvester solves total), Richardson already achieves
+$6.8\times 10^{-3}$ error---an $8\times$ improvement over
+Rosenbrock--Euler at the same $K$ ($5.6\times 10^{-2}$).  The
+improvement is dramatic at large $h\cdot\kmax$ because the Richardson
+cancellation removes the dominant $O(h)$ error in $\mat{R}$.
+
+However, the convergence rate degrades as $K$ increases.  From $K=5$
+to $K=10$, the error ratio is~$3.8$ (close to the $4\times$ expected
+for $O(h^2)$).  From $K=10$ to $K=20$, it drops to~$1.7$---far below
+$O(h^2)$.  The reason is that the \emph{companion $\mat{T}$ equation
+remains first-order}: $\mat{T}$ is integrated at $2K$ steps (step size
+$h/2$) without extrapolation, contributing an $O(h)$ error to the
+reconstructed intensity $\vect{u}^+=\mat{R}\vect{b}_{\text{neg}}+
+\mat{T}\vect{b}_{\text{pos}}$.  For small $K$, the $O(h^2)$ error in
+$\mat{R}$ dominates; for larger $K$, the $O(h)$ error in $\mat{T}$
+takes over.
+
+\begin{remark}[Practical comparison at equal accuracy]\label{rem:rich_practical}
+For an accuracy target of $\sim\!10^{-3}$: Rosenbrock--Euler requires
+$K=200$ (wall time 0.08~s), while Richardson achieves the same accuracy
+at $K=20$ (wall time 0.02~s)---a $4\times$ speedup.  The $\mat{T}$
+bottleneck prevents further gains beyond this point; a proper two-stage
+Rosenbrock method (\Cref{sec:open}, item~6) would give $O(h^2)$ for
+both $\mat{R}$ and $\mat{T}$ simultaneously.
+\end{remark}
+
+\subsubsection{Comparison of exponential Euler}
+
+An exponential integrator was also tested: the exponential Euler
+method with midpoint $\varphi_1$ approximation:
+\begin{equation}
+  \mat{R}_{n+1} = \mat{R}_n
+  + h\,e^{(h/2)\mat{A}_n}\,\mat{F}_n\,e^{(h/2)\mat{B}_n},
+\end{equation}
+which costs two $N\!\times\!N$ matrix exponentials per step.
+This method is A-stable (no blowup) but \emph{not} L-stable:
+the fast modes are not actively damped, leading to poor convergence
+for $h\cdot\kmax > 10$ (20\% error at $K=50$ vs 0.4\% for
+Rosenbrock--Euler).  The L-stability of the Rosenbrock approach is
+decisive.
+
+\subsubsection{Scaling with $\omega$}
+
+\Cref{tab:sylvester_omega} shows the Rosenbrock--Euler (Sylvester)
+solver with \emph{fixed} $K=200$ across varying $\omega$, compared
+with Magnus.
+
+\begin{table}[h]\centering
+\caption{Rosenbrock--Euler (Sylvester, $K=200$ fixed) vs Magnus
+($K\propto\kmax\tsub$).  Sub-domain $\tsub=20$, $g=0.85$,
+NQuad${}=16$.}\label{tab:sylvester_omega}
+\begin{tabular}{ccccccc}
+\toprule
+$\omega$ & $\gamma$ & $K_{\text{Ros}}$ & err$_{\text{Ros}}$
+& $t_{\text{Ros}}$ (s) & $K_{\text{M}}$ & $t_{\text{M}}$ (s) \\
+\midrule
+0.9    &   193 & 200 & $7.4\times 10^{-6}$ & 0.09 & 924 & 1.49 \\
+0.99   &   665 & 200 & $1.1\times 10^{-3}$ & 0.10 & 914 & 1.50 \\
+0.999  &  2128 & 200 & $2.9\times 10^{-3}$ & 0.10 & 913 & 1.55 \\
+0.9999 &  6736 & 200 & $3.2\times 10^{-3}$ & 0.10 & 913 & 1.50 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key results}:
+\begin{enumerate}[nosep]
+\item The Rosenbrock--Euler step count is \emph{independent} of
+  $\kmax$ (hence independent of NQuad).  Magnus requires
+  $K\propto\kmax\tsub$.
+\item Wall time: ${\sim}15\times$ faster than Magnus at NQuad${}=16$.
+  The advantage grows with NQuad since $K_{\text{M}}\propto N^2$ while
+  $K_{\text{Ros}}$ is fixed.
+\item Accuracy degrades as $\omega\to 1$ because $\kmin\to 0$: the
+  slow diffusion dynamics require more steps for accurate resolution.
+  At $\omega=0.9$ ($\kmin=0.24$), the error is $7\times 10^{-6}$;
+  at $\omega=0.9999$ ($\kmin=0.007$), it degrades to $3\times 10^{-3}$.
+  Increasing $K$ proportionally to $1/\kmin$ restores accuracy.
+\item The method is first-order.  Richardson extrapolation
+  (\Cref{sec:richardson}) raises $\mat{R}$ to second order at cost
+  $3K$, providing a ${\sim}4\times$ speedup for $10^{-3}$ accuracy.
+  However, the companion $\mat{T}$ equation remains first-order,
+  limiting overall convergence.  A proper two-stage Rosenbrock method
+  giving $O(h^2)$ for both $\mat{R}$ and $\mat{T}$ would overcome
+  this bottleneck.
+\end{enumerate}
+
+\subsection{Summary of solver comparison}
+
+\Cref{tab:solver_summary} collects the key properties of all four
+solvers investigated.
+
+\begin{table}[h]\centering
+\caption{Solver comparison for the diffusion sub-domain
+($\tsub=20$, $\omega=0.99$, NQuad${}=16$, $N=8$).  ``Rich-Sylv'' is
+Richardson extrapolation of Rosenbrock--Euler (\Cref{sec:richardson}).}
+\label{tab:solver_summary}
+\begin{tabular}{lccccc}
+\toprule
+& \textbf{Magnus} & \textbf{RK4} & \textbf{Radau}
+& \textbf{Ros-Sylv} & \textbf{Rich-Sylv} \\
+\midrule
+Stability & $h\kmax\lesssim 1$
+  & $h\kmax\lesssim 1.5$ & A-stable & L-stable & L-stable \\
+Per-step cost & $O(N^3)$ expm & $O(N^3)$ & $O(N^6)$ Jac
+  & $O(N^3)$ Sylv & $O(N^3)$ Sylv \\
+Steps $K$ & 914 & $\geq 600$ & $\sim 80$ & 200 & 20 \\
+Effective evals & 914 & 2400+ & 4820 & 200 & 60 (=$3K$) \\
+Rel.\ error & $5\times 10^{-9}$ & $3\times 10^{-3}$ & $5\times 10^{-9}$
+  & $1\times 10^{-3}$ & $1\times 10^{-3}$ \\
+Wall time (s) & 1.43 & 0.6+ & 0.99 & 0.10 & 0.02 \\
+Order ($\mat{R}$/$\mat{T}$) & 2/2 & 4/4 & $\leq$5/$\leq$5 & 1/1 & 2/1 \\
+NQuad scaling & $K\propto N^2$ & $K\propto N^2$ & $K$ const
+  & $K$ const & $K$ const \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Rosenbrock--Sylvester family offers the best wall-time performance
+and is the only approach whose step count is truly independent of the
+ballistic eigenvalue $\kmax$.  Richardson extrapolation
+(\Cref{sec:richardson}) raises $\mat{R}$ to second order at modest
+additional cost ($3K$ total Sylvester solves), achieving the same
+$10^{-3}$ accuracy as first-order Rosenbrock--Euler but at $K=20$
+instead of $K=200$---a $\sim\!4\times$ wall-time improvement.  The
+remaining bottleneck is the first-order companion $\mat{T}$ equation:
+a proper two-stage Rosenbrock method giving $O(h^2)$ for both
+$\mat{R}$ and $\mat{T}$ simultaneously would remove this limitation and
+make the Rosenbrock--Sylvester family the clear choice for
+diffusion-domain computation.
+The Radau solver achieves the highest accuracy per step but pays for
+this with the $N^2\!\times\!N^2$ Jacobian cost.
+
+
+%======================================================================
+\section{Open Questions}\label{sec:open}
+%======================================================================
+
+\begin{enumerate}
+\item \textbf{Automatic detection of diffusion-domain boundaries.}
+  The current implementation requires manual specification of
+  $\tau_1$ and $\tau_2$.  A criterion based on the beam
+  attenuation $e^{-\tau/\mu_0}$ and the local eigenvalue gap
+  $\gamma(\tau)$ could be developed.
+
+\item \textbf{$\tau$-varying properties in the implicit Riccati
+  solver.}  The current benchmark uses a homogeneous sub-domain.
+  For $\tau$-varying $\mat{\alpha}(\tau)$ and $\mat{\beta}(\tau)$,
+  the Jacobian~\eqref{eq:jac_riccati} becomes $\sigma$-dependent,
+  requiring re-evaluation at each step.
+
+\item \textbf{Interaction with 4th-order Magnus.}
+  Report~I~(\S8) developed a 4th-order Magnus extension for smooth
+  profiles.  A natural strategy is 4th-order Magnus in the
+  non-diffusive domains (where the step size is set by profile
+  smoothness) and implicit Riccati in the diffusion domain (where
+  stiffness dominates).
+
+\item \textbf{Larger NQuad.}
+  For NQuad${}=32$ ($N=16$), the Rosenbrock--Sylvester method
+  (\Cref{sec:sylvester}) avoids the $N^2\!\times\!N^2$ Jacobian
+  entirely, using $O(N^3)$ Sylvester solves.  However, the constant
+  in the $O(N^3)$ cost (real Schur decomposition at each step)
+  must be benchmarked against the Magnus $\texttt{expm}$ cost at
+  the same $N$.
+
+\item \textbf{$\mat{R}_\downarrow$ and bidirectional Riccati.}
+  The current formulation computes only $\mat{R}_\uparrow$.  For a
+  homogeneous slab, $\mat{R}_\uparrow=\mat{R}_\downarrow$ by
+  symmetry.  For a $\tau$-varying atmosphere, a separate backward
+  Riccati integration is needed to obtain $\mat{R}_\downarrow$.
+
+\item \textbf{Second-order Rosenbrock--Sylvester.}
+  Richardson extrapolation (\Cref{sec:richardson}) achieves $O(h^2)$
+  for $\mat{R}$ but the companion $\mat{T}$ equation remains $O(h)$,
+  limiting the overall convergence (\Cref{rem:rich_practical}).  The
+  path forward is a proper two-stage L-stable Rosenbrock method (e.g.,
+  ROS2~\cite{hairer1996}, Ch.~IV~\S7) that gives $O(h^2)$ for both
+  $\mat{R}$ and $\mat{T}$ simultaneously.  Each stage solves one
+  Sylvester equation for $\mat{R}$ and one $N\!\times\!N$ linear
+  system for $\mat{T}$, so the per-step cost is $2\times$ the
+  Rosenbrock--Euler cost.  With the $O(h^2)$ convergence, the step
+  count for a given accuracy target would decrease roughly as
+  $K\propto 1/\sqrt{\varepsilon}$ (vs $K\propto 1/\varepsilon$ for
+  first order), making it the definitive solver for the diffusion
+  domain.  The two stages also provide a natural embedded error
+  estimate for adaptive step control.
+
+\item \textbf{Coupled $\mat{R}$--$\mat{T}$ integration.}
+  The Rosenbrock--Sylvester approach naturally integrates $\mat{R}$
+  and $\mat{T}$ in a single pass (the $\mat{T}$ step is a single
+  $N\!\times\!N$ solve reusing $\mat{B}_n$ from the Sylvester
+  step).  This eliminates the Radau approach's overhead of a
+  separate $\mat{T}$ integration pass.
+
+\item \textbf{Symmetry exploitation.}
+  For azimuthal mode $m=0$ with Henyey--Greenstein phase functions,
+  $\mat{R}$ is symmetric.  Exploiting this reduces the Sylvester
+  equation to a \emph{symmetric} Sylvester equation (Lyapunov
+  equation), solvable in $O(N^3)$ with a smaller constant.
+\end{enumerate}
+
+
+%======================================================================
+\begin{thebibliography}{99}
+%======================================================================
+
+\bibitem{report1}
+Technical Report~I: ``The Star-Product Magnus Integrator for Radiative
+Transfer with Continuously $\tau$-Varying Optical Properties,''
+March~2026.
+
+\bibitem{bellman1960}
+R.~Bellman, R.~Kalaba, and M.~Prestrud, \emph{Invariant Imbedding and
+Radiative Transfer in Slabs of Finite Thickness}, American Elsevier,
+1960.
+
+\bibitem{bittanti1991}
+S.~Bittanti, A.J.~Laub, and J.C.~Willems (eds.), \emph{The Riccati
+Equation}, Springer, 1991.
+
+\bibitem{lancaster1995}
+P.~Lancaster and L.~Rodman, \emph{Algebraic Riccati Equations},
+Oxford University Press, 1995.
+
+\bibitem{hairer1996}
+E.~Hairer and G.~Wanner, \emph{Solving Ordinary Differential
+Equations~II: Stiff and Differential-Algebraic Problems}, 2nd~ed.,
+Springer, 1996.
+
+\bibitem{bartels1972}
+R.H.~Bartels and G.W.~Stewart, ``Solution of the matrix equation
+$AX + XB = C$,'' \emph{Comm.\ ACM}, 15(9):820--826, 1972.
+
+\bibitem{efremenko2017}
+D.S.~Efremenko, V.~Molina~Garc\'\i a, S.~Gimeno~Garc\'\i a, and
+A.~Doicu, ``A review of the matrix-exponential formalism in radiative
+transfer,'' \emph{J.\ Quant.\ Spectrosc.\ Radiat.\ Transfer},
+196:17--45, 2017.
+
+\bibitem{chandrasekhar1960}
+S.~Chandrasekhar, \emph{Radiative Transfer}, Dover, 1960.
+
+\bibitem{stamnes1988}
+K.~Stamnes, S.-C.~Tsay, W.~Wiscombe, and K.~Jayaweera, ``Numerically
+stable algorithm for discrete-ordinate-method radiative transfer in
+multiple scattering and emitting layered media,'' \emph{Appl.\ Opt.},
+27(12):2502--2509, 1988.
+
+\bibitem{redheffer1962}
+R.~Redheffer, ``On the relation of transmission-line theory to
+scattering and transfer,'' \emph{J.\ Math.\ Phys.}, 41(1):1--41, 1962.
+
+\bibitem{grant1969}
+I.P.~Grant and G.E.~Hunt, ``Discrete space theory of radiative
+transfer.~I.~Fundamentals,'' \emph{Proc.\ R.\ Soc.\ London~A},
+313(1513):183--197, 1969.
+
+\bibitem{HP2024doc}
+H.~Patel, \emph{Comprehensive Documentation for Pythonic-DISORT},
+2024.  Available at
+\url{https://pythonic-disort.readthedocs.io}.
+
+\end{thebibliography}
+
+\end{document}

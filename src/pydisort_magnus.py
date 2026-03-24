@@ -4,9 +4,10 @@ pydisort_magnus — Magnus-integration forward solver for τ-dependent optical p
 This is an alternative entry point to PythonicDISORT designed for atmospheres where
 the single-scattering albedo ω(τ) and the phase-function kernels D^m(τ, μ_i, μ_j)
 vary continuously with optical depth τ.  It solves the same 1D RTE as `pydisort`
-but uses first-order Magnus integration (midpoint-rule matrix exponential) instead
-of per-layer eigendecomposition, enabling an analytically exact treatment of
-variable-coefficient layers.
+but uses 4th-order Magnus integration (2-point Gauss-Legendre quadrature with
+commutator correction) instead of per-layer eigendecomposition, enabling an
+analytically exact treatment of variable-coefficient layers.  Supports both
+equidistant and adaptive step-size control.
 
 See CLAUDE.md section "Magnus forward solver" for the design rationale and a list
 of features that are intentionally deferred (delta-M scaling, NT corrections, etc.).
@@ -17,7 +18,8 @@ from math import pi
 import numpy as np
 
 from PythonicDISORT import subroutines
-from _magnus_propagator import _compute_magnus_propagator
+from _magnus_propagator import _compute_magnus_propagator, _compute_magnus_propagator_adaptive
+from _domain_decomposition import _detect_domains, _hybrid_propagator
 from _solve_bc_magnus import _solve_bc_magnus
 
 
@@ -29,7 +31,8 @@ def pydisort_magnus(
     mu0,
     I0,
     phi0,
-    N_magnus_steps=100,
+    N_magnus_steps=None,
+    tol=None,
     b_pos=0,
     b_neg=0,
     BDRF_Fourier_modes=(),
@@ -64,8 +67,15 @@ def pydisort_magnus(
     phi0 : float
         Azimuthal angle of the incident beam, in [0, 2π).
     N_magnus_steps : int, optional
-        Number of equidistant Magnus integration steps (default 100).
-        Higher values yield more accurate results at higher cost.
+        Number of equidistant Magnus integration steps.  Mutually exclusive
+        with `tol`.  If neither is given, defaults to 100 equidistant steps.
+    tol : float, optional
+        Relative error tolerance for adaptive step-size control.
+        When given, the solver chooses step sizes automatically using the
+        commutator-norm error indicator.  Mutually exclusive with
+        `N_magnus_steps`.  For thick atmospheres with a beam source,
+        automatically enables hybrid Magnus4+ROS2 domain decomposition
+        (eigenvalue-gap / beam-negligibility criterion).
     b_pos : float or (N,) or (N, NFourier) array, optional
         Upward diffuse intensity at the bottom boundary (default 0).
         Represents thermal / isotropic emission from the surface beyond
@@ -92,6 +102,9 @@ def pydisort_magnus(
         phi → (NQuad,) ndarray  (or (NQuad, len(phi)) for array phi).
         Full intensity at τ = 0 reconstructed from all Fourier modes:
             u(0, φ) = Σ_m u_m(0) × cos(m (φ₀ − φ)).
+    tau_grid : ndarray or None
+        Step boundary points [0, τ₁, …, τ_bot] when adaptive mode is used.
+        ``None`` in equidistant mode.
     """
     # ------------------------------------------------------------------
     # Input validation
@@ -108,8 +121,18 @@ def pydisort_magnus(
             raise ValueError("`mu0` must be in (0, 1].")
         if not (0 <= phi0 < 2 * pi):
             raise ValueError("`phi0` must be in [0, 2π).")
-    if N_magnus_steps < 1:
-        raise ValueError("`N_magnus_steps` must be ≥ 1.")
+    # Dispatch: N_magnus_steps xor tol, defaulting to equidistant
+    if N_magnus_steps is not None and tol is not None:
+        raise ValueError("Specify `N_magnus_steps` or `tol`, not both.")
+    adaptive = tol is not None
+    if adaptive:
+        if tol <= 0:
+            raise ValueError("`tol` must be positive.")
+    else:
+        if N_magnus_steps is None:
+            N_magnus_steps = 100
+        if N_magnus_steps < 1:
+            raise ValueError("`N_magnus_steps` must be ≥ 1.")
     if len(D_m_funcs) == 0:
         raise ValueError("`D_m_funcs` must contain at least one callable (m = 0).")
     # ------------------------------------------------------------------
@@ -123,6 +146,18 @@ def pydisort_magnus(
     mu_arr_pos, W = subroutines.Gauss_Legendre_quad(N)
     mu_arr = np.concatenate([mu_arr_pos, -mu_arr_pos])
     M_inv = 1.0 / mu_arr_pos
+
+    # ------------------------------------------------------------------
+    # Domain decomposition (hybrid Magnus4 + ROS2)
+    # ------------------------------------------------------------------
+    if adaptive and there_is_beam_source:
+        tau1_dd, tau2_dd = _detect_domains(
+            tau_bot, mu0, tol, omega_func, D_m_funcs[0],
+            mu_arr_pos, W, N,
+        )
+        hybrid = tau1_dd is not None
+    else:
+        hybrid = False
 
     # ------------------------------------------------------------------
     # Boundary condition shape handling
@@ -175,6 +210,7 @@ def pydisort_magnus(
     # Fourier mode loop
     # ------------------------------------------------------------------
     u_modes = []  # u_modes[m] is (2N,) intensity at tau=0 for mode m
+    tau_grid_m0 = None  # captured from m=0 in adaptive mode
 
     for m in range(NFourier):
         m_equals_0 = (m == 0)
@@ -226,9 +262,22 @@ def pydisort_magnus(
             def S_m_func(_tau):
                 return np.zeros(NQuad)
 
-        # ---- Magnus propagator (Redheffer star product, unconditionally stable) ----
-        R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m = \
-            _compute_magnus_propagator(A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad)
+        # ---- Propagator (Redheffer star product, unconditionally stable) ----
+        if hybrid:
+            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m, tau_grid_m = \
+                _hybrid_propagator(A_m_func, S_m_func, omega_func, D_m,
+                                   tau1_dd, tau2_dd, tau_bot,
+                                   mu_arr_pos, W, M_inv, NQuad, N, tol)
+            if m == 0:
+                tau_grid_m0 = tau_grid_m
+        elif adaptive:
+            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m, tau_grid_m = \
+                _compute_magnus_propagator_adaptive(A_m_func, S_m_func, tau_bot, NQuad, tol)
+            if m == 0:
+                tau_grid_m0 = tau_grid_m
+        else:
+            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m = \
+                _compute_magnus_propagator(A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad)
 
         # ---- Boundary conditions --------------------------------------
         BDRF_mode_m = BDRF_list[m] if m < NBDRF else None
@@ -270,4 +319,5 @@ def pydisort_magnus(
             return result[:, 0]  # (2N,)
         return result  # (2N, len(phi))
 
-    return mu_arr, flux_up_ToA, u0_ToA, u_ToA_func
+    tau_grid = tau_grid_m0 if adaptive else None
+    return mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid

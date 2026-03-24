@@ -273,3 +273,57 @@ def assert_convergence(
     assert err_u0_fine < abs_tol, (
         f"Fine-grid u0 rel_err={err_u0_fine:.3e} >= abs_tol={abs_tol}"
     )
+
+
+def assert_convergence_and_accuracy(
+    K_values, flux_results, u0_results,
+    flux_ref, u0_ref,
+    expected_order=2, rel_tol=5e-3, min_ratio_frac=0.5,
+    noise_floor=1e-4,
+):
+    """
+    Assert that the solver converges at the expected rate and achieves
+    the required accuracy at the finest resolution.
+
+    For each consecutive pair (K_i, K_{i+1}) with K_{i+1} > K_i, the
+    expected error ratio is (K_{i+1}/K_i)^p where p = expected_order.
+    The measured ratio must be at least min_ratio_frac times the expected
+    ratio.  The finest-K error must be below rel_tol.
+
+    Only checks the convergence ratio when the coarser error is above
+    the noise floor to avoid contamination from reference error.
+    """
+    flux_scale = max(abs(flux_ref), 1e-8)
+    u0_scale = max(float(np.max(np.abs(u0_ref))), 1e-8)
+
+    flux_errs = [abs(f - flux_ref) / flux_scale for f in flux_results]
+    u0_errs = [float(np.max(np.abs(u - u0_ref))) / u0_scale for u in u0_results]
+
+    print(f"  {'K':>6s}  {'flux_err':>10s}  {'u0_err':>10s}  {'flux_ratio':>10s}")
+    for i, K in enumerate(K_values):
+        ratio_str = ""
+        if i > 0 and flux_errs[i - 1] > noise_floor:
+            ratio_str = f"{flux_errs[i - 1] / max(flux_errs[i], 1e-15):.1f}"
+        print(f"  {K:6d}  {flux_errs[i]:10.3e}  {u0_errs[i]:10.3e}  {ratio_str:>10s}")
+
+    # Check convergence ratios (flux)
+    for i in range(1, len(K_values)):
+        if flux_errs[i - 1] < noise_floor:
+            continue  # below noise floor
+        k_ratio = K_values[i] / K_values[i - 1]
+        expected_ratio = k_ratio ** expected_order
+        min_ratio = min_ratio_frac * expected_ratio
+        measured = flux_errs[i - 1] / max(flux_errs[i], 1e-15)
+        assert measured >= min_ratio, (
+            f"K={K_values[i-1]}->{K_values[i]}: flux convergence ratio "
+            f"{measured:.1f} < min {min_ratio:.1f} "
+            f"(expected ~{expected_ratio:.0f} for O(h^{expected_order}))"
+        )
+
+    # Check accuracy at finest K
+    assert flux_errs[-1] < rel_tol, (
+        f"Finest K={K_values[-1]}: flux rel_err={flux_errs[-1]:.3e} >= {rel_tol}"
+    )
+    assert u0_errs[-1] < rel_tol, (
+        f"Finest K={K_values[-1]}: u0 rel_err={u0_errs[-1]:.3e} >= {rel_tol}"
+    )
