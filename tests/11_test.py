@@ -35,7 +35,6 @@ def test_11a():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -57,7 +56,6 @@ def test_11b():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -77,7 +75,6 @@ def test_11c():
     # Magnus: get u_ToA_func
     _, _, _, u_ToA_func, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200,
     )
 
     # Reference: pydisort with full phi output

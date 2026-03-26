@@ -6,7 +6,7 @@ optical depth, causing both omega(tau) and g(tau) to vary.  Uses linear
 interpolation profiles built by make_cloud_profile.
 
 Verification strategy: multi-layer pydisort (20 / 200 layers) must converge
-toward the Magnus reference (2000 steps).
+toward the Riccati reference (tol=1e-5).
 """
 import numpy as np
 from math import pi
@@ -19,10 +19,10 @@ NLeg  = NQuad
 
 def _ref_and_layers(tau_bot, omega_func, g_l_func, D_m_funcs, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
-    """Run Magnus@2000 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
+    """Run Riccati@tol=1e-5 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
     _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=2000,
+        tol=1e-5,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 

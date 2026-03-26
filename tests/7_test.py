@@ -7,7 +7,7 @@ Also tests combined tau-variation of both omega and g, and the BDRF path
 with tau-varying optical properties.
 
 Verification strategy: multi-layer pydisort converges to Magnus reference
-(2000 steps), demonstrating O(h^2) convergence.
+(tol=1e-5), demonstrating O(h^2) convergence.
 """
 import numpy as np
 from math import pi
@@ -21,7 +21,7 @@ NLeg  = NQuad
 def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
                     b_pos=0, b_neg=0, BDRF_Fourier_modes=()):
     """
-    Run Magnus at 2000 steps (reference) and pydisort at 10 / 100 layers.
+    Run Riccati at tight tolerance (reference) and pydisort at 10 / 100 layers.
     Both omega and g are treated as tau-varying.
     """
     def D_m_funcs_varying():
@@ -37,7 +37,7 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
 
     _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=2000,
+        tol=1e-5,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 

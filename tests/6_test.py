@@ -6,7 +6,7 @@ that cannot be handled by the standard pydisort eigendecomposition.
 
 Verification strategy: multi-layer pydisort with piecewise-constant omega
 (midpoint rule) must converge to the Magnus solution as NLayers increases.
-The Magnus solver (N_magnus_steps=2000) is the reference.
+The Riccati solver (tol=1e-5) is the reference.
 
 Expected convergence: O(h^2) in the layer thickness h = tau_bot / NLayers.
 """
@@ -21,14 +21,14 @@ NLeg  = NQuad
 
 def _ref_and_layers(tau_bot, omega_func, g_const, mu0, I0, phi0,
                     b_pos=0, b_neg=0, BDRF_Fourier_modes=()):
-    """Run Magnus at 2000 steps (reference) and pydisort at 10 / 100 layers."""
+    """Run Riccati at tight tolerance (reference) and pydisort at 10 / 100 layers."""
     g_l = g_const ** np.arange(NLeg)
     D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
     g_l_func = lambda tau: g_l  # constant phase function
 
     _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=2000,
+        tol=1e-5,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 

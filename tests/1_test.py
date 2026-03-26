@@ -25,10 +25,9 @@ g_l[0] = 1.0
 D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
 
 
-def _run(tau_bot, omega, N_steps):
+def _run(tau_bot, omega):
     _, flux_up, u0_ToA, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=N_steps,
     )
     return flux_up, u0_ToA
 
@@ -40,7 +39,7 @@ def test_1a():
     print("\n--- Test 1a ---")
     tau_bot, omega = 0.03125, 0.2
     flux_ref, u0_ref = get_reference("1a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
@@ -49,7 +48,7 @@ def test_1b():
     print("\n--- Test 1b ---")
     tau_bot, omega = 0.03125, 1 - 1e-6
     flux_ref, u0_ref = get_reference("1b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
@@ -58,7 +57,7 @@ def test_1c():
     print("\n--- Test 1c ---")
     tau_bot, omega = 0.03125, 0.99
     flux_ref, u0_ref = get_reference("1c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=100)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
@@ -69,7 +68,7 @@ def test_1d():
     print("\n--- Test 1d ---")
     tau_bot, omega = 32.0, 0.2
     flux_ref, u0_ref = get_reference("1d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
@@ -78,7 +77,7 @@ def test_1e():
     print("\n--- Test 1e ---")
     tau_bot, omega = 32.0, 1 - 1e-6
     flux_ref, u0_ref = get_reference("1e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
 
@@ -87,5 +86,5 @@ def test_1f():
     print("\n--- Test 1f ---")
     tau_bot, omega = 32.0, 0.99
     flux_ref, u0_ref = get_reference("1f", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
-    flux_mag, u0_mag = _run(tau_bot, omega, N_steps=2500)
+    flux_mag, u0_mag = _run(tau_bot, omega)
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

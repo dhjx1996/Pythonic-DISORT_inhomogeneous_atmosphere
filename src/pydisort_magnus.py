@@ -1,13 +1,12 @@
 """
-pydisort_magnus — Magnus-integration forward solver for τ-dependent optical properties.
+pydisort_magnus — Riccati forward solver for τ-dependent optical properties.
 
 This is an alternative entry point to PythonicDISORT designed for atmospheres where
 the single-scattering albedo ω(τ) and the phase-function kernels D^m(τ, μ_i, μ_j)
 vary continuously with optical depth τ.  It solves the same 1D RTE as `pydisort`
-but uses 4th-order Magnus integration (2-point Gauss-Legendre quadrature with
-commutator correction) instead of per-layer eigendecomposition, enabling an
-analytically exact treatment of variable-coefficient layers.  Supports both
-equidistant and adaptive step-size control.
+but uses the invariant-imbedding Riccati ODE (integrated via scipy's adaptive
+Radau IIA solver) instead of per-layer eigendecomposition, enabling an analytically
+exact treatment of variable-coefficient layers.
 
 See CLAUDE.md section "Magnus forward solver" for the design rationale and a list
 of features that are intentionally deferred (delta-M scaling, NT corrections, etc.).
@@ -18,8 +17,7 @@ from math import pi
 import numpy as np
 
 from PythonicDISORT import subroutines
-from _magnus_propagator import _compute_magnus_propagator, _compute_magnus_propagator_adaptive
-from _domain_decomposition import _detect_domains, _hybrid_propagator
+from _riccati_solver import _riccati_forward, _riccati_backward, _make_alpha_beta_funcs
 from _solve_bc_magnus import _solve_bc_magnus
 
 
@@ -31,14 +29,13 @@ def pydisort_magnus(
     mu0,
     I0,
     phi0,
-    N_magnus_steps=None,
-    tol=None,
+    tol=1e-3,
     b_pos=0,
     b_neg=0,
     BDRF_Fourier_modes=(),
 ):
     """
-    Magnus-integration forward solver for a single atmospheric column with
+    Riccati forward solver for a single atmospheric column with
     continuously τ-varying single-scattering albedo ω(τ) and phase function.
 
     Parameters
@@ -66,16 +63,10 @@ def pydisort_magnus(
         Intensity of the incident collimated beam (≥ 0).
     phi0 : float
         Azimuthal angle of the incident beam, in [0, 2π).
-    N_magnus_steps : int, optional
-        Number of equidistant Magnus integration steps.  Mutually exclusive
-        with `tol`.  If neither is given, defaults to 100 equidistant steps.
     tol : float, optional
-        Relative error tolerance for adaptive step-size control.
-        When given, the solver chooses step sizes automatically using the
-        commutator-norm error indicator.  Mutually exclusive with
-        `N_magnus_steps`.  For thick atmospheres with a beam source,
-        automatically enables hybrid Magnus4+ROS2 domain decomposition
-        (eigenvalue-gap / beam-negligibility criterion).
+        Relative error tolerance for adaptive step-size control (default 1e-3).
+        The solver uses scipy's Radau IIA (L-stable, order 5) with this
+        tolerance for both the forward and backward Riccati sweeps.
     b_pos : float or (N,) or (N, NFourier) array, optional
         Upward diffuse intensity at the bottom boundary (default 0).
         Represents thermal / isotropic emission from the surface beyond
@@ -102,9 +93,8 @@ def pydisort_magnus(
         phi → (NQuad,) ndarray  (or (NQuad, len(phi)) for array phi).
         Full intensity at τ = 0 reconstructed from all Fourier modes:
             u(0, φ) = Σ_m u_m(0) × cos(m (φ₀ − φ)).
-    tau_grid : ndarray or None
-        Step boundary points [0, τ₁, …, τ_bot] when adaptive mode is used.
-        ``None`` in equidistant mode.
+    tau_grid : ndarray
+        Step boundary points [0, τ₁, …, τ_bot] from the forward Riccati sweep.
     """
     # ------------------------------------------------------------------
     # Input validation
@@ -121,18 +111,8 @@ def pydisort_magnus(
             raise ValueError("`mu0` must be in (0, 1].")
         if not (0 <= phi0 < 2 * pi):
             raise ValueError("`phi0` must be in [0, 2π).")
-    # Dispatch: N_magnus_steps xor tol, defaulting to equidistant
-    if N_magnus_steps is not None and tol is not None:
-        raise ValueError("Specify `N_magnus_steps` or `tol`, not both.")
-    adaptive = tol is not None
-    if adaptive:
-        if tol <= 0:
-            raise ValueError("`tol` must be positive.")
-    else:
-        if N_magnus_steps is None:
-            N_magnus_steps = 100
-        if N_magnus_steps < 1:
-            raise ValueError("`N_magnus_steps` must be ≥ 1.")
+    if tol <= 0:
+        raise ValueError("`tol` must be positive.")
     if len(D_m_funcs) == 0:
         raise ValueError("`D_m_funcs` must contain at least one callable (m = 0).")
     # ------------------------------------------------------------------
@@ -146,18 +126,6 @@ def pydisort_magnus(
     mu_arr_pos, W = subroutines.Gauss_Legendre_quad(N)
     mu_arr = np.concatenate([mu_arr_pos, -mu_arr_pos])
     M_inv = 1.0 / mu_arr_pos
-
-    # ------------------------------------------------------------------
-    # Domain decomposition (hybrid Magnus4 + ROS2)
-    # ------------------------------------------------------------------
-    if adaptive and there_is_beam_source:
-        tau1_dd, tau2_dd = _detect_domains(
-            tau_bot, mu0, tol, omega_func, D_m_funcs[0],
-            mu_arr_pos, W, N,
-        )
-        hybrid = tau1_dd is not None
-    else:
-        hybrid = False
 
     # ------------------------------------------------------------------
     # Boundary condition shape handling
@@ -210,74 +178,48 @@ def pydisort_magnus(
     # Fourier mode loop
     # ------------------------------------------------------------------
     u_modes = []  # u_modes[m] is (2N,) intensity at tau=0 for mode m
-    tau_grid_m0 = None  # captured from m=0 in adaptive mode
+    tau_grid_m0 = None  # captured from m=0
 
     for m in range(NFourier):
         m_equals_0 = (m == 0)
         D_m = D_m_funcs[m]
 
-        # ---- Coefficient matrix A(τ) --------------------------------
-        def make_A_func(D_m_inner):
-            def A_func(tau):
-                omega = omega_func(tau)
-                D_pos = omega * D_m_inner(tau, mu_arr_pos[:, None], mu_arr_pos[None, :])  # (N,N)
-                D_neg = omega * D_m_inner(tau, mu_arr_pos[:, None], -mu_arr_pos[None, :]) # (N,N)
-                DW_pos = D_pos * W[None, :]
-                DW_neg = D_neg * W[None, :]
-                alpha = M_inv[:, None] * (DW_pos - np.eye(N))
-                beta  = M_inv[:, None] * DW_neg
-                A = np.empty((NQuad, NQuad))
-                A[:N, :N]  = -alpha
-                A[:N, N:]  = -beta
-                A[N:, :N]  =  beta
-                A[N:, N:]  =  alpha
-                return A
-            return A_func
+        # ---- Build α(τ), β(τ) for this Fourier mode ------------------
+        alpha_m_func, beta_m_func = _make_alpha_beta_funcs(
+            omega_func, D_m, mu_arr_pos, W, M_inv, N,
+        )
 
-        A_m_func = make_A_func(D_m)
-
-        # ---- Beam source vector S(τ) --------------------------------
+        # ---- Beam-source q functions ---------------------------------
         if there_is_beam_source:
-            # Factor of 2 accounts for the 1/2 built into D_m_funcs convention:
-            #   D^m_pure = (1/2) sum_l ..., but source needs the full sum_l ...
-            # Derivation: S[:N] = -M_inv * I0_div_4pi * (2-δ_{m0}) * ω * sum_l ... * exp(-τ/μ0)
-            #           = -M_inv * [2 * I0_div_4pi * (2-δ_{m0})] * ω * D^m_pure * exp(-τ/μ0)
-            # (compare X_arr in _solve_for_gen_and_part_sols.py lines 141-153)
             fac_const = I0_div_4pi_scaled * (2 - int(m_equals_0)) * 2
 
-            def make_S_func(D_m_inner, fac_const_inner):
-                def S_func(tau):
+            def _make_q_pair(D_m_inner, fac_const_inner):
+                def q_up_func(tau):
                     omega = omega_func(tau)
                     fac = fac_const_inner * omega * np.exp(-tau / mu0)
-                    # S[:N][i] = -M_inv[i] * fac * D_m(τ, mu_arr_pos[i], -mu0)
-                    # S[N:][i] = +M_inv[i] * fac * D_m(τ, -mu_arr_pos[i], -mu0)
-                    # (sign pattern from X_arr in _solve_for_gen_and_part_sols.py lines 151-152)
-                    S_pos = -M_inv * fac * D_m_inner(tau, mu_arr_pos, -mu0)
-                    S_neg =  M_inv * fac * D_m_inner(tau, -mu_arr_pos, -mu0)
-                    return np.concatenate([S_pos, S_neg])
-                return S_func
+                    return M_inv * fac * D_m_inner(tau, mu_arr_pos, -mu0)
+                def q_down_func(tau):
+                    omega = omega_func(tau)
+                    fac = fac_const_inner * omega * np.exp(-tau / mu0)
+                    return M_inv * fac * D_m_inner(tau, -mu_arr_pos, -mu0)
+                return q_up_func, q_down_func
 
-            S_m_func = make_S_func(D_m, fac_const)
+            q_up_m, q_down_m = _make_q_pair(D_m, fac_const)
         else:
-            def S_m_func(_tau):
-                return np.zeros(NQuad)
+            q_up_m = q_down_m = None
 
-        # ---- Propagator (Redheffer star product, unconditionally stable) ----
-        if hybrid:
-            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m, tau_grid_m = \
-                _hybrid_propagator(A_m_func, S_m_func, omega_func, D_m,
-                                   tau1_dd, tau2_dd, tau_bot,
-                                   mu_arr_pos, W, M_inv, NQuad, N, tol)
-            if m == 0:
-                tau_grid_m0 = tau_grid_m
-        elif adaptive:
-            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m, tau_grid_m = \
-                _compute_magnus_propagator_adaptive(A_m_func, S_m_func, tau_bot, NQuad, tol)
-            if m == 0:
-                tau_grid_m0 = tau_grid_m
-        else:
-            R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m = \
-                _compute_magnus_propagator(A_m_func, S_m_func, tau_bot, N_magnus_steps, NQuad)
+        # ---- Forward sweep: R_up, T_up, s_up ------------------------
+        R_up_m, T_up_m, s_up_m, grid_fwd = _riccati_forward(
+            alpha_m_func, beta_m_func, tau_bot, N, tol,
+            q_up_func=q_up_m, q_down_func=q_down_m,
+        )
+        # ---- Backward sweep: R_down, T_down, s_down ------------------
+        R_down_m, T_down_m, s_down_m, _ = _riccati_backward(
+            alpha_m_func, beta_m_func, tau_bot, N, tol,
+            q_up_func=q_up_m, q_down_func=q_down_m,
+        )
+        if m == 0:
+            tau_grid_m0 = grid_fwd
 
         # ---- Boundary conditions --------------------------------------
         BDRF_mode_m = BDRF_list[m] if m < NBDRF else None
@@ -319,5 +261,4 @@ def pydisort_magnus(
             return result[:, 0]  # (2N,)
         return result  # (2N, len(phi))
 
-    tau_grid = tau_grid_m0 if adaptive else None
-    return mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid
+    return mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid_m0

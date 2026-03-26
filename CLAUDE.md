@@ -32,28 +32,27 @@ Note: Do NOT use `conda run` on Windows — it fails with UnicodeEncodeError (CP
 installed in the `twostream` conda env. It provides `pydisort()` and `subroutines`.
 See https://pythonic-disort.readthedocs.io for its documentation.
 
-The Magnus forward solver code lives in `src/` (5 files — not a package, just modules
+The Riccati forward solver code lives in `src/` (3 files — not a package, just modules
 added to `sys.path` by `tests/conftest.py`).
 
 ### Tests
 
-`tests/` contains the PyTest suite for `pydisort_magnus` (58 tests across 15 files):
+`tests/` contains the PyTest suite for `pydisort_magnus` (56 tests across 14 files):
 
 | File | What it covers |
 |---|---|
-| `1_test.py` – `3_test.py` | Constant-ω Magnus vs pydisort reference (isotropic, Rayleigh-like, HG) |
+| `1_test.py` – `3_test.py` | Constant-ω Riccati vs pydisort reference (isotropic, Rayleigh-like, HG) |
 | `4_test.py` | Non-zero diffuse BCs (b_pos, b_neg, purely absorbing) |
 | `5_test.py` | Lambertian BDRF surface (scalar, callable, combined with BCs, high albedo) |
-| `6_test.py` | τ-varying ω convergence: multi-layer pydisort → Magnus reference |
+| `6_test.py` | τ-varying ω convergence: multi-layer pydisort → Riccati reference |
 | `7_test.py` | τ-varying ω and g, including BDRF |
 | `8_test.py` | Thick atmospheres + BCs (constant ω, BDRF, b_pos) |
 | `9_test.py` | Thick atmospheres + τ-varying properties (convergence) |
 | `10_test.py` | Adiabatic cloud profiles (convergence) |
 | `11_test.py` | NQuad variation (4, 16) + azimuthal u_ToA_func validation |
-| `12_test.py` | Magnus4 K-sweep convergence rate (O(h⁴) verification) |
-| `13_test.py` | Adaptive step-size control (thin, cloud, constant-ω) |
-| `14_test.py` | ROS2 Riccati solver standalone (R_up, K-sweep O(h²), T, symmetry) |
-| `15_test.py` | Hybrid Magnus4+ROS2 domain decomposition (cloud, thin fallback, consistency) |
+| `13_test.py` | Adaptive Riccati solver (thin, cloud, constant-ω) |
+| `14_test.py` | Radau Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
+| `15_test.py` | Full-domain Riccati integration (cloud, thin) |
 
 `tests/_helpers.py` provides `make_D_m_funcs`, `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, `assert_convergence`, and `assert_convergence_and_accuracy`.
 `tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
@@ -83,11 +82,11 @@ invariant — no positive exponents anywhere in the code.
 
 ---
 
-## Magnus forward solver (`pydisort_magnus`)
+## Riccati forward solver (`pydisort_magnus`)
 
-**Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Magnus forward solver is the first building block.
+**Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Riccati forward solver is the first building block.
 
-**Purpose**: `pydisort_magnus` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function D^m(τ), yielding the upward field at ToA (τ=0). It uses 4th-order Magnus integration (2-point Gauss-Legendre quadrature with commutator correction) with Redheffer star-product accumulation. Supports equidistant stepping, adaptive step control, and hybrid Magnus4+ROS2 domain decomposition for thick atmospheres.
+**Purpose**: `pydisort_magnus` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function D^m(τ), yielding the upward field at ToA (τ=0). Uses the invariant-imbedding Riccati ODE integrated via scipy's adaptive Radau IIA solver (L-stable, order 5).
 
 ### Design priority — minimise step count
 
@@ -117,10 +116,8 @@ the N×N BC system — no separate backward pass is needed for `b_pos`.
 | File | Purpose |
 |---|---|
 | `src/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
-| `src/_magnus_propagator.py` | Magnus4 integrator (equidistant + adaptive), star-product accumulation |
-| `src/_ros2_riccati.py` | ROS2 Riccati solver for diffusion domain (L-stable, Verwer convention) |
-| `src/_domain_decomposition.py` | Eigenvalue-gap/beam criterion, α/β factory, three-domain hybrid coupling |
-| `src/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from star-product scattering operators |
+| `src/_riccati_solver.py` | Radau IIA Riccati solver: invariant-imbedding R, companion T, beam source s |
+| `src/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from scattering operators |
 
 **NFourier** = `len(D_m_funcs)`. The m=0 callable handles isotropic/azimuth-symmetric scattering.
 
@@ -128,47 +125,30 @@ the N×N BC system — no separate backward pass is needed for `b_pos`.
 `D^m_pure(μ_i, μ_j; τ) = (1/2) Σ_l (2l+1) * poch_l * g_l^m(τ) * P_l^m(μ_i) * P_l^m(μ_j)`.
 Handles arbitrary signs of μ_i, μ_j with broadcasting support. ω is handled internally via `omega_func`.
 
-### Numerical stability — Redheffer star product
+### Numerical stability
 
-The Magnus propagator uses **Redheffer star-product accumulation** of N×N reflection /
-transmission / source operators.  All intermediates are O(1) — unconditionally stable for
-any τ_bot.  The per-step Magnus expm is unchanged; only how steps are combined changed
-(from 2N×2N propagator accumulation to N×N star product).
-
+The Riccati ODE formulation has all positive signs — no growing exponentials anywhere.
 The BC solver is a simple N×N system (half the size of the old 2N×2N Stamnes–Conklin system).
 
-### Integration modes
+### Riccati solver
 
-**Equidistant** (`N_magnus_steps=K`): K equidistant Magnus4 steps. O(h⁴) convergence.
-Stability requires h · λ_max ≲ 1.5, where λ_max ≈ 14 for NQuad=8.
+Full-domain invariant-imbedding Riccati ODE via scipy's Radau IIA solver (3-stage implicit
+RK, L-stable, order 5, adaptive). Two passes: forward sweep for (R_up, T_up, s_up),
+backward sweep for (R_down, T_down, s_down). Tolerance controlled via `tol` parameter
+(default 1e-3).
 
-**Adaptive** (`tol=1e-3`): Adaptive step-size control using the commutator norm
-‖[A₂,A₁]‖ · h² · (√3/12) as error indicator. Step predictor with 1/4 exponent (O(h⁴)).
-Stability ceiling h ≤ 1.5/λ_max. Returns the τ-grid as the 5th output element.
+Riccati ODE system (vectorized as y = [vec(R), vec(T), s], size 2N² + N):
+- dR/dσ = α·R + R·α + R·β·R + β       (N×N, nonlinear Riccati)
+- dT/dσ = T·(α + β·R)                  (N×N, linear in T)
+- ds/dσ = (α + R·β)·s + R·q₁ + q₂     (N, linear in s, beam source)
 
-**Hybrid** (`tol=1e-3` with beam source): Automatic three-domain decomposition via
-eigenvalue-gap / beam-negligibility criterion. Top boundary τ₁ = −μ₀·ln(tol) (beam
-residual equals tol). Bottom boundary τ₂ = τ_bot − c/k_diff (c=2, k_diff = smallest
-eigenvalue magnitude of DISORT A matrix at midpoint). If τ₁ ≥ τ₂, no decomposition.
-Adaptive Magnus4 on non-diffusive domains [0,τ₁] and [τ₂,τ_bot]; L-stable ROS2 Riccati
-solver on diffusion domain [τ₁,τ₂]. Domains coupled via star product. No `g_func`
-parameter needed — criterion is computed from ω(τ), D_m, and quadrature weights.
-
-### ROS2 Riccati solver
-
-The diffusion domain uses invariant-imbedding Riccati ODE (all positive signs — no growing
-exponentials):
-- dR/dσ = α·R + R·α + R·β·R + β, R(0) = 0
-- dT/dσ = T·(α + β·R), T(0) = I
-
-2-stage L-stable Rosenbrock method (Verwer convention, γ = 1+1/√2). Stage equations are
-N×N Sylvester solves via `scipy.linalg.solve_sylvester`. Companion T uses Crank-Nicolson.
-Embedded ROS2-1 error pair for adaptive step control. O(h²) convergence.
+Step count is nearly NQuad-independent (~35 steps on τ=30 cloud for NQuad=8/16/32).
+NQuad ≥ 6 required: Riccati ARE is ill-conditioned for NQuad=4 (‖R_stab‖ ≈ 10).
 
 ### Return value
 
 Always a 5-tuple: `(mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
-`tau_grid` is `None` in equidistant mode; an ndarray of step boundary points in adaptive/hybrid mode.
+`tau_grid` is an ndarray of step boundary points from the forward Riccati sweep.
 
 ### Deferred features (not yet implemented — do not forget)
 
@@ -177,3 +157,4 @@ Always a 5-tuple: `(mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
 - **Isotropic internal source**: only the collimated beam source is handled
 - **Non-ToA depth evaluation**: currently only τ=0 (ToA) is returned
 - **A priori τ-grid utility**: cheap grid from profile, usable with SCIATRAN (see memory)
+- **JAX + diffrax migration**: port forward solver to JAX + diffrax (Kvaerno5, L-stable ESDIRK) on Linux/GPU to enable discrete adjoint computation via autodiff for the ill-conditioned r_e(τ) retrieval. The current scipy Radau implementation serves as the reference. This migration will be prompted after the project moves to a Linux architecture.

@@ -1,10 +1,10 @@
 """
-Test suite 13: Adaptive step-size control.
+Test suite 13: Adaptive Riccati solver (full-domain).
 
-Validates the adaptive Magnus4 solver (tol parameter):
+Validates the Radau IIA Riccati solver via pydisort_magnus(tol=...):
   13a: tau-varying omega on thin atmosphere — accuracy vs multilayer reference.
-  13b: thick cloud — accuracy + verifies adaptive uses fewer steps than equidistant.
-  13c: constant omega — verifies few steps (commutator = 0, stability-limited only).
+  13b: thick cloud — accuracy + verifies Riccati uses fewer steps than equidistant.
+  13c: constant omega — verifies few steps needed.
 """
 import numpy as np
 from math import pi, ceil
@@ -20,7 +20,7 @@ NLeg = NQuad
 
 def test_13a():
     """Adaptive on profile 6b: tau=2, linear omega 0.95->0.70, HG g=0.75."""
-    print("\n--- Test 13a: adaptive, tau=2, varying omega ---")
+    print("\n--- Test 13a: Riccati, tau=2, varying omega ---")
     tau_bot, g = 2.0, 0.75
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.0
     omega_func = lambda tau: 0.95 + (0.70 - 0.95) * tau / tau_bot
@@ -43,7 +43,7 @@ def test_13a():
     )
 
     n_steps = len(tau_grid) - 1
-    print(f"  adaptive steps: {n_steps}")
+    print(f"  Riccati steps: {n_steps}")
     print(f"  tau_grid endpoints: [{tau_grid[0]:.4f}, ..., {tau_grid[-1]:.4f}]")
     assert tau_grid is not None
     assert abs(tau_grid[0]) < 1e-14
@@ -53,7 +53,7 @@ def test_13a():
 
 def test_13b():
     """Adaptive on profile 10b: tau=30, adiabatic cloud, BDRF rho=0.05."""
-    print("\n--- Test 13b: adaptive, tau=30, cloud ---")
+    print("\n--- Test 13b: Riccati, tau=30, cloud ---")
     tau_bot = 30.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
@@ -79,15 +79,15 @@ def test_13b():
     )
 
     n_steps = len(tau_grid) - 1
-    print(f"  adaptive steps: {n_steps}")
+    print(f"  Riccati steps: {n_steps}")
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3)
-    # Adaptive should use far fewer than 2000 equidistant steps
-    assert n_steps < 2000, f"adaptive used {n_steps} steps, expected << 2000"
+    # Riccati should use far fewer than 2000 equidistant steps
+    assert n_steps < 2000, f"Riccati used {n_steps} steps, expected << 2000"
 
 
 def test_13c():
     """Adaptive on constant omega — stability-limited, few steps expected."""
-    print("\n--- Test 13c: adaptive, constant omega (stability-limited) ---")
+    print("\n--- Test 13c: Riccati, constant omega ---")
     tau_bot = 1.0
     omega = 0.9
     mu0, I0, phi0 = 0.5, 1.0, 0.0
@@ -103,15 +103,13 @@ def test_13c():
     )
 
     n_steps = len(tau_grid) - 1
-    print(f"  adaptive steps: {n_steps} (stability-limited)")
+    print(f"  Riccati steps: {n_steps}")
 
-    # Compare against equidistant with generous K
+    # Reference: tight-tolerance Riccati
     _, flux_ref, u0_ref, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200,
+        tol=1e-6,
     )
 
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3)
-    # For constant A, the commutator is zero, so steps are stability-limited.
-    # With c_stab=1.5 and lambda_max~14, h_max~0.107, so K~ceil(1/0.107)~10.
-    assert n_steps < 50, f"constant-omega used {n_steps} steps, expected ~10"
+    assert n_steps < 50, f"constant-omega used {n_steps} steps, expected few"

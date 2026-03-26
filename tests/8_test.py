@@ -46,7 +46,7 @@ def test_8a():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=1000, BDRF_Fourier_modes=BDRF,
+        BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -66,7 +66,7 @@ def test_8b():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=1000, BDRF_Fourier_modes=BDRF,
+        BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -86,7 +86,7 @@ def test_8c():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=300, BDRF_Fourier_modes=BDRF,
+        BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -104,7 +104,7 @@ def test_8d():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=2500, b_pos=b_pos,
+        b_pos=b_pos,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -127,7 +127,7 @@ def test_8e():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=200, b_pos=b_pos, BDRF_Fourier_modes=BDRF_callable,
+        b_pos=b_pos, BDRF_Fourier_modes=BDRF_callable,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -147,6 +147,6 @@ def test_8f():
     )
     _, flux_mag, u0_mag, _, _ = pydisort_magnus(
         tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
-        N_magnus_steps=400, BDRF_Fourier_modes=BDRF,
+        BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
