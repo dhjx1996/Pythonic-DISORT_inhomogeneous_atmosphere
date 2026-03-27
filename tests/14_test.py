@@ -3,7 +3,7 @@ Test suite 14: JAX Riccati solver (standalone).
 
 Validates the Kvaerno5 (order 5, L-stable) solver for the Riccati +
 companion T + beam-source s equations in isolation (before integration
-into pydisort_magnus_jax).
+into pydisort_riccati_jax).
 
   14a: Homogeneous atmosphere — R_up converges (loose vs tight tol).
   14b: Tol-sweep — error tracks tolerance, steps decrease at loose tol.
@@ -28,7 +28,7 @@ N = NQuad // 2
 # Setup: homogeneous atmosphere (omega=0.99, g=0.85)
 omega, g = 0.99, 0.85
 g_l = g ** np.arange(NLeg)
-g_l_func = lambda tau: g_l
+Leg_coeffs_func = lambda tau: g_l
 omega_func = lambda tau: omega
 
 mu_arr_pos, W = subroutines.Gauss_Legendre_quad(N)
@@ -39,7 +39,7 @@ M_inv = 1.0 / mu_arr_pos
 mu0_setup = 0.5  # for precompute_legendre
 leg_data = _precompute_legendre(0, NLeg, mu_arr_pos, mu0_setup)
 alpha_func, beta_func = _make_alpha_beta_funcs_jax(
-    omega_func, g_l_func, 0, leg_data, mu_arr_pos, W, M_inv, N,
+    omega_func, Leg_coeffs_func, 0, leg_data, mu_arr_pos, W, M_inv, N,
 )
 
 # Constant alpha/beta for the homogeneous reference checks
@@ -175,11 +175,11 @@ def test_14e():
     # Build beam-source q functions using the JAX helper
     leg_data_beam = _precompute_legendre(0, NLeg, mu_arr_pos, mu0)
     q_up_func, q_down_func = _make_q_funcs_jax(
-        omega_func, g_l_func, 0, leg_data_beam, mu_arr_pos, M_inv, mu0, fac_const, N,
+        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, M_inv, mu0, fac_const, N,
     )
 
     alpha_func_beam, beta_func_beam = _make_alpha_beta_funcs_jax(
-        omega_func, g_l_func, 0, leg_data_beam, mu_arr_pos, W, M_inv, N,
+        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, W, M_inv, N,
     )
 
     # Tight-tolerance reference

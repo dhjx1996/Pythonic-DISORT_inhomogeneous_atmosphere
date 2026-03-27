@@ -90,14 +90,14 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
 # JAX-traceable coefficient functions
 # ---------------------------------------------------------------------------
 
-def _make_alpha_beta_funcs_jax(omega_func, g_l_func, m, leg_data,
+def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
                                 mu_arr_pos, W, M_inv, N):
     """Build JAX-traceable alpha(tau) and beta(tau) for the Riccati ODE.
 
     Parameters
     ----------
     omega_func : tau -> scalar
-    g_l_func   : tau -> (NLeg,) array
+    Leg_coeffs_func   : tau -> (NLeg,) array
     m          : int, Fourier mode index
     leg_data   : dict from _precompute_legendre
     mu_arr_pos : (N,) JAX array
@@ -116,14 +116,14 @@ def _make_alpha_beta_funcs_jax(omega_func, g_l_func, m, leg_data,
 
     def alpha_func(tau):
         omega = omega_func(tau)
-        g_l = g_l_func(tau)
+        g_l = Leg_coeffs_func(tau)
         wt = base_coeffs * g_l[m:]
         D_pos = 0.5 * jnp.einsum('l,li,lj->ij', wt, P_pos, P_pos)
         return M_inv[:, None] * (omega * D_pos * W[None, :] - I_N)
 
     def beta_func(tau):
         omega = omega_func(tau)
-        g_l = g_l_func(tau)
+        g_l = Leg_coeffs_func(tau)
         wt = base_coeffs * g_l[m:]
         D_neg = 0.5 * jnp.einsum('l,li,lj->ij', wt, P_pos, P_neg)
         return M_inv[:, None] * (omega * D_neg * W[None, :])
@@ -131,14 +131,14 @@ def _make_alpha_beta_funcs_jax(omega_func, g_l_func, m, leg_data,
     return alpha_func, beta_func
 
 
-def _make_q_funcs_jax(omega_func, g_l_func, m, leg_data,
+def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
                        mu_arr_pos, M_inv, mu0, fac_const, N):
     """Build JAX-traceable beam-source q functions.
 
     Parameters
     ----------
     omega_func : tau -> scalar
-    g_l_func   : tau -> (NLeg,) array
+    Leg_coeffs_func   : tau -> (NLeg,) array
     m          : int, Fourier mode index
     leg_data   : dict from _precompute_legendre
     mu_arr_pos : (N,) JAX array
@@ -158,14 +158,14 @@ def _make_q_funcs_jax(omega_func, g_l_func, m, leg_data,
 
     def q_up_func(tau):
         omega = omega_func(tau)
-        g_l = g_l_func(tau)
+        g_l = Leg_coeffs_func(tau)
         wt = base_coeffs * g_l[m:]
         D_beam = 0.5 * jnp.einsum('l,li,l->i', wt, P_pos, P_mu0)
         return M_inv * fac_const * omega * jnp.exp(-tau / mu0) * D_beam
 
     def q_down_func(tau):
         omega = omega_func(tau)
-        g_l = g_l_func(tau)
+        g_l = Leg_coeffs_func(tau)
         wt = base_coeffs * g_l[m:]
         D_beam = 0.5 * jnp.einsum('l,li,l->i', wt, P_neg, P_mu0)
         return M_inv * fac_const * omega * jnp.exp(-tau / mu0) * D_beam

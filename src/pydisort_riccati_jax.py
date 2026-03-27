@@ -1,7 +1,7 @@
 """
-pydisort_magnus_jax — JAX + diffrax port of the Riccati forward solver.
+pydisort_riccati_jax — JAX + diffrax port of the Riccati forward solver.
 
-Port of pydisort_magnus.py (scipy Radau IIA) to JAX + diffrax (Kvaerno5).
+Port of pydisort_riccati.py (scipy Radau IIA) to JAX + diffrax (Kvaerno5).
 Solves the 1-D RTE for atmospheres with continuously tau-varying
 single-scattering albedo omega(tau) and phase function g_l(tau).
 
@@ -26,13 +26,13 @@ from _riccati_solver_jax import (
     _riccati_forward_jax,
     _riccati_backward_jax,
 )
-from _solve_bc_magnus_jax import _solve_bc_magnus_jax
+from _solve_bc_riccati_jax import _solve_bc_riccati_jax
 
 
-def pydisort_magnus_jax(
+def pydisort_riccati_jax(
     tau_bot,
     omega_func,
-    g_l_func,
+    Leg_coeffs_func,
     NQuad,
     NLeg,
     NFourier,
@@ -54,7 +54,7 @@ def pydisort_magnus_jax(
         Optical depth of the bottom boundary (> 0).
     omega_func : callable
         tau -> omega (float in [0, 1)).
-    g_l_func : callable
+    Leg_coeffs_func : callable
         tau -> (NLeg,) array of Legendre coefficients g_l.
     NQuad : int
         Number of quadrature streams (even, >= 2).
@@ -179,14 +179,14 @@ def pydisort_magnus_jax(
 
         # ---- Build alpha(tau), beta(tau) --------------------------------
         alpha_m_func, beta_m_func = _make_alpha_beta_funcs_jax(
-            omega_func, g_l_func, m, leg_data, mu_arr_pos, W, M_inv, N,
+            omega_func, Leg_coeffs_func, m, leg_data, mu_arr_pos, W, M_inv, N,
         )
 
         # ---- Beam-source q functions -----------------------------------
         if there_is_beam_source:
             fac_const = I0_div_4pi_scaled * (2 - int(m_equals_0)) * 2
             q_up_m, q_down_m = _make_q_funcs_jax(
-                omega_func, g_l_func, m, leg_data,
+                omega_func, Leg_coeffs_func, m, leg_data,
                 mu_arr_pos, M_inv, mu0, fac_const, N,
             )
         else:
@@ -212,7 +212,7 @@ def pydisort_magnus_jax(
         b_pos_m = jnp.array(b_pos_matrix[:, m])
         b_neg_m = jnp.array(b_neg_matrix[:, m])
 
-        u_m = _solve_bc_magnus_jax(
+        u_m = _solve_bc_riccati_jax(
             R_up_m, T_up_m, T_down_m, R_down_m, s_up_m, s_down_m,
             N, b_pos_m, b_neg_m,
             BDRF_mode_m, mu_arr_pos, W,

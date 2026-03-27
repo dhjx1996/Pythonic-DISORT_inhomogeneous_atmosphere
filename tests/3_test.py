@@ -2,7 +2,7 @@
 Test suite 3: Henyey-Greenstein scattering, beam source.
 
 Corresponds to Stamnes Test Problem 3 (without delta-M / NT corrections,
-which are deferred features for pydisort_magnus).
+which are deferred features for pydisort_riccati).
 Covers different asymmetry parameters and optical depths.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
@@ -10,7 +10,7 @@ Fallback:  reference_results/3{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus_jax import pydisort_magnus_jax
+from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -25,9 +25,9 @@ def _make(g):
 
 def _run(tau_bot, omega, g, mu0, I0, phi0):
     g_l = _make(g)
-    g_l_func = lambda tau: g_l
-    _, flux_up, u0_ToA, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    Leg_coeffs_func = lambda tau: g_l
+    _, flux_up, u0_ToA, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     return flux_up, u0_ToA
 

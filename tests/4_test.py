@@ -10,7 +10,7 @@ Fallback:  reference_results/4{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus_jax import pydisort_magnus_jax
+from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -34,13 +34,13 @@ def test_4a():
     mu0, I0, phi0  = 0.5, 0.0, 0.0   # I0=0  -> no beam; mu0 ignored
     b_neg = 1.0 / pi
     g_l = _make_isotropic()
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "4a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -53,13 +53,13 @@ def test_4b():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     b_pos = 0.5
     g_l = _make_HG(g)
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "4b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         b_pos=b_pos,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -72,14 +72,14 @@ def test_4c():
     mu0, I0, phi0  = 0.6, pi / 0.6, 0.5 * pi
     b_pos, b_neg   = 0.3, 0.1
     g_l = _make_isotropic()
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "4c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -92,13 +92,13 @@ def test_4d():
     mu0, I0, phi0  = 0.5, 0.0, 0.0
     b_neg = 1.0 / pi
     g_l = _make_isotropic()
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

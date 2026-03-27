@@ -10,7 +10,7 @@ Fallback:  reference_results/1{a-f}.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus_jax import pydisort_magnus_jax
+from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
@@ -23,12 +23,12 @@ phi0  = pi
 # Isotropic: only the l=0 Legendre coefficient is non-zero.
 g_l = np.zeros(NLeg)
 g_l[0] = 1.0
-g_l_func = lambda tau: g_l
+Leg_coeffs_func = lambda tau: g_l
 
 
 def _run(tau_bot, omega):
-    _, flux_up, u0_ToA, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_up, u0_ToA, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     return flux_up, u0_ToA
 

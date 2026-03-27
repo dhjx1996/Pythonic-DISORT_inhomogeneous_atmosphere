@@ -1,7 +1,7 @@
 """
 Test suite 11: NQuad variation and azimuthal output.
 
-Tests 11a-11b: verify that pydisort_magnus works correctly with different
+Tests 11a-11b: verify that pydisort_riccati works correctly with different
 NQuad values (4 and 16) — not just the default NQuad=8.
 
 Test 11c: validates the u_ToA_func(phi) azimuthal reconstruction against
@@ -12,7 +12,7 @@ Fallback:  reference_results/11{a,b}.npz  (11c uses on-the-fly only)
 """
 import numpy as np
 from math import pi
-from pydisort_magnus_jax import pydisort_magnus_jax
+from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import (
     get_reference, assert_close_to_reference,
     pydisort_toa_full_phi, assert_close_to_reference_phi,
@@ -29,13 +29,13 @@ def test_11a():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = np.zeros(NLeg); g_l[0] = 1.0
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -51,13 +51,13 @@ def test_11b():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -73,11 +73,11 @@ def test_11c():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
-    g_l_func = lambda tau: g_l
+    Leg_coeffs_func = lambda tau: g_l
 
     # Magnus: get u_ToA_func
-    _, _, _, u_ToA_func, _ = pydisort_magnus_jax(
-        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
 
     # Reference: pydisort with full phi output

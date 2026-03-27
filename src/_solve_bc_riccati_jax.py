@@ -1,7 +1,7 @@
 """
 BC solver for the Riccati forward solver — JAX port.
 
-Port of _solve_bc_magnus.py (numpy) to JAX (jnp).
+Port of _solve_bc_riccati.py (numpy) to JAX (jnp).
 Solves the N x N boundary-condition system from star-product operators.
 """
 
@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def _solve_bc_magnus_jax(
+def _solve_bc_riccati_jax(
     R_up, T_up, T_down, R_down, s_up, s_down,
     N,
     b_pos_m, b_neg_m,

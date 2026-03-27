@@ -10,7 +10,7 @@ toward the Riccati reference (tol=1e-5).
 """
 import numpy as np
 from math import pi
-from pydisort_magnus_jax import pydisort_magnus_jax
+from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import make_cloud_profile, multilayer_pydisort_toa, assert_convergence
 
 NQuad = 8
@@ -18,21 +18,21 @@ NLeg  = NQuad
 NFourier = NQuad
 
 
-def _ref_and_layers(tau_bot, omega_func, g_l_func, mu0, I0, phi0,
+def _ref_and_layers(tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
     """Run Riccati@tol=1e-5 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
-    _, flux_ref, u0_ref, _, _ = pydisort_magnus_jax(
-        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+    _, flux_ref, u0_ref, _, _ = pydisort_riccati_jax(
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-5,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 
     flux_c, u0_c = multilayer_pydisort_toa(
-        tau_bot, omega_func, g_l_func, 20, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 20, NQuad, NLeg, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
     flux_f, u0_f = multilayer_pydisort_toa(
-        tau_bot, omega_func, g_l_func, 200, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 200, NQuad, NLeg, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
     return flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f
@@ -45,13 +45,13 @@ def test_10a():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
     BDRF = [rho / pi]
-    omega_func, g_l_func = make_cloud_profile(
+    omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
     )
 
     flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f = _ref_and_layers(
-        tau_bot, omega_func, g_l_func, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_convergence(flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f,
@@ -65,13 +65,13 @@ def test_10b():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
     BDRF = [rho / pi]
-    omega_func, g_l_func = make_cloud_profile(
+    omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
     )
 
     flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f = _ref_and_layers(
-        tau_bot, omega_func, g_l_func, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_convergence(flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f,
@@ -85,13 +85,13 @@ def test_10c():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.06
     BDRF = [rho / pi]
-    omega_func, g_l_func = make_cloud_profile(
+    omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.99995, omega_bot=0.99995,
         g_top=0.87, g_bot=0.83, NLeg=NLeg, NQuad=NQuad,
     )
 
     flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f = _ref_and_layers(
-        tau_bot, omega_func, g_l_func, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_convergence(flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f,
@@ -105,13 +105,13 @@ def test_10d():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.3
     BDRF = [rho / pi]
-    omega_func, g_l_func = make_cloud_profile(
+    omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
     )
 
     flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f = _ref_and_layers(
-        tau_bot, omega_func, g_l_func, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_convergence(flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f,

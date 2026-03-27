@@ -4,32 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Run all tests** (from the `tests/` directory; use the `twostream` conda env):
+**Run all tests** (from the `tests/` directory; use the `JAX` conda env on Linux):
 ```bash
-cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest . -v
+cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest . -v
 ```
 
 **Run a single test file:**
 ```bash
-cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest 1_test.py -v
+cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py -v
 ```
 
 **Run a single test function:**
 ```bash
-cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" -m pytest 1_test.py::test_1a -v
+cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py::test_1a -v
 ```
 
 **Regenerate .npz fallback reference files** (run once after changing tau values):
 ```bash
-cd tests && "C:\Users\dionh\miniconda3\envs\twostream\python.exe" supplementary/generate_reference.py
+cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python supplementary/generate_reference.py
 ```
 
-Note: Do NOT use `conda run` on Windows — it fails with UnicodeEncodeError (CP1252).
+Note: Full test suite takes ~28 min due to per-test JIT recompilation.
+Representative subset for quick verification: `10_test.py 13_test.py 14_test.py`.
 
 ## Architecture
 
 **PythonicDISORT** (the original Discrete Ordinates Solver) is an **external dependency**
-installed in the `twostream` conda env. It provides `pydisort()` and `subroutines`.
+installed in the `JAX` conda env. It provides `pydisort()` and `subroutines`.
 See https://pythonic-disort.readthedocs.io for its documentation.
 
 The Riccati forward solver code lives in `src/` (3 files — not a package, just modules
@@ -37,7 +38,7 @@ added to `sys.path` by `tests/conftest.py`).
 
 ### Tests
 
-`tests/` contains the PyTest suite for `pydisort_magnus` (56 tests across 14 files):
+`tests/` contains the PyTest suite for `pydisort_riccati_jax` (56 tests across 14 files):
 
 | File | What it covers |
 |---|---|
@@ -51,12 +52,11 @@ added to `sys.path` by `tests/conftest.py`).
 | `10_test.py` | Adiabatic cloud profiles (convergence) |
 | `11_test.py` | NQuad variation (4, 16) + azimuthal u_ToA_func validation |
 | `13_test.py` | Adaptive Riccati solver (thin, cloud, constant-ω) |
-| `14_test.py` | Radau Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
+| `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
 | `15_test.py` | Full-domain Riccati integration (cloud, thin) |
 
-`tests/_helpers.py` provides `make_D_m_funcs`, `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, `assert_convergence`, and `assert_convergence_and_accuracy`.
+`tests/_helpers.py` provides `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, `assert_convergence`, and `assert_convergence_and_accuracy`.
 `tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
-`tests/supplementary/` also contains star-product diagnostic/exploration scripts.
 
 ### Documentation
 
@@ -71,7 +71,7 @@ The primary reference for the mathematics is `docs/Pythonic-DISORT.ipynb`, espec
 
 ### Numerical stability invariant — NO POSITIVE EXPONENTS
 
-**This is a hard design invariant for both `pydisort` and `pydisort_magnus`.**
+**This is a hard design invariant for both `pydisort` and `pydisort_riccati_jax`.**
 
 No intermediate quantity in the solver may contain a factor of the form `exp(+λ · τ)` with
 `λ > 0` and `τ > 0`.  Violating this causes catastrophic floating-point overflow for thick
@@ -82,29 +82,27 @@ invariant — no positive exponents anywhere in the code.
 
 ---
 
-## Riccati forward solver (`pydisort_magnus`)
+## Riccati forward solver (`pydisort_riccati_jax`)
 
 **Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Riccati forward solver is the first building block.
 
-**Purpose**: `pydisort_magnus` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function D^m(τ), yielding the upward field at ToA (τ=0). Uses the invariant-imbedding Riccati ODE integrated via scipy's adaptive Radau IIA solver (L-stable, order 5).
+**Purpose**: `pydisort_riccati_jax` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function g_l(τ), yielding the upward field at ToA (τ=0). Uses the invariant-imbedding Riccati ODE integrated via diffrax's Kvaerno5 solver (L-stable ESDIRK, order 5, adaptive PIDController step-size).
 
 ### Design priority — minimise step count
 
 **Minimising the number of integration steps is the primary optimisation target**, more important
 than overall computational complexity or wall time (though the latter matters too).  The forward
-solver sits inside an iterative retrieval loop: each call to `pydisort_magnus` is one evaluation
+solver sits inside an iterative retrieval loop: each call to `pydisort_riccati_jax` is one evaluation
 of the forward model, and the retrieval may require hundreds of evaluations.  Reducing the step
 count from K=900 to K=200 (even at a slightly higher per-step cost) compounds across the
-retrieval and dominates total run time.  When evaluating candidate algorithms (e.g., implicit
-Riccati, Rosenbrock–Sylvester, adaptive stepping), prefer the one that achieves a given accuracy
-with the fewest steps, not the one with the cheapest individual step.
+retrieval and dominates total run time.
 
 ### Design scope and restrictions
 
 **Primary use case — τ-dependent ω and/or phase function.** This solver exists specifically
-for atmospheres where ω(τ) and/or D^m(τ, ·, ·) vary continuously with optical depth.  The
+for atmospheres where ω(τ) and/or g_l(τ) vary continuously with optical depth.  The
 τ-independent case is handled more efficiently and exactly by the original `pydisort` solver;
-`pydisort_magnus` will not be optimised for that case.  Constant-ω / constant-phase problems
+`pydisort_riccati_jax` will not be optimised for that case.  Constant-ω / constant-phase problems
 are retained only as sanity-check test cases (tests 1–5), not as a target use case.
 
 **Bottom boundary condition: unrestricted.**  Arbitrary `b_pos` and BDRF are supported.
@@ -115,15 +113,17 @@ the N×N BC system — no separate backward pass is needed for `b_pos`.
 
 | File | Purpose |
 |---|---|
-| `src/pydisort_magnus.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
-| `src/_riccati_solver.py` | Radau IIA Riccati solver: invariant-imbedding R, companion T, beam source s |
-| `src/_solve_bc_magnus.py` | `_solve_bc_magnus`: N×N BC system from scattering operators |
+| `src/pydisort_riccati_jax.py` | Public entry point: validation, quadrature, Fourier loop, output assembly |
+| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s |
+| `src/_solve_bc_riccati_jax.py` | `_solve_bc_riccati_jax`: N×N BC system from scattering operators |
 
-**NFourier** = `len(D_m_funcs)`. The m=0 callable handles isotropic/azimuth-symmetric scattering.
+### Phase-function interface
 
-**D_m_funcs interface**: `D_m_funcs[m](τ, mu_i, mu_j)` returns the phase-function kernel WITHOUT the ω factor:
-`D^m_pure(μ_i, μ_j; τ) = (1/2) Σ_l (2l+1) * poch_l * g_l^m(τ) * P_l^m(μ_i) * P_l^m(μ_j)`.
-Handles arbitrary signs of μ_i, μ_j with broadcasting support. ω is handled internally via `omega_func`.
+The phase function is specified via `Leg_coeffs_func(τ) → (NLeg,)` returning Legendre coefficients,
+plus explicit `NLeg` and `NFourier` parameters. Legendre polynomial products at quadrature
+points are pre-computed at setup time using `scipy.special` (via `_precompute_legendre`),
+then contracted via `jnp.einsum` in the JAX-traceable ODE vector field. This replaces the
+old `D_m_funcs` callable interface and makes the entire integration autodiff-compatible.
 
 ### Numerical stability
 
@@ -132,12 +132,14 @@ The BC solver is a simple N×N system (half the size of the old 2N×2N Stamnes�
 
 ### Riccati solver
 
-Full-domain invariant-imbedding Riccati ODE via scipy's Radau IIA solver (3-stage implicit
-RK, L-stable, order 5, adaptive). Two passes: forward sweep for (R_up, T_up, s_up),
+Full-domain invariant-imbedding Riccati ODE via diffrax Kvaerno5 (5-stage ESDIRK,
+L-stable, order 5, adaptive PIDController). Two passes: forward sweep for (R_up, T_up, s_up),
 backward sweep for (R_down, T_down, s_down). Tolerance controlled via `tol` parameter
 (default 1e-3).
 
-Riccati ODE system (vectorized as y = [vec(R), vec(T), s], size 2N² + N):
+State is a PyTree `{'R': (N,N), 'T': (N,N), 's': (N,)}` — no flattening needed.
+
+Riccati ODE system:
 - dR/dσ = α·R + R·α + R·β·R + β       (N×N, nonlinear Riccati)
 - dT/dσ = T·(α + β·R)                  (N×N, linear in T)
 - ds/dσ = (α + R·β)·s + R·q₁ + q₂     (N, linear in s, beam source)
@@ -152,9 +154,9 @@ Always a 5-tuple: `(mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
 
 ### Deferred features (not yet implemented — do not forget)
 
-- **Delta-M scaling**: not applied in `pydisort_magnus`
+- **Delta-M scaling**: not applied in `pydisort_riccati_jax`
 - **Nakajima-Tanaka (NT) corrections**: not applied; may be added in the future
 - **Isotropic internal source**: only the collimated beam source is handled
 - **Non-ToA depth evaluation**: currently only τ=0 (ToA) is returned
 - **A priori τ-grid utility**: cheap grid from profile, usable with SCIATRAN (see memory)
-- **JAX + diffrax migration**: port forward solver to JAX + diffrax (Kvaerno5, L-stable ESDIRK) on Linux/GPU to enable discrete adjoint computation via autodiff for the ill-conditioned r_e(τ) retrieval. The current scipy Radau implementation serves as the reference. This migration will be prompted after the project moves to a Linux architecture.
+- **Discrete adjoint**: diffrax supports `RecursiveCheckpointAdjoint`, `BacksolveAdjoint`, `ImplicitAdjoint`, and `DirectAdjoint` for differentiating through the ODE solve — needed for the r_e(τ) retrieval
