@@ -9,11 +9,12 @@ toward the Riccati reference (tol=1e-5).
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
-from _helpers import make_D_m_funcs, multilayer_pydisort_toa, assert_convergence
+from pydisort_magnus_jax import pydisort_magnus_jax
+from _helpers import multilayer_pydisort_toa, assert_convergence
 
 NQuad = 8
 NLeg  = NQuad
+NFourier = NQuad
 
 
 def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
@@ -23,12 +24,8 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
         g = g_func(tau)
         return g ** np.arange(NLeg)
 
-    D_m_funcs = make_D_m_funcs(
-        lambda tau: g_func(tau) ** np.arange(NLeg), NLeg, NQuad
-    )
-
-    _, flux_ref, u0_ref, _, _ = pydisort_magnus(
-        tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_ref, u0_ref, _, _ = pydisort_magnus_jax(
+        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-5,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )

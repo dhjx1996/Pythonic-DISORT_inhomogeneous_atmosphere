@@ -1,21 +1,22 @@
 """
 Test suite 13: Adaptive Riccati solver (full-domain).
 
-Validates the Radau IIA Riccati solver via pydisort_magnus(tol=...):
+Validates the Kvaerno5 Riccati solver via pydisort_magnus_jax(tol=...):
   13a: tau-varying omega on thin atmosphere — accuracy vs multilayer reference.
   13b: thick cloud — accuracy + verifies Riccati uses fewer steps than equidistant.
   13c: constant omega — verifies few steps needed.
 """
 import numpy as np
-from math import pi, ceil
-from pydisort_magnus import pydisort_magnus
+from math import pi
+from pydisort_magnus_jax import pydisort_magnus_jax
 from _helpers import (
-    make_D_m_funcs, make_cloud_profile, multilayer_pydisort_toa,
+    make_cloud_profile, multilayer_pydisort_toa,
     assert_close_to_reference,
 )
 
 NQuad = 8
 NLeg = NQuad
+NFourier = NQuad
 
 
 def test_13a():
@@ -26,7 +27,6 @@ def test_13a():
     omega_func = lambda tau: 0.95 + (0.70 - 0.95) * tau / tau_bot
 
     g_l = g ** np.arange(NLeg)
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
     g_l_func = lambda tau: g_l
 
     # Reference: high-resolution multilayer pydisort
@@ -37,8 +37,8 @@ def test_13a():
     )
 
     # Adaptive solve
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus(
-        tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus_jax(
+        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
     )
 
@@ -59,7 +59,7 @@ def test_13b():
     rho = 0.05
     BDRF = [rho / pi]
 
-    omega_func, g_l_func, D_m_funcs = make_cloud_profile(
+    omega_func, g_l_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
     )
@@ -72,8 +72,8 @@ def test_13b():
     )
 
     # Adaptive solve
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus(
-        tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus_jax(
+        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
@@ -94,11 +94,11 @@ def test_13c():
 
     g_l = np.zeros(NLeg)
     g_l[0] = 1.0
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+    g_l_func = lambda tau: g_l
 
     # Adaptive solve (commutator = 0 for constant A, so only stability ceiling)
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, tau_grid = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
     )
 
@@ -106,8 +106,8 @@ def test_13c():
     print(f"  Riccati steps: {n_steps}")
 
     # Reference: tight-tolerance Riccati
-    _, flux_ref, u0_ref, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_ref, u0_ref, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-6,
     )
 

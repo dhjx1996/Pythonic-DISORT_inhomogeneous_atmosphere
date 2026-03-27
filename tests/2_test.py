@@ -11,11 +11,12 @@ Fallback:  reference_results/2{a-d}_test.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
-from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
+from pydisort_magnus_jax import pydisort_magnus_jax
+from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
 NLeg  = NQuad
+NFourier = NQuad
 mu0   = 0.080442
 I0    = pi
 phi0  = pi
@@ -24,12 +25,12 @@ phi0  = pi
 g_l = np.zeros(NLeg)
 g_l[0] = 1.0
 g_l[2] = 0.1
-D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+g_l_func = lambda tau: g_l
 
 
 def _run(tau_bot, omega):
-    _, flux_up, u0_ToA, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_up, u0_ToA, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     return flux_up, u0_ToA
 

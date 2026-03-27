@@ -180,8 +180,7 @@ def make_cloud_profile(tau_bot, omega_top, omega_bot, g_top, g_bot, NLeg, NQuad)
     omega_func = lambda tau: omega_top + (omega_bot - omega_top) * tau / tau_bot
     g_func     = lambda tau: g_top + (g_bot - g_top) * tau / tau_bot
     g_l_func   = lambda tau: g_func(tau) ** np.arange(NLeg)
-    D_m_funcs  = make_D_m_funcs(g_l_func, NLeg, NQuad)
-    return omega_func, g_l_func, D_m_funcs
+    return omega_func, g_l_func
 
 
 # ---------------------------------------------------------------------------

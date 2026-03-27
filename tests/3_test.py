@@ -10,11 +10,12 @@ Fallback:  reference_results/3{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
-from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
+from pydisort_magnus_jax import pydisort_magnus_jax
+from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
 NLeg  = NQuad
+NFourier = NQuad
 
 
 def _make(g):
@@ -24,9 +25,9 @@ def _make(g):
 
 def _run(tau_bot, omega, g, mu0, I0, phi0):
     g_l = _make(g)
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
-    _, flux_up, u0_ToA, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    g_l_func = lambda tau: g_l
+    _, flux_up, u0_ToA, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     return flux_up, u0_ToA
 

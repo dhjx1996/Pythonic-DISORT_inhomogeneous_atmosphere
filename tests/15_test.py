@@ -1,20 +1,21 @@
 """
 Test suite 15: Full-domain Riccati integration tests.
 
-Validates the Radau IIA Riccati solver end-to-end via pydisort_magnus(tol=...):
+Validates the Kvaerno5 Riccati solver end-to-end via pydisort_magnus_jax(tol=...):
   15a: Thick cloud (tau=30) -- accuracy vs multilayer reference.
   15b: Thin atmosphere (tau=1) -- reproducibility.
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
+from pydisort_magnus_jax import pydisort_magnus_jax
 from _helpers import (
-    make_D_m_funcs, make_cloud_profile, multilayer_pydisort_toa,
+    make_cloud_profile, multilayer_pydisort_toa,
     assert_close_to_reference,
 )
 
 NQuad = 8
 NLeg = NQuad
+NFourier = NQuad
 
 
 def test_15a():
@@ -25,7 +26,7 @@ def test_15a():
     rho = 0.05
     BDRF = [rho / pi]
 
-    omega_func, g_l_func, D_m_funcs = make_cloud_profile(
+    omega_func, g_l_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
     )
@@ -37,8 +38,8 @@ def test_15a():
     )
 
     # Riccati solve
-    _, flux_hyb, u0_hyb, _, tau_grid = pydisort_magnus(
-        tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_hyb, u0_hyb, _, tau_grid = pydisort_magnus_jax(
+        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
@@ -57,17 +58,17 @@ def test_15b():
 
     g_l = np.zeros(NLeg)
     g_l[0] = 1.0
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+    g_l_func = lambda tau: g_l
 
     # First Riccati solve
-    _, flux_adap, u0_adap, _, grid_adap = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_adap, u0_adap, _, grid_adap = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
     )
 
     # Same call again — should reproduce identically
-    _, flux_hyb, u0_hyb, _, grid_hyb = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_hyb, u0_hyb, _, grid_hyb = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-3,
     )
 

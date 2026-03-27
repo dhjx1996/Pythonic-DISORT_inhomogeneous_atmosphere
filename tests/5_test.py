@@ -10,21 +10,21 @@ Fallback:  reference_results/5{a-c}_test.npz
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
-from _helpers import make_D_m_funcs, get_reference, assert_close_to_reference
+from pydisort_magnus_jax import pydisort_magnus_jax
+from _helpers import get_reference, assert_close_to_reference
 
 NQuad = 8
 NLeg  = NQuad
+NFourier = NQuad
 
 
 def _make_isotropic():
     g_l = np.zeros(NLeg); g_l[0] = 1.0
-    return g_l, make_D_m_funcs(g_l, NLeg, NQuad)
+    return g_l
 
 
 def _make_HG(g):
-    g_l = g ** np.arange(NLeg)
-    return g_l, make_D_m_funcs(g_l, NLeg, NQuad)
+    return g ** np.arange(NLeg)
 
 
 def test_5a():
@@ -35,14 +35,15 @@ def test_5a():
     rho = 0.1
     # pydisort BDRF convention: scalar mode-0 coefficient = rho/pi
     BDRF = [rho / pi]
-    g_l, D_m_funcs = _make_isotropic()
+    g_l = _make_isotropic()
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "5a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -55,14 +56,15 @@ def test_5b():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.5
     BDRF = [rho / pi]
-    g_l, D_m_funcs = _make_HG(g)
+    g_l = _make_HG(g)
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "5b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -83,15 +85,16 @@ def test_5c():
     # Scalar equivalent for the pydisort reference
     BDRF_scalar = [rho / pi]
 
-    g_l, D_m_funcs = _make_HG(g)
+    g_l = _make_HG(g)
+    g_l_func = lambda tau: g_l
 
     # Reference uses scalar BDRF (equivalent result for Lambertian surface)
     flux_ref, u0_ref = get_reference(
         "5c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_scalar,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_callable,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -105,14 +108,15 @@ def test_5d():
     rho = 0.3
     b_pos, b_neg = 0.2, 0.1
     BDRF = [rho / pi]
-    g_l, D_m_funcs = _make_HG(g)
+    g_l = _make_HG(g)
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "5d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=BDRF,
     )
@@ -126,14 +130,15 @@ def test_5e():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.9
     BDRF = [rho / pi]
-    g_l, D_m_funcs = _make_HG(g)
+    g_l = _make_HG(g)
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "5e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

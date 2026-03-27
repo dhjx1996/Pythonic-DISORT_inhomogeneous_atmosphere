@@ -12,9 +12,9 @@ Fallback:  reference_results/11{a,b}.npz  (11c uses on-the-fly only)
 """
 import numpy as np
 from math import pi
-from pydisort_magnus import pydisort_magnus
+from pydisort_magnus_jax import pydisort_magnus_jax
 from _helpers import (
-    make_D_m_funcs, get_reference, assert_close_to_reference,
+    get_reference, assert_close_to_reference,
     pydisort_toa_full_phi, assert_close_to_reference_phi,
 )
 
@@ -24,17 +24,18 @@ def test_11a():
     print("\n--- Test 11a ---")
     NQuad = 4
     NLeg  = NQuad
+    NFourier = NQuad
     tau_bot, omega = 3.0, 0.5
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = np.zeros(NLeg); g_l[0] = 1.0
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -45,17 +46,18 @@ def test_11b():
     print("\n--- Test 11b ---")
     NQuad = 16
     NLeg  = NQuad
+    NFourier = NQuad
     tau_bot, omega, g = 3.0, 0.9, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+    g_l_func = lambda tau: g_l
 
     flux_ref, u0_ref = get_reference(
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_mag, u0_mag, _, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -65,16 +67,17 @@ def test_11c():
     print("\n--- Test 11c ---")
     NQuad = 8
     NLeg  = NQuad
+    NFourier = NQuad
     N     = NQuad // 2
     tau_bot, omega, g = 3.0, 0.8, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
 
     g_l = g ** np.arange(NLeg)
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
+    g_l_func = lambda tau: g_l
 
     # Magnus: get u_ToA_func
-    _, _, _, u_ToA_func, _ = pydisort_magnus(
-        tau_bot, lambda tau: omega, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, _, _, u_ToA_func, _ = pydisort_magnus_jax(
+        tau_bot, lambda tau: omega, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
     )
 
     # Reference: pydisort with full phi output

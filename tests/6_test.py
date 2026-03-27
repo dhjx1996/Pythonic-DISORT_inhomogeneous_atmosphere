@@ -11,23 +11,24 @@ The Riccati solver (tol=1e-5) is the reference.
 Expected convergence: O(h^2) in the layer thickness h = tau_bot / NLayers.
 """
 import numpy as np
+import jax.numpy as jnp
 from math import pi
-from pydisort_magnus import pydisort_magnus
-from _helpers import make_D_m_funcs, multilayer_pydisort_toa, assert_convergence
+from pydisort_magnus_jax import pydisort_magnus_jax
+from _helpers import multilayer_pydisort_toa, assert_convergence
 
 NQuad = 8
 NLeg  = NQuad
+NFourier = NQuad
 
 
 def _ref_and_layers(tau_bot, omega_func, g_const, mu0, I0, phi0,
                     b_pos=0, b_neg=0, BDRF_Fourier_modes=()):
     """Run Riccati at tight tolerance (reference) and pydisort at 10 / 100 layers."""
     g_l = g_const ** np.arange(NLeg)
-    D_m_funcs = make_D_m_funcs(g_l, NLeg, NQuad)
     g_l_func = lambda tau: g_l  # constant phase function
 
-    _, flux_ref, u0_ref, _, _ = pydisort_magnus(
-        tau_bot, omega_func, D_m_funcs, NQuad, mu0, I0, phi0,
+    _, flux_ref, u0_ref, _, _ = pydisort_magnus_jax(
+        tau_bot, omega_func, g_l_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
         tol=1e-5,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
@@ -74,7 +75,7 @@ def test_6c():
     print("\n--- Test 6c: sinusoidal omega, HG g=0.5 ---")
     tau_bot, g = 1.0, 0.5
     mu0, I0, phi0 = 0.7, 1.0, 0.0
-    omega_func = lambda tau: 0.70 + 0.20 * np.sin(2 * tau)
+    omega_func = lambda tau: 0.70 + 0.20 * jnp.sin(2 * tau)
 
     flux_ref, flux_c, flux_f, u0_ref, u0_c, u0_f = _ref_and_layers(
         tau_bot, omega_func, g, mu0, I0, phi0
