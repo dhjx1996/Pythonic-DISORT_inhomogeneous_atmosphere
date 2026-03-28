@@ -34,21 +34,24 @@ Comprehensive Documentation}
 
 \begin{abstract}
 This report documents the Riccati forward solver implemented in
-\texttt{pydisort\_magnus}, an alternative entry point to PythonicDISORT
+\texttt{pydisort\_riccati\_jax}, an alternative entry point to PythonicDISORT
 for atmospheres where the single-scattering albedo $\omega(\tau)$ and
 phase function vary continuously with optical depth.  Instead of
 per-layer eigendecomposition, the solver integrates the
 invariant-imbedding Riccati ODE for reflection and transmission
-operators using SciPy's adaptive Radau~IIA method (3-stage implicit
-Runge--Kutta, L-stable, order~5).  All terms in the ODE have positive
-sign---no growing exponentials appear anywhere in the computation,
-guaranteeing unconditional numerical stability for arbitrary optical
-depth.  We derive the complete system of ODEs (reflection~$\mat{R}$,
+operators using diffrax's Kvaerno5 method~\cite{kidger2022neural}
+(5-stage ESDIRK, L-stable, order~5) with PIDController adaptive
+step-size control, running on JAX~\cite{jax2018github} for automatic
+differentiability.  All terms in the ODE have positive sign---no growing
+exponentials appear anywhere in the computation, guaranteeing
+unconditional numerical stability for arbitrary optical depth.  We
+derive the complete system of ODEs (reflection~$\mat{R}$,
 transmission~$\mat{T}$, beam source~$\vect{s}$) for both forward and
 backward sweeps, present the boundary-condition solve, and discuss the
-adaptive Radau~IIA integration.  This report extends Sections~3--4 of
-the Pythonic-DISORT Comprehensive Documentation~\cite{HP2024doc} and
-assumes familiarity with that document.
+Kvaerno5 integration via JAX and diffrax.  This report extends
+Sections~3--4 of the Pythonic-DISORT Comprehensive
+Documentation~\cite{HP2024doc} and assumes familiarity with that
+document.
 \end{abstract}
 
 \tableofcontents
@@ -102,7 +105,7 @@ Fourier modes
   u(\tau, \mu, \varphi)
   \approx \sum_{m=0}^{M-1} u^m(\tau, \mu)\,\cos\bigl(m(\varphi_0 - \varphi)\bigr),
 \end{equation}
-where $M = \texttt{NFourier} = \texttt{len(D\_m\_funcs)}$.  Each mode
+where $M = \texttt{NFourier}$.  Each mode
 satisfies an independent RTE (cf.\ \cite[Section~3.4]{HP2024doc}):
 \begin{equation}\label{eq:rte-mode}
   \mu\,\frac{\dd u^m}{\dd\tau}
@@ -172,13 +175,19 @@ The scaled beam-source vectors are
   \tilde{Q}^\pm_i(\tau) = \frac{1}{\mu_i}\, Q^m(\tau, \pm\mu_i).
 \end{equation}
 
-\begin{remark}[Factoring out $\omega$]
-In the implementation, \texttt{D\_m\_funcs[m]} returns the kernel
-\emph{without} the $\omega$ factor: $D^m_{\mathrm{pure}}(\tau, \mu_i, \mu_j)$.
-The factor $\omega(\tau)$ is applied separately when constructing
-$\mat{\alpha}(\tau)$ and $\mat{\beta}(\tau)$ via
-\texttt{\_make\_alpha\_beta\_funcs}.  This allows $\omega(\tau)$ and the
-phase function to vary independently.
+\begin{remark}[Implementation: pre-computed Legendre tensors]
+In the implementation, the user supplies a callable
+$\texttt{Leg\_coeffs\_func}(\tau) \to (g_0(\tau), g_1(\tau), \ldots,
+g_{L-1}(\tau))$ returning the Legendre moments of the phase function at
+each $\tau$.  The associated Legendre polynomials $P_\ell^m(\mu_i)$ at
+the quadrature points are pre-computed once at setup time using
+\texttt{scipy.special} (not JAX-traceable) and stored as JAX arrays.
+The matrices $\mat{D}^\pm$ are then assembled inside the ODE vector
+field via \texttt{jnp.einsum} contractions over these pre-computed
+tensors and the $\tau$-dependent coefficients $g_\ell(\tau)$, making
+the entire integration fully JAX-traceable and autodifferentiable.
+The factor $\omega(\tau)$ is applied separately, allowing $\omega(\tau)$
+and the phase function to vary independently.
 \end{remark}
 
 %----------------------------------------------------------------------
@@ -532,36 +541,43 @@ equations are identical, so $\mat{R}_{\mathrm{up}} =
 \end{remark}
 
 %----------------------------------------------------------------------
-\subsection{Vectorised State for Numerical Integration}\label{sec:vectorised}
+\subsection{State Representation for Numerical Integration}\label{sec:state}
 %----------------------------------------------------------------------
 
 The three ODEs \eqref{eq:riccati-R}, \eqref{eq:companion-T},
 \eqref{eq:companion-s} (or their backward analogues) are integrated
-simultaneously as a single coupled system.  The state vector is
-\begin{equation}\label{eq:state-vector}
+simultaneously as a single coupled system.  The state is represented as
+a \emph{PyTree} (a nested dictionary of JAX arrays):
+\begin{equation}\label{eq:state-pytree}
   \vect{y} =
-  \bigl(\avec(\mat{R}),\; \avec(\mat{T}),\; \vect{s}\bigr)
-  \in \R^{2N^2 + N},
+  \bigl\{\,
+    \texttt{R}: \mat{R} \in \R^{N \times N},\;
+    \texttt{T}: \mat{T} \in \R^{N \times N},\;
+    \texttt{s}: \vect{s} \in \R^{N}
+  \,\bigr\},
 \end{equation}
-where $\avec(\cdot)$ denotes column-major vectorisation of the
-$N\!\times\!N$ matrix.  The right-hand side function evaluates
-$\mat{\alpha}(\sigma)$ and $\mat{\beta}(\sigma)$ once per call and
-assembles the three derivatives:
+with total dimension $2N^2 + N$.  Unlike a flattened state vector,
+the PyTree representation preserves the matrix structure and avoids
+reshape operations.  The diffrax solver natively supports PyTree states,
+applying its ESDIRK stages and step-size control to each leaf array.
+
+The right-hand side function evaluates $\mat{\alpha}(\sigma)$ and
+$\mat{\beta}(\sigma)$ once per call and assembles the three derivatives:
 \begin{align}
-  \frac{\dd}{\dd\sigma}\avec(\mat{R})
-  &= \avec\bigl(\mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
-     + \mat{R}\mat{\beta}\mat{R} + \mat{\beta}\bigr),
+  \frac{\dd\mat{R}}{\dd\sigma}
+  &= \mat{\alpha}\mat{R} + \mat{R}\mat{\alpha}
+     + \mat{R}\mat{\beta}\mat{R} + \mat{\beta},
   \label{eq:rhs-R} \\
-  \frac{\dd}{\dd\sigma}\avec(\mat{T})
-  &= \avec\bigl(\mat{T}(\mat{\alpha} + \mat{\beta}\mat{R})\bigr),
+  \frac{\dd\mat{T}}{\dd\sigma}
+  &= \mat{T}\,(\mat{\alpha} + \mat{\beta}\mat{R}),
   \label{eq:rhs-T} \\
   \frac{\dd\vect{s}}{\dd\sigma}
   &= (\mat{\alpha} + \mat{R}\mat{\beta})\vect{s}
      + \mat{R}\vect{q}_1 + \vect{q}_2.
   \label{eq:rhs-s}
 \end{align}
-The initial condition is $\vect{y}(0) =
-(\vect{0}_{N^2},\; \avec(\mat{I}_N),\; \vect{0}_N)$.
+The initial condition is $\mat{R}(0) = \mat{0}$, $\mat{T}(0) = \mat{I}$,
+$\vect{s}(0) = \vect{0}$.
 
 The cost per right-hand side evaluation is dominated by three
 $N\!\times\!N$ matrix multiplications ($O(N^3)$ each).
@@ -679,7 +695,7 @@ The upward diffuse flux at the top of atmosphere is
 where $I^+_i(0)$ are the entries of $\vect{I}^+(0)$ from the $m=0$ mode.
 
 %======================================================================
-\section{Numerical Integration: Radau IIA}\label{sec:radau}
+\section{Numerical Integration: Kvaerno5 via JAX and diffrax}\label{sec:kvaerno5}
 %======================================================================
 
 %----------------------------------------------------------------------
@@ -692,25 +708,50 @@ the eigenvalues of the coefficient matrix $\mat{A}$ span a wide range
 50$), and the Riccati nonlinearity amplifies this stiffness.  An
 explicit method would require impractically small step sizes.
 
-We use SciPy's implementation of the \textbf{Radau~IIA} method
-(\texttt{scipy.integrate.solve\_ivp} with \texttt{method='Radau'}).
-This is a 3-stage implicit Runge--Kutta method with the following
-properties:
+We use the \textbf{Kvaerno5} solver from diffrax~\cite{kidger2022neural},
+a JAX-based differential equation library.  Kvaerno5 is a 5-stage
+\emph{ESDIRK} (Explicit Singly Diagonal Implicit Runge--Kutta) method
+with the following properties:
 \begin{itemize}[nosep]
   \item \textbf{Order 5}: fifth-order global accuracy with embedded
-    third-order error estimate for adaptive step-size control.
+    fourth-order error estimate for adaptive step-size control.
   \item \textbf{L-stability}: the stability function satisfies
     $|R(\infty)| = 0$, meaning infinitely stiff components are damped
     completely in a single step.  This is strictly stronger than
     A-stability and essential for the Riccati equation where the
     effective stiffness varies as $\mat{R}$ grows.
-  \item \textbf{Adaptive step-size control}: the solver automatically
-    adjusts the step size to maintain the user-specified tolerance
-    $\texttt{tol}$, with \texttt{rtol = tol} and
-    \texttt{atol = tol} $\times 10^{-3}$.
+  \item \textbf{ESDIRK structure}: all implicit stages share the same
+    diagonal coefficient $\gamma$, so only a single LU factorisation
+    per step is needed (reused across stages), unlike fully implicit
+    methods (e.g.\ Radau~IIA) that require factorising a larger coupled
+    system.
+  \item \textbf{Adaptive step-size control}: a \texttt{PIDController}
+    adjusts the step size using a proportional-integral-derivative
+    strategy on the local error estimate, with user-specified tolerances
+    $\texttt{rtol} = \texttt{tol}$ and
+    $\texttt{atol} = \texttt{tol} \times 10^{-3}$.
 \end{itemize}
 
-For further details on the Radau~IIA method, see~\cite{hairer1996}.
+The state is represented as a PyTree (\cref{sec:state}), which diffrax
+handles natively---no flattening or reshaping of the $N\!\times\!N$
+matrices is required.
+
+\subsubsection{Why JAX and diffrax}
+
+The solver is implemented in JAX~\cite{jax2018github} for two reasons
+beyond performance.  First, the ODE vector field must be
+\emph{JAX-traceable}: all operations from the $\tau$-dependent Legendre
+coefficients through the $\mat{\alpha}$, $\mat{\beta}$ assembly to the
+Riccati right-hand side must be expressed as JAX primitives so that the
+computation graph is available for automatic differentiation.  Second,
+diffrax provides built-in adjoint strategies
+(\texttt{RecursiveCheckpointAdjoint}, etc.)\ that enable differentiation
+through the entire ODE solve, which is required for the gradient-based
+retrieval discussed in \cref{sec:retrieval}.
+
+Float64 arithmetic (\texttt{jax.config.update("jax\_enable\_x64", True)})
+is mandatory: double precision is needed to resolve transmission
+operators $\mat{T}$ that decay to $O(10^{-13})$ in thick atmospheres.
 
 %----------------------------------------------------------------------
 \subsection{Stability Considerations}\label{sec:stability}
@@ -740,7 +781,7 @@ for constant coefficients) is ill-conditioned when $\texttt{NQuad} = 4$
 
 \subsubsection{Step count behaviour}
 
-The adaptive Radau solver achieves approximately \textbf{35 forward
+The adaptive Kvaerno5 solver achieves approximately \textbf{35 forward
 steps} on the $\tau = 30$ cloud benchmark (adiabatic liquid water cloud,
 $\omega$ varying from 0.85 to 0.96, asymmetry parameter from 0.865 to
 0.820) at $\texttt{tol} = 10^{-3}$, for a total of approximately 65
@@ -759,14 +800,14 @@ independent of $\texttt{NQuad}$:
 \end{center}
 This is because the step size is controlled by the variation of the
 optical properties with $\tau$, not by the stiffness of the discretised
-system (which the L-stable Radau method handles implicitly).
+system (which the L-stable Kvaerno5 method handles implicitly).
 
 %======================================================================
-\section{Summary}\label{sec:summary}
+\section{Summary of the Forward Solver}\label{sec:summary}
 %======================================================================
 
-The \texttt{pydisort\_magnus} solver replaces per-layer eigendecomposition
-with invariant-imbedding Riccati integration:
+The \texttt{pydisort\_riccati\_jax} solver replaces per-layer
+eigendecomposition with invariant-imbedding Riccati integration:
 \begin{enumerate}[nosep]
   \item Forward sweep ($\sigma$: $0 \to \tbot$, building from bottom):
     integrate the coupled $(\mat{R}, \mat{T}, \vect{s})$ system
@@ -784,13 +825,434 @@ with invariant-imbedding Riccati integration:
 \end{enumerate}
 
 The approach is unconditionally stable (no positive exponents),
-adaptive (tolerance-controlled step size via L-stable Radau~IIA),
-and efficient (step count nearly independent of $\texttt{NQuad}$).
+adaptive (tolerance-controlled step size via L-stable Kvaerno5),
+efficient (step count nearly independent of $\texttt{NQuad}$), and
+fully JAX-traceable (enabling automatic differentiation for
+gradient-based retrieval; see \cref{sec:retrieval}).
+
+%======================================================================
+\section{Toward Retrieval: Discrete Adjoints via JAX}\label{sec:retrieval}
+%======================================================================
+
+The ultimate goal of \texttt{pydisort\_riccati\_jax} is to serve as the
+forward model inside an iterative retrieval of the effective radius
+profile $r_e(\tau)$ from top-of-atmosphere radiance observations.  This
+section discusses the automatic-differentiation infrastructure that
+motivates the JAX implementation and the open questions that remain.
+
+\emph{This section describes work in progress.  The forward solver
+(\cref{sec:riccati}--\cref{sec:summary}) is complete and verified; the
+retrieval components described below are not yet implemented.}
+
+%----------------------------------------------------------------------
+\subsection{The Retrieval Problem}\label{sec:retrieval-problem}
+%----------------------------------------------------------------------
+
+Given multi-spectral observations $\vect{y}_{\mathrm{obs}} \in \R^m$ of
+upwelling radiance at the top of atmosphere, we seek the vertical
+profile of cloud droplet effective radius $r_e(\tau)$ that minimises a
+cost function of the form
+\begin{equation}\label{eq:cost}
+  J(\vect{x})
+  = \frac{1}{2}\bigl\|\vect{y}_{\mathrm{obs}} - F(\vect{x})\bigr\|^2_{\mat{S}_\epsilon^{-1}}
+  + \frac{1}{2}\bigl\|\vect{x} - \vect{x}_a\bigr\|^2_{\mat{S}_a^{-1}},
+\end{equation}
+where $\vect{x}$ is the state vector parameterising $r_e(\tau)$,
+$F(\vect{x})$ is the forward model (a call to
+\texttt{pydisort\_riccati\_jax} composed with a lookup table
+$r_e \to (\omega, g_\ell)$), $\mat{S}_\epsilon$ is the measurement
+error covariance, $\mat{S}_a$ is the \emph{a~priori} covariance, and
+$\vect{x}_a$ is the \emph{a~priori} state~\cite{rodgers2000}.
+
+The Gauss--Newton / Levenberg--Marquardt iteration requires the
+Jacobian $\mat{K} = \partial F / \partial \vect{x}$, known in the
+atmospheric retrieval literature as the matrix of
+\emph{weighting functions}.  For an ill-conditioned retrieval---where the
+singular values of $\mat{K}$ span many orders of magnitude, as expected
+for a vertically resolved $r_e$ profile---the accuracy of $\mat{K}$
+directly controls convergence of the iteration and the fidelity of the
+posterior error characterisation (averaging kernels, degrees of freedom
+for signal)~\cite{rodgers2000}.
+
+%----------------------------------------------------------------------
+\subsection{Automatic Differentiation: Forward and Reverse Mode}
+\label{sec:ad}
+%----------------------------------------------------------------------
+
+Automatic differentiation (AD) computes exact derivatives of a
+computer program by systematic application of the chain
+rule~\cite{griewank2008}.  Two modes are available:
+
+\begin{itemize}[nosep]
+  \item \textbf{Forward mode} computes one directional derivative
+    (Jacobian--vector product) per pass.  For a function
+    $F : \R^p \to \R^m$, the full Jacobian requires $p$ forward passes,
+    each costing $O(1)$ times the forward evaluation.
+  \item \textbf{Reverse mode} computes one adjoint (vector--Jacobian
+    product) per pass.  The full Jacobian requires $m$ reverse passes.
+    For a scalar cost function ($m = 1$), a single reverse pass yields
+    the complete gradient $\nabla_{\!\vect{x}} J$ at a cost of at most
+    $\bar{\omega} \cdot \mathrm{OPS}(F)$, where $\bar{\omega} \leq 5$
+    (the ``cheap gradient principle'', Proposition~3.1
+    of~\cite{griewank2008}).  This bound is \emph{independent of~$p$}.
+\end{itemize}
+
+The cost asymmetry between modes determines the preferred AD strategy,
+but the relevant comparison depends on what the optimisation algorithm
+requires.  Two cases arise in the retrieval setting
+(see~\cite{baydin2018} for a general survey):
+
+\begin{enumerate}[nosep]
+  \item \textbf{Scalar gradient $\nabla J$.}  Gradient-descent and
+    L-BFGS methods need only $\nabla_{\!\vect{x}} J \in \R^p$.  Since
+    the cost function $J$ is scalar ($m = 1$), a single reverse-mode
+    pass suffices regardless of~$p$.
+
+  \item \textbf{Full Jacobian $\mat{K} = \partial F / \partial \vect{x}$.}
+    Gauss--Newton and Levenberg--Marquardt iterations, as well as the
+    Rodgers optimal-estimation diagnostics (averaging kernels, degrees
+    of freedom for signal~\cite{rodgers2000}), require the full
+    $m \times p$ Jacobian of the forward model $F : \R^p \to \R^m$,
+    where $m$ is the number of observations (viewing angles, spectral
+    bands) and $p$ is the number of profile parameters.  Computing
+    $\mat{K}$ requires either $m$ reverse-mode passes (one per
+    observation, via \texttt{jax.jacrev}) or $p$ forward-mode passes
+    (one per parameter, via \texttt{jax.jacfwd}).  \textbf{Reverse mode
+    is preferred when $p > m$; forward mode when $p < m$.}
+\end{enumerate}
+
+\subsubsection{Concrete example: adiabatic cloud retrieval}
+
+Consider the adiabatic cloud benchmark of \cref{sec:stability}
+($\tbot = 30$, $\omega$ varying 0.85--0.96) with $K \approx 50$
+Kvaerno5 steps across both sweeps.  Suppose $m = 10$ observations
+(multi-angle or multi-spectral) and let $C_{\mathrm{fwd}}$ denote the
+cost of one forward evaluation of \texttt{pydisort\_riccati\_jax},
+which scales linearly with~$K$.  Each forward-mode pass costs
+$c_f \, C_{\mathrm{fwd}}$ (typically $c_f \approx 2$--$3$); each
+reverse-mode pass with checkpointing costs
+$c_r \, C_{\mathrm{fwd}}$ ($c_r \approx 3$--$5$, due to segment
+recomputation).  The total cost for the full Jacobian is then:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Parameterisation & $p$ & Preferred mode \\
+\midrule
+NN decoder / EOF basis  & 3--5   & forward ($\approx 10\,C_{\mathrm{fwd}}$
+                                      vs.\ $\approx 40\,C_{\mathrm{fwd}}$) \\
+B-spline basis          & 8--15  & forward or comparable \\
+Level-by-level + Tikhonov & 30--50 & reverse ($\approx 40\,C_{\mathrm{fwd}}$
+                                      vs.\ $\approx 100\,C_{\mathrm{fwd}}$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+The crossover occurs at roughly $p \approx (c_r / c_f)\, m \approx
+15$--$20$ for $m = 10$.  In all cases, $C_{\mathrm{fwd}} \propto K$,
+so minimising the integration step count (\cref{sec:stability})
+directly reduces the cost of every Jacobian computation regardless of
+the AD mode chosen.  Each Gauss--Newton iteration requires one Jacobian
+plus one forward evaluation; a typical retrieval converges in 5--15
+iterations, giving a total cost of $\sim\!10 \times (p\,c_f + 1)
+\times C_{\mathrm{fwd}}$ in forward mode or
+$\sim\!10 \times (m\,c_r + 1) \times C_{\mathrm{fwd}}$ in reverse.
+
+\subsubsection{JAX traceability}
+
+JAX~\cite{jax2018github} implements both modes (\texttt{jax.jacfwd} for
+forward, \texttt{jax.jacrev} for reverse, \texttt{jax.grad} for scalar
+reverse) via source transformation of Python/NumPy code.  A function is
+\emph{JAX-traceable} if all its operations are expressed as JAX
+primitives, so that JAX can construct the computation graph.  This is
+why the Riccati vector field uses \texttt{jnp.einsum} over pre-computed
+Legendre tensors rather than calling \texttt{scipy.special} at each
+step (see the Remark in \cref{sec:problem}).
+
+%----------------------------------------------------------------------
+\subsection{Discrete vs.\ Continuous Adjoints}\label{sec:disc-vs-cont}
+%----------------------------------------------------------------------
+
+Differentiating through an ODE solver admits two fundamentally different
+strategies, often called \emph{discretize-then-optimize} (DTO, discrete
+adjoint) and \emph{optimize-then-discretize} (OTD, continuous
+adjoint)~\cite{giles2000}.
+
+\subsubsection{Continuous adjoint (OTD)}
+
+One derives the adjoint ODE analytically from the continuous forward
+problem.  For $\dd\vect{y}/\dd t = \vect{f}(\vect{y}, \vect{\theta})$,
+the adjoint satisfies
+$\dd\vect{a}/\dd t = -\vect{a}^\top (\partial\vect{f}/\partial\vect{y})$,
+integrated backward in time from a terminal
+condition~\cite{pontryagin1962,chen2018neural}.  The resulting adjoint
+ODE is then discretized and solved numerically.  The gradient obtained
+is exact for the \emph{continuous} cost functional but only approximate
+for the discrete cost $J_h$ that was actually computed.
+
+\subsubsection{Discrete adjoint (DTO)}
+
+One first discretizes the forward problem (choosing a specific numerical
+scheme), then differentiates through the resulting discrete computation
+graph using reverse-mode AD.  The gradient obtained is the exact
+derivative of the discrete cost $J_h$ to machine precision.
+
+\subsubsection{Why the distinction matters for ill-conditioned problems}
+
+The two approaches converge to the same continuous sensitivity in the
+limit of infinite resolution.  In practice, they diverge for three
+reasons:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Trajectory reconstruction error.}  The continuous adjoint
+    must reconstruct the forward trajectory by backward integration.
+    Zhuang et al.~\cite{zhuang2020} proved that the reconstruction
+    error is $O(h^{p+1})$ and demonstrated empirically that it causes
+    gradient estimation errors that degrade optimisation convergence.
+
+  \item \textbf{Discretization inconsistency.}  The continuous adjoint
+    ODE is discretised independently of the forward scheme.  There is
+    no guarantee that the resulting discrete adjoint matches the true
+    transpose of the forward solver's linearisation.  Sirkes and
+    Tziperman~\cite{sirkes1997} showed that this can produce
+    non-physical computational modes that corrupt time-dependent
+    sensitivity analysis.
+
+  \item \textbf{Stiff system instability.}  Kim et
+    al.~\cite{kim2021stiff} demonstrated that the continuous adjoint
+    method fails on benchmark stiff ODE systems, with the backward
+    adjoint solver diverging due to Newton non-convergence.  The
+    Riccati ODE is stiff (the eigenvalue ratio of $\mat{A}$ grows with
+    $\texttt{NQuad}$), making this a practical concern.
+\end{enumerate}
+
+For an ill-conditioned retrieval, the Gauss--Newton update involves
+$(\mat{K}^\top \mat{S}_\epsilon^{-1}\mat{K} + \mat{S}_a^{-1})^{-1}
+\mat{K}^\top \mat{S}_\epsilon^{-1}(\vect{y}_{\mathrm{obs}} - F(\vect{x}))$.
+When $\mat{K}^\top\mat{K}$ has eigenvalues spanning many orders of
+magnitude, even small errors in $\mat{K}$ from an approximate
+(continuous) adjoint can project onto the ill-conditioned directions and
+produce uncontrolled update steps.  The discrete adjoint avoids this by
+computing $\mat{K}$ exactly---the gradient is a guaranteed descent
+direction for the actual computed cost.
+
+Sandu~\cite{sandu2006} proved that discrete adjoints of Runge--Kutta
+methods preserve the order of accuracy and stiff stability properties
+of the forward scheme, giving a formal guarantee that the backward pass
+through an L-stable method like Kvaerno5 remains well-behaved for stiff
+problems.
+
+\subsubsection{Why JAX rather than the adjoint RTE}
+
+The traditional approach in the radiative transfer community is to
+derive the adjoint of the radiative transfer equation analytically
+and solve it alongside the forward
+equation~\cite{rozanov2006adjoint,hasekamp2005,spurr2001lidort}.
+Codes such as LIDORT~\cite{spurr2001lidort} and
+SCIATRAN~\cite{rozanov2006adjoint} have invested years of effort in
+hand-coded analytic Jacobians.
+
+For the Riccati formulation, deriving the continuous adjoint would
+require linearising the coupled nonlinear system
+\eqref{eq:riccati-R}--\eqref{eq:companion-s}---including the
+$\mat{R}\mat{\beta}\mat{R}$ quadratic term---with respect to the
+$\tau$-dependent optical properties, then deriving and implementing the
+adjoint of the linearised system for both the forward and backward
+sweeps.  This is analytically tractable but labour-intensive and
+error-prone.
+
+The JAX + diffrax approach avoids this entirely: the discrete adjoint
+is computed automatically by reverse-mode AD through the Kvaerno5
+solver, requiring no additional mathematical derivation.  The resulting
+gradient is exact (discrete adjoint), not approximate (continuous
+adjoint), and the implementation tracks code changes automatically---if
+the forward model is modified, the adjoint updates accordingly.
+
+%----------------------------------------------------------------------
+\subsection{diffrax Adjoint Strategies}\label{sec:diffrax-adjoints}
+%----------------------------------------------------------------------
+
+diffrax~\cite{kidger2022neural} provides several adjoint strategies
+for differentiating through \texttt{diffeqsolve}.  The relevant options
+for the Riccati solver are:
+
+\begin{description}[style=nextline, leftmargin=2em]
+  \item[\texttt{RecursiveCheckpointAdjoint}~(recommended)]
+    Discrete adjoint via reverse-mode AD with Stumm--Walther recursive
+    binomial checkpointing~\cite{griewank2008}.  Memory cost is
+    $O(M \log K)$ where $M = 2N^2 + N$ is the state dimension and
+    $K$ is the number of accepted steps.  Gradients are exact (of the
+    discrete computation).  This is the default and recommended strategy
+    in diffrax.
+
+  \item[\texttt{BacksolveAdjoint}~(not recommended)]
+    Continuous adjoint via backward integration of the adjoint ODE.
+    Memory cost is $O(M)$, but gradients are approximate.  The diffrax
+    documentation states: ``As the checkpointing of
+    \texttt{RecursiveCheckpointAdjoint} also gives low memory usage,
+    [it] is essentially always preferred.''
+
+  \item[\texttt{ForwardMode}]
+    Forward-mode AD through the solver (\texttt{jax.jvp}).  Useful
+    when $p \ll m$ (few parameters, many outputs), but for the
+    retrieval setting ($p > m$), reverse mode is more efficient.
+
+  \item[\texttt{DirectAdjoint}]
+    Both forward and reverse support, but cost scales with
+    \texttt{max\_steps} regardless of actual steps taken.  Not practical
+    for adaptive solvers.
+\end{description}
+
+For the Riccati solver with $K \approx 35$ forward steps and
+$N = 4$--$16$, \texttt{RecursiveCheckpointAdjoint} with
+$\lceil\log_2 K\rceil \approx 6$ checkpoints is the natural choice.
+
+%----------------------------------------------------------------------
+\subsection{Numerical Robustness of the Backward Pass}
+\label{sec:adjoint-robustness}
+%----------------------------------------------------------------------
+
+While the forward Riccati integration is provably stable (all terms
+positive, $\mat{R}$ bounded; \cref{rem:positive}), the discrete adjoint
+obtained by differentiating through the Kvaerno5 solver does not
+automatically inherit this property.  Two potential sources of concern
+are:
+
+\begin{enumerate}
+  \item \textbf{Implicit stage differentiation.}  Each Kvaerno5 stage
+    solves a nonlinear system via Newton iteration.  The backward pass
+    must differentiate through these Newton steps, which involves the
+    Jacobian $\partial\vect{f}/\partial\vect{y}$ of the ODE
+    right-hand side.  The Riccati RHS contains the quadratic term
+    $\mat{R}\mat{\beta}\mat{R}$, whose Jacobian with respect to
+    $\mat{R}$ is $(\mat{I} \otimes \mat{R}\mat{\beta}) +
+    (\mat{R}\mat{\beta} \otimes \mat{I})$ (via the Kronecker-product
+    formula for matrix differential calculus).  Near the steady state,
+    $\mat{R}$ is $O(1)$ and this Jacobian is well-behaved, but the
+    condition number should be monitored during the retrieval.
+
+  \item \textbf{Sensitivity accumulation over many steps.}  The discrete
+    adjoint propagates sensitivity information backward through all
+    $K$ accepted steps.  If the forward problem has a large sensitivity
+    to parameters at a particular $\tau$-layer (e.g.\ near cloud base
+    where $\omega$ changes rapidly), this sensitivity is amplified
+    through the chain rule.  The L-stability of Kvaerno5 provides
+    damping of stiff modes in the \emph{forward} direction; Sandu's
+    result~\cite{sandu2006} guarantees that the discrete adjoint of an
+    L-stable RK method inherits this stiff stability, but empirical
+    verification for the specific Riccati system is warranted.
+\end{enumerate}
+
+A recommended validation experiment, prior to implementing the full
+retrieval, is to compute $\nabla_{\!\vect{x}} J$ via
+\texttt{jax.grad} through \texttt{pydisort\_riccati\_jax} for a
+synthetic $r_e(\tau)$ profile and verify agreement with finite-difference
+gradients.  This would confirm both the correctness of the AD pipeline
+and the absence of numerical pathologies in the backward pass.
+
+%----------------------------------------------------------------------
+\subsection{Profile Parameterisation}\label{sec:parameterisation}
+%----------------------------------------------------------------------
+
+The retrieval requires a finite-dimensional parameterisation of the
+continuous profile $r_e(\tau)$.  The choice of parameterisation affects
+both the conditioning of the inverse problem and the number of
+parameters~$p$, which in turn determines whether reverse-mode or
+forward-mode AD is more efficient.
+
+Several approaches have been used in the atmospheric retrieval
+literature:
+
+\begin{description}[style=nextline, leftmargin=2em]
+  \item[Level-by-level with smoothness regularisation]
+    The profile is retrieved at each of $p$ discrete $\tau$-levels,
+    with a Tikhonov penalty on the first or second derivative to
+    suppress oscillatory solutions~\cite{steck2002,dubovik2000}.
+    This gives the most general parameterisation but produces the
+    largest state vector and the most ill-conditioned $\mat{K}$.
+
+  \item[Basis-function expansion]
+    The profile is expanded in a set of $p$ smooth basis functions
+    (e.g.\ B-splines, wavelets, or piecewise-linear hat functions on
+    a coarse grid~\cite{bowman2006}).  The state vector consists of
+    the $p$ expansion coefficients, typically $p = 5$--$20$, which
+    dramatically reduces the dimension relative to the full
+    level-by-level approach while enforcing smoothness by construction.
+
+  \item[EOF / PCA basis from climatological data]
+    Principal components of $r_e$ profiles from a climatological
+    ensemble define a data-driven reduced basis~\cite{masiello2012}.
+    If the first $k$ EOFs capture $>95\%$ of profile variance, the
+    state vector is $k$-dimensional (typically $k = 3$--$10$), with
+    the regularisation encoded implicitly by the truncation.
+
+  \item[Neural-network profile generator]
+    A neural network maps a low-dimensional latent vector
+    ($p = 2$--$5$) to a full profile, trained on a climatology of
+    physically consistent profiles.  This differentiable decoder is
+    used \emph{inside} the physics-based forward model during the
+    retrieval~\cite{gebhard2024}.  Advantages include very low $p$
+    (easing ill-conditioning) and the ability to encode physical
+    constraints (e.g.\ monotonicity, positivity) in the network
+    architecture.
+
+  \item[Optimal estimation with \emph{a~priori} covariance]
+    The standard Rodgers~\cite{rodgers2000} framework uses a Gaussian
+    prior $\mathcal{N}(\vect{x}_a, \mat{S}_a)$ on the profile,
+    retrieved at all levels.  The \emph{a~priori} covariance
+    $\mat{S}_a$ acts as a smoothness constraint.  This is
+    mathematically equivalent to a Gaussian process prior with a
+    specific kernel and is the most widely used approach in operational
+    retrievals.
+\end{description}
+
+The choice of parameterisation has direct implications for the AD mode,
+as discussed in \cref{sec:ad}: for a Gauss--Newton retrieval with
+$m \approx 10$ observations, forward-mode AD is cheaper when
+$p \lesssim 15$ (small basis, EOF, or NN parameterisation), while
+reverse-mode AD becomes advantageous for $p \gtrsim 20$ (level-by-level
+retrieval).  If the retrieval uses L-BFGS instead of Gauss--Newton,
+only the scalar gradient $\nabla J$ is needed and a single reverse-mode
+pass suffices regardless of $p$---at the cost of losing the averaging
+kernel and degrees-of-freedom diagnostics that require the full
+Jacobian~$\mat{K}$.
+
+%----------------------------------------------------------------------
+\subsection{Remaining Steps}\label{sec:remaining}
+%----------------------------------------------------------------------
+
+The following components are needed to complete the differentiable
+retrieval pipeline:
+
+\begin{enumerate}
+  \item \textbf{Differentiable lookup table.}  The mapping
+    $r_e(\tau) \to \bigl(\omega(\tau),\, g_\ell(\tau)\bigr)$ via Mie
+    theory or a pre-computed table must be JAX-traceable.
+    Differentiable interpolation (e.g.\ \texttt{jnp.interp} or a
+    spline in JAX) would suffice for a pre-computed table; direct Mie
+    computation in JAX is also possible but more involved.
+
+  \item \textbf{End-to-end gradient validation.}  Compute
+    $\nabla_{\!\vect{x}} J$ via \texttt{jax.grad} through the full
+    forward model (lookup $\to$ Riccati ODE $\to$ BC solve $\to$
+    Fourier synthesis $\to$ cost) and verify against finite-difference
+    gradients for a synthetic $r_e(\tau)$ profile.
+
+  \item \textbf{Adjoint strategy selection.}  Benchmark
+    \texttt{RecursiveCheckpointAdjoint} against \texttt{ForwardMode}
+    for the expected parameter count to determine the optimal AD mode.
+
+  \item \textbf{Retrieval experiments.}  Implement the Gauss--Newton /
+    Levenberg--Marquardt iteration with the AD-computed Jacobian,
+    test convergence on synthetic retrievals with known $r_e(\tau)$
+    profiles, and characterise the posterior error via averaging
+    kernels.
+\end{enumerate}
 
 %======================================================================
 % References
 %======================================================================
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
+
+% ── Original references ──────────────────────────────────────────────
 \bibitem{HP2024doc}
   H.~P.~Le and D.~Hogan,
   \emph{Pythonic-DISORT: Comprehensive Documentation},
@@ -818,6 +1280,136 @@ and efficient (step count nearly independent of $\texttt{NQuad}$).
   ``A new look at the discrete ordinate method for radiative
   transfer calculations in anisotropically scattering atmospheres,''
   \emph{J.\ Atmos.\ Sci.}, vol.~45, pp.~387--399, 1988.
+
+% ── JAX and diffrax ──────────────────────────────────────────────────
+\bibitem{jax2018github}
+  J.~Bradbury, R.~Frostig, P.~Hawkins, M.~J.~Johnson, C.~Leary,
+  D.~Maclaurin, G.~Necula, A.~Paszke, J.~VanderPlas, S.~Wanderman-Milne,
+  and Q.~Zhang,
+  ``JAX: composable transformations of Python+NumPy programs,''
+  2018.
+  \url{http://github.com/jax-ml/jax}
+
+\bibitem{kidger2022neural}
+  P.~Kidger,
+  ``On neural differential equations,''
+  Ph.D.\ thesis, University of Oxford, 2022.
+  arXiv:2202.02435.
+
+% ── Automatic differentiation ────────────────────────────────────────
+\bibitem{griewank2008}
+  A.~Griewank and A.~Walther,
+  \emph{Evaluating Derivatives: Principles and Techniques of
+  Algorithmic Differentiation}, 2nd ed.\
+  SIAM, 2008.
+
+\bibitem{baydin2018}
+  A.~G.~Baydin, B.~A.~Pearlmutter, A.~A.~Radul, and J.~M.~Siskind,
+  ``Automatic differentiation in machine learning: a survey,''
+  \emph{J.\ Mach.\ Learn.\ Res.}, vol.~18, no.~153, pp.~1--43, 2018.
+
+% ── Discrete vs.\ continuous adjoints ────────────────────────────────
+\bibitem{giles2000}
+  M.~B.~Giles and N.~A.~Pierce,
+  ``An introduction to the adjoint approach to design,''
+  \emph{Flow Turbulence Combust.}, vol.~65, pp.~393--415, 2000.
+
+\bibitem{sirkes1997}
+  Z.~Sirkes and E.~Tziperman,
+  ``Finite difference of adjoint or adjoint of finite difference?''
+  \emph{Mon.\ Wea.\ Rev.}, vol.~125, no.~12, pp.~3373--3378, 1997.
+
+\bibitem{sandu2006}
+  A.~Sandu,
+  ``On the properties of Runge--Kutta discrete adjoints,''
+  in \emph{Intl.\ Conf.\ Computational Science (ICCS)},
+  LNCS~3994, Springer, 2006, pp.~550--557.
+
+\bibitem{chen2018neural}
+  R.~T.~Q.~Chen, Y.~Rubanova, J.~Bettencourt, and D.~K.~Duvenaud,
+  ``Neural ordinary differential equations,''
+  in \emph{Advances in Neural Information Processing Systems~31
+  (NeurIPS)}, 2018.
+
+\bibitem{pontryagin1962}
+  L.~S.~Pontryagin, V.~G.~Boltyanskii, R.~V.~Gamkrelidze, and
+  E.~F.~Mishchenko,
+  \emph{The Mathematical Theory of Optimal Processes},
+  Wiley, 1962.
+
+\bibitem{zhuang2020}
+  J.~Zhuang, N.~Dvornek, X.~Li, S.~Tatikonda, J.~Papademetris,
+  and J.~Duncan,
+  ``Adaptive checkpoint adjoint method for gradient estimation in
+  neural ODE,''
+  in \emph{Intl.\ Conf.\ Machine Learning (ICML)}, 2020.
+
+\bibitem{kim2021stiff}
+  S.~Kim, W.~Ji, S.~Deng, Y.~Ma, and C.~Rackauckas,
+  ``Stiff neural ordinary differential equations,''
+  \emph{Chaos}, vol.~31, 093122, 2021.
+
+% ── Atmospheric retrieval ────────────────────────────────────────────
+\bibitem{rodgers2000}
+  C.~D.~Rodgers,
+  \emph{Inverse Methods for Atmospheric Sounding: Theory and Practice},
+  World Scientific, 2000.
+
+\bibitem{rozanov2006adjoint}
+  V.~V.~Rozanov,
+  ``Adjoint radiative transfer equation and inverse problems,''
+  in \emph{Light Scattering Reviews}, Springer Praxis Books,
+  pp.~339--392, 2006.
+
+\bibitem{hasekamp2005}
+  O.~P.~Hasekamp and J.~Landgraf,
+  ``Linearization of vector radiative transfer with respect to aerosol
+  properties and its use in satellite remote sensing,''
+  \emph{J.\ Geophys.\ Res.}, vol.~110, D04203, 2005.
+
+\bibitem{spurr2001lidort}
+  R.~J.~D.~Spurr,
+  ``LIDORT and VLIDORT: Linearized pseudo-spherical scalar and vector
+  discrete ordinate radiative transfer models for use in remote sensing
+  retrieval problems,''
+  in \emph{Light Scattering Reviews~3}, Springer, 2008, pp.~229--275.
+
+% ── Profile parameterisation ─────────────────────────────────────────
+\bibitem{steck2002}
+  T.~Steck,
+  ``Methods for determining regularization for atmospheric retrieval
+  problems,''
+  \emph{Appl.\ Opt.}, vol.~41, no.~9, pp.~1788--1797, 2002.
+
+\bibitem{dubovik2000}
+  O.~Dubovik and M.~D.~King,
+  ``A flexible inversion algorithm for retrieval of aerosol optical
+  properties from Sun and sky radiance measurements,''
+  \emph{J.\ Geophys.\ Res.}, vol.~105, pp.~20\,673--20\,696, 2000.
+
+\bibitem{bowman2006}
+  K.~W.~Bowman, C.~D.~Rodgers, S.~S.~Kulawik, J.~Worden,
+  E.~Sarkissian, L.~Osterman, T.~Steck, M.~Luo, A.~Eldering,
+  M.~W.~Shephard, H.~Worden, M.~Lampel, S.~Clough, P.~Brown,
+  C.~Rinsland, M.~Gunson, and R.~Beer,
+  ``Tropospheric emission spectrometer: retrieval method and error
+  analysis,''
+  \emph{IEEE Trans.\ Geosci.\ Remote Sens.}, vol.~44, no.~5,
+  pp.~1297--1307, 2006.
+
+\bibitem{masiello2012}
+  G.~Masiello and C.~Serio,
+  ``Inversion for atmospheric thermodynamical parameters of IASI data
+  in the principal components space,''
+  \emph{Q.~J.~R.\ Meteorol.\ Soc.}, vol.~138, pp.~103--117, 2012.
+
+\bibitem{gebhard2024}
+  T.~D.~Gebhard, D.~Angerhausen, B.~S.~Konrad, E.~Alei,
+  S.~P.~Quanz, and B.~Sch\"olkopf,
+  ``Parameterizing pressure--temperature profiles of exoplanet
+  atmospheres with neural networks,''
+  \emph{Astron.\ Astrophys.}, vol.~681, A3, 2024.
+
 \end{thebibliography}
 
 \end{document}
