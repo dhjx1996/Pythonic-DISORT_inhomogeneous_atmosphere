@@ -40,7 +40,7 @@ def test_4a():
         "4a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -59,7 +59,7 @@ def test_4b():
         "4b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -79,7 +79,7 @@ def test_4c():
         b_pos=b_pos, b_neg=b_neg,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -98,7 +98,7 @@ def test_4d():
         "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_neg=b_neg,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

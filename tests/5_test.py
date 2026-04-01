@@ -43,7 +43,7 @@ def test_5a():
         BDRF_Fourier_modes=BDRF,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -64,7 +64,7 @@ def test_5b():
         BDRF_Fourier_modes=BDRF,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -94,7 +94,7 @@ def test_5c():
         BDRF_Fourier_modes=BDRF_scalar,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_callable,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
@@ -116,7 +116,7 @@ def test_5d():
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=BDRF,
     )
@@ -138,7 +138,7 @@ def test_5e():
         BDRF_Fourier_modes=BDRF,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)

@@ -1,7 +1,6 @@
 """
-Riccati solver for full-domain radiative transfer — JAX + diffrax port.
+Riccati solver for full-domain radiative transfer — JAX + diffrax.
 
-Port of _riccati_solver.py (scipy Radau IIA) to JAX + diffrax (Kvaerno5).
 Integrates the invariant-imbedding Riccati ODE using diffrax's Kvaerno5
 (L-stable ESDIRK, order 5, adaptive) with PIDController step-size control.
 
@@ -28,6 +27,8 @@ import diffrax
 
 # ---------------------------------------------------------------------------
 # Pre-computation (scipy, at setup time — NOT inside JAX trace)
+# (cf. _solve_for_gen_and_part_sols: asso_leg_term_pos, asso_leg_term_neg,
+#  fac_asso_leg_term_posT, scalar_fac_asso_leg_term_mu0)
 # ---------------------------------------------------------------------------
 
 def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
@@ -50,10 +51,10 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
     Returns
     -------
     dict with JAX arrays:
-        base_coeffs : (n_ells,) — (2l+1) * poch(l+m+1, -2m)
-        P_pos       : (n_ells, N) — P_l^m(+mu_i)
-        P_neg       : (n_ells, N) — P_l^m(-mu_i)
-        P_mu0       : (n_ells,) — P_l^m(-mu0)
+        poch              : (n_ells,) — (l-m)!/(l+m)! via Pochhammer
+        asso_leg_term_pos : (n_ells, N) — P_l^m(+mu_i)
+        asso_leg_term_neg : (n_ells, N) — P_l^m(-mu_i)
+        asso_leg_term_mu0 : (n_ells,) — P_l^m(-mu0)
     """
     mu_np = np.asarray(mu_arr_pos, dtype=np.float64)
     N = len(mu_np)
@@ -62,113 +63,151 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
 
     if n_ells == 0:
         return {
-            'base_coeffs': jnp.zeros(0),
-            'P_pos': jnp.zeros((0, N)),
-            'P_neg': jnp.zeros((0, N)),
-            'P_mu0': jnp.zeros(0),
+            'poch': jnp.zeros(0),
+            'asso_leg_term_pos': jnp.zeros((0, N)),
+            'asso_leg_term_neg': jnp.zeros((0, N)),
+            'asso_leg_term_mu0': jnp.zeros(0),
         }
 
-    base_coeffs = (2 * ells + 1) * sp.poch(ells + m + 1, -2.0 * m)
+    poch = sp.poch(ells + m + 1, -2.0 * m)
+    weighted_poch = (2 * ells + 1) * poch  # (2l+1) * (l-m)!/(l+m)!
 
-    P_pos = np.zeros((n_ells, N))
-    P_neg = np.zeros((n_ells, N))
+    asso_leg_term_pos = np.zeros((n_ells, N))
+    asso_leg_term_neg = np.zeros((n_ells, N))
     for idx, l_val in enumerate(ells):
-        P_pos[idx] = sp.lpmv(m, l_val, mu_np)
-        P_neg[idx] = sp.lpmv(m, l_val, -mu_np)
+        asso_leg_term_pos[idx] = sp.lpmv(m, l_val, mu_np)
+        asso_leg_term_neg[idx] = sp.lpmv(m, l_val, -mu_np)
 
-    P_mu0 = np.array([sp.lpmv(m, int(l_val), -float(mu0)) for l_val in ells])
+    asso_leg_term_mu0 = np.array([
+        sp.lpmv(m, int(l_val), -float(mu0)) for l_val in ells
+    ])
 
     return {
-        'base_coeffs': jnp.array(base_coeffs),
-        'P_pos': jnp.array(P_pos),
-        'P_neg': jnp.array(P_neg),
-        'P_mu0': jnp.array(P_mu0),
+        'poch': jnp.array(poch),
+        'weighted_poch': jnp.array(weighted_poch),
+        'asso_leg_term_pos': jnp.array(asso_leg_term_pos),
+        'asso_leg_term_neg': jnp.array(asso_leg_term_neg),
+        'asso_leg_term_mu0': jnp.array(asso_leg_term_mu0),
     }
 
 
 # ---------------------------------------------------------------------------
 # JAX-traceable coefficient functions
+# (cf. _solve_for_gen_and_part_sols: D_pos, D_neg, alpha, beta construction)
 # ---------------------------------------------------------------------------
 
 def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
                                 mu_arr_pos, W, M_inv, N):
     """Build JAX-traceable alpha(tau) and beta(tau) for the Riccati ODE.
 
+    In pydisort, alpha and beta are constant per layer and computed inline.
+    Here they are closures evaluated at each tau during Kvaerno5 integration,
+    since omega(tau) and g_l(tau) vary continuously.
+
+    The D^m kernel (without omega) is:
+        D^m_ij = (1/2) sum_l (2l+1) * poch_l * g_l * P_l^m(mu_i) * P_l^m(±mu_j)
+    omega is applied separately so that omega(tau) and the phase function
+    can vary independently (cf. Remark in report section 1.2).
+
     Parameters
     ----------
-    omega_func : tau -> scalar
-    Leg_coeffs_func   : tau -> (NLeg,) array
-    m          : int, Fourier mode index
-    leg_data   : dict from _precompute_legendre
-    mu_arr_pos : (N,) JAX array
-    W          : (N,) JAX array, quadrature weights
-    M_inv      : (N,) JAX array, 1/mu_arr_pos
-    N          : int, half-stream count
+    omega_func    : tau -> scalar
+    Leg_coeffs_func : tau -> (NLeg,) array of Legendre coefficients
+    m             : int, Fourier mode index
+    leg_data      : dict from _precompute_legendre
+    mu_arr_pos    : (N,) JAX array
+    W             : (N,) JAX array, quadrature weights
+    M_inv         : (N,) JAX array, 1/mu_arr_pos
+    N             : int, half-stream count
 
     Returns
     -------
     (alpha_func, beta_func) : each  tau -> (N, N) JAX array
     """
-    base_coeffs = leg_data['base_coeffs']
-    P_pos = leg_data['P_pos']
-    P_neg = leg_data['P_neg']
+    weighted_poch = leg_data['weighted_poch']
+    asso_leg_term_pos = leg_data['asso_leg_term_pos']
+    asso_leg_term_neg = leg_data['asso_leg_term_neg']
     I_N = jnp.eye(N)
 
     def alpha_func(tau):
         omega = omega_func(tau)
-        g_l = Leg_coeffs_func(tau)
-        wt = base_coeffs * g_l[m:]
-        D_pos = 0.5 * jnp.einsum('l,li,lj->ij', wt, P_pos, P_pos)
+        Leg_coeffs = Leg_coeffs_func(tau)
+        # weighted_Leg_coeffs = (2l+1) * poch * g_l  (cf. pydisort: omega_times_Leg_coeffs)
+        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        # D_pos = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(mu_j)
+        D_pos = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
+                                  asso_leg_term_pos, asso_leg_term_pos)
+        # alpha = M_inv * (omega * D_pos * W - I)
+        # (cf. _solve_for_gen_and_part_sols: alpha = M_inv[:, None] * DW)
         return M_inv[:, None] * (omega * D_pos * W[None, :] - I_N)
 
     def beta_func(tau):
         omega = omega_func(tau)
-        g_l = Leg_coeffs_func(tau)
-        wt = base_coeffs * g_l[m:]
-        D_neg = 0.5 * jnp.einsum('l,li,lj->ij', wt, P_pos, P_neg)
+        Leg_coeffs = Leg_coeffs_func(tau)
+        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        # D_neg = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(-mu_j)
+        D_neg = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
+                                  asso_leg_term_pos, asso_leg_term_neg)
+        # beta = M_inv * omega * D_neg * W
+        # (cf. _solve_for_gen_and_part_sols: beta = M_inv[:, None] * D_neg * W[None, :])
         return M_inv[:, None] * (omega * D_neg * W[None, :])
 
     return alpha_func, beta_func
 
 
 def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
-                       mu_arr_pos, M_inv, mu0, fac_const, N):
+                       mu_arr_pos, M_inv, mu0, I0_div_4pi, m_equals_0, N):
     """Build JAX-traceable beam-source q functions.
+
+    Computes the beam-source vectors Q^+(tau) and Q^-(tau), scaled by 1/mu_i.
+    (cf. _solve_for_gen_and_part_sols: X_pos, X_neg computation, and
+     section 3.6.1 of the Comprehensive Documentation)
 
     Parameters
     ----------
-    omega_func : tau -> scalar
-    Leg_coeffs_func   : tau -> (NLeg,) array
-    m          : int, Fourier mode index
-    leg_data   : dict from _precompute_legendre
-    mu_arr_pos : (N,) JAX array
-    M_inv      : (N,) JAX array
-    mu0        : float, beam cosine
-    fac_const  : float, (I0/(4pi)) * (2 - delta_m0) * 2
-    N          : int
+    omega_func      : tau -> scalar
+    Leg_coeffs_func : tau -> (NLeg,) array of Legendre coefficients
+    m               : int, Fourier mode index
+    leg_data        : dict from _precompute_legendre
+    mu_arr_pos      : (N,) JAX array
+    M_inv           : (N,) JAX array
+    mu0             : float, beam cosine
+    I0_div_4pi      : float, I0 / (4 pi) after rescaling
+    m_equals_0      : bool
+    N               : int
 
     Returns
     -------
     (q_up_func, q_down_func) : each  tau -> (N,) JAX array
     """
-    base_coeffs = leg_data['base_coeffs']
-    P_pos = leg_data['P_pos']
-    P_neg = leg_data['P_neg']
-    P_mu0 = leg_data['P_mu0']
+    weighted_poch = leg_data['weighted_poch']
+    asso_leg_term_pos = leg_data['asso_leg_term_pos']
+    asso_leg_term_neg = leg_data['asso_leg_term_neg']
+    asso_leg_term_mu0 = leg_data['asso_leg_term_mu0']
+
+    # scalar_fac = I0_div_4pi * (2 - delta_m0)
+    # (cf. _solve_for_gen_and_part_sols: scalar_fac_asso_leg_term_mu0,
+    #  but the per-ell poch and mu0 terms are in the pre-computed tensors)
+    scalar_fac = I0_div_4pi * (2 - int(m_equals_0))
 
     def q_up_func(tau):
         omega = omega_func(tau)
-        g_l = Leg_coeffs_func(tau)
-        wt = base_coeffs * g_l[m:]
-        D_beam = 0.5 * jnp.einsum('l,li,l->i', wt, P_pos, P_mu0)
-        return M_inv * fac_const * omega * jnp.exp(-tau / mu0) * D_beam
+        Leg_coeffs = Leg_coeffs_func(tau)
+        # X_pos: beam source for upward direction (cf. X_pos = X_temp @ asso_leg_term_pos)
+        # Note: no factor of 1/2 here, unlike D^m (see eq. Qm in report)
+        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        X_pos = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
+                           asso_leg_term_pos, asso_leg_term_mu0)
+        return M_inv * scalar_fac * omega * jnp.exp(-tau / mu0) * X_pos
 
     def q_down_func(tau):
         omega = omega_func(tau)
-        g_l = Leg_coeffs_func(tau)
-        wt = base_coeffs * g_l[m:]
-        D_beam = 0.5 * jnp.einsum('l,li,l->i', wt, P_neg, P_mu0)
-        return M_inv * fac_const * omega * jnp.exp(-tau / mu0) * D_beam
+        Leg_coeffs = Leg_coeffs_func(tau)
+        # X_neg: beam source for downward direction (cf. X_neg = X_temp @ asso_leg_term_neg)
+        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        X_neg = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
+                           asso_leg_term_neg, asso_leg_term_mu0)
+        return M_inv * scalar_fac * omega * jnp.exp(-tau / mu0) * X_neg
 
     return q_up_func, q_down_func
 
@@ -190,7 +229,7 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
                         q1_func=None, q2_func=None, max_steps=4096):
     """Adaptive Kvaerno5 (L-stable ESDIRK, order 5) integration.
 
-    Integrates from sigma=0 to sigma=sigma_end.
+    Integrates the coupled Riccati system from sigma=0 to sigma=sigma_end.
     State: PyTree {'R': (N,N), 'T': (N,N), 's': (N,)}.
     IC: R(0)=0, T(0)=I, s(0)=0.
 

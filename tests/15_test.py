@@ -39,7 +39,7 @@ def test_15a():
 
     # Riccati solve
     _, flux_hyb, u0_hyb, _, tau_grid = pydisort_riccati_jax(
-        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
@@ -62,13 +62,13 @@ def test_15b():
 
     # First Riccati solve
     _, flux_adap, u0_adap, _, grid_adap = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 
     # Same call again — should reproduce identically
     _, flux_hyb, u0_hyb, _, grid_hyb = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 

@@ -27,7 +27,7 @@ def _run(tau_bot, omega, g, mu0, I0, phi0):
     g_l = _make(g)
     Leg_coeffs_func = lambda tau: g_l
     _, flux_up, u0_ToA, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
     )
     return flux_up, u0_ToA
 

@@ -38,7 +38,7 @@ def test_13a():
 
     # Adaptive solve
     _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
-        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 
@@ -73,7 +73,7 @@ def test_13b():
 
     # Adaptive solve
     _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
-        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
@@ -98,7 +98,7 @@ def test_13c():
 
     # Adaptive solve (commutator = 0 for constant A, so only stability ceiling)
     _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 
@@ -107,7 +107,7 @@ def test_13c():
 
     # Reference: tight-tolerance Riccati
     _, flux_ref, u0_ref, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-6,
     )
 

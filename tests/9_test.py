@@ -25,7 +25,7 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
         return g ** np.arange(NLeg)
 
     _, flux_ref, u0_ref, _, _ = pydisort_riccati_jax(
-        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-5,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )

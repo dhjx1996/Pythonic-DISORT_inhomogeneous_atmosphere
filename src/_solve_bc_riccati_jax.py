@@ -69,8 +69,8 @@ def _solve_bc_riccati_jax(
     # N x N BC system
     # ------------------------------------------------------------------
     LHS = jnp.eye(N) - R_surf @ R_down
-    rhs = R_surf @ (T_down @ b_neg_m + s_down) + b_pos_eff
-    I_plus_bot = jnp.linalg.solve(LHS, rhs)
+    RHS = R_surf @ (T_down @ b_neg_m + s_down) + b_pos_eff
+    I_plus_bot = jnp.linalg.solve(LHS, RHS)
 
     # Recovery: I+(0) = R_up b_neg + T_up I+_bot + s_up
     I_plus_top = (R_up @ b_neg_m + T_up @ I_plus_bot + s_up).real

@@ -35,7 +35,7 @@ def test_11a():
         "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -57,7 +57,7 @@ def test_11b():
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
     )
     assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
 
@@ -77,7 +77,7 @@ def test_11c():
 
     # Magnus: get u_ToA_func
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
     )
 
     # Reference: pydisort with full phi output

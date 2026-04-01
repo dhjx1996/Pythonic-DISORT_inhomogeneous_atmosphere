@@ -170,12 +170,12 @@ def test_14e():
     tau_sub = 5.0
     mu0 = 0.5
     I0_div_4pi = 1.0 / (4 * pi)
-    fac_const = I0_div_4pi * 2 * 2  # (2-delta_{m0}) * 2 for m=0
 
     # Build beam-source q functions using the JAX helper
     leg_data_beam = _precompute_legendre(0, NLeg, mu_arr_pos, mu0)
     q_up_func, q_down_func = _make_q_funcs_jax(
-        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, M_inv, mu0, fac_const, N,
+        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, M_inv, mu0,
+        I0_div_4pi, True, N,  # m_equals_0=True for m=0
     )
 
     alpha_func_beam, beta_func_beam = _make_alpha_beta_funcs_jax(

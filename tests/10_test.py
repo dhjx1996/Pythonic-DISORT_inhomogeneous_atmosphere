@@ -22,7 +22,7 @@ def _ref_and_layers(tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
     """Run Riccati@tol=1e-5 (reference), pydisort@20 (coarse), pydisort@200 (fine)."""
     _, flux_ref, u0_ref, _, _ = pydisort_riccati_jax(
-        tau_bot, omega_func, Leg_coeffs_func, NQuad, NLeg, NFourier, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-5,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
