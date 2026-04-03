@@ -72,10 +72,10 @@ def test_13b():
         mu0, I0, phi0, BDRF_Fourier_modes=BDRF,
     )
 
-    # Adaptive solve
+    # Adaptive solve (tol=1e-4 needed for u(phi) to clear 5e-3 at all angles)
     _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=1e-3,
+        tol=1e-4,
         BDRF_Fourier_modes=BDRF,
     )
 

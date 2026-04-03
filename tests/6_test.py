@@ -4,11 +4,9 @@ Test suite 6: tau-varying single-scattering albedo omega(tau).
 This is the primary test of the new capability: a continuously varying omega
 that cannot be handled by the standard pydisort eigendecomposition.
 
-Verification strategy: multi-layer pydisort with piecewise-constant omega
-(midpoint rule) must converge to the Riccati solution as NLayers increases.
-The Riccati solver (tol=1e-5) is the reference.
-
-Expected convergence: O(h^2) in the layer thickness h = tau_bot / NLayers.
+Verification strategy: multi-layer pydisort (50 / 500 layers, 10x refinement)
+must converge to the Riccati solution (tol=1e-8) at O(h^2).
+Theoretical convergence ratio for 10x refinement: 100.
 """
 import numpy as np
 import jax.numpy as jnp
@@ -31,22 +29,22 @@ def _u_phi(func, *args):
 
 def _ref_and_layers(tau_bot, omega_func, g_const, mu0, I0, phi0,
                     b_pos=0, b_neg=0, BDRF_Fourier_modes=()):
-    """Run Riccati at tight tolerance (reference) and pydisort at 10 / 100 layers."""
+    """Run Riccati@tol=1e-8 (reference), pydisort@50 (coarse), pydisort@500 (fine)."""
     g_l = g_const ** np.arange(NLeg)
     Leg_coeffs_func = lambda tau: g_l
 
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=1e-5,
+        tol=1e-8,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 
     _, _, uf_c = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 10, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 50, NQuad, NLeg, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
     _, _, uf_f = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 100, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 500, NQuad, NLeg, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 
@@ -66,7 +64,7 @@ def test_6a():
     u_ref, u_coarse, u_fine = _ref_and_layers(
         tau_bot, omega_func, g, mu0, I0, phi0
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
 
 
 def test_6b():
@@ -79,7 +77,7 @@ def test_6b():
     u_ref, u_coarse, u_fine = _ref_and_layers(
         tau_bot, omega_func, g, mu0, I0, phi0
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
 
 
 def test_6c():
@@ -92,4 +90,4 @@ def test_6c():
     u_ref, u_coarse, u_fine = _ref_and_layers(
         tau_bot, omega_func, g, mu0, I0, phi0
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)

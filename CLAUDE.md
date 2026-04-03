@@ -24,8 +24,9 @@ cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py
 cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python supplementary/generate_reference.py
 ```
 
-Note: Full test suite takes ~28 min due to per-test JIT recompilation.
-Representative subset for quick verification: `10_test.py 13_test.py 14_test.py`.
+Note: Full test suite takes up to ~1 hour (convergence tests use 50/500 layers).
+Representative subset for quick verification: `10_key_test.py 13_key_test.py 14_key_test.py`
+(adiabatic clouds + adaptive solver + standalone Riccati mechanics; ~10 min).
 
 ## Architecture
 
@@ -45,15 +46,20 @@ added to `sys.path` by `tests/conftest.py`).
 | `1_test.py` – `3_test.py` | Constant-ω Riccati vs pydisort reference: u(φ) (isotropic, Rayleigh-like, HG) |
 | `4_test.py` | Non-zero diffuse BCs: u(φ) (b_pos, b_neg, purely absorbing) |
 | `5_test.py` | Lambertian BDRF surface: u(φ) (scalar, callable, combined with BCs, high albedo) |
-| `6_test.py` | τ-varying ω convergence: multi-layer pydisort u(φ) → Riccati reference |
-| `7_test.py` | τ-varying ω and g, including BDRF: u(φ) convergence |
+| `6_test.py` | τ-varying ω convergence: 50/500-layer pydisort u(φ) → Riccati (tol=1e-8), min_ratio=50 |
+| `7_test.py` | τ-varying ω and g, including BDRF: u(φ) convergence. **7c FAILS**: see known issue below |
 | `8_test.py` | Thick atmospheres + BCs: u(φ) (constant ω, BDRF, b_pos) |
-| `9_test.py` | Thick atmospheres + τ-varying properties: u(φ) convergence |
-| `10_test.py` | Adiabatic cloud profiles: u(φ) convergence |
+| `9_test.py` | Thick atmospheres + τ-varying properties: u(φ) convergence, 50/500 layers, min_ratio=50 |
+| `10_test.py` | Adiabatic cloud profiles: u(φ) convergence, 50/500 layers, min_ratio=50 |
 | `11_test.py` | NQuad variation (4, 16): u(φ) |
 | `13_test.py` | Adaptive Riccati solver: u(φ) (thin, cloud, constant-ω) |
 | `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
 | `15_test.py` | Full-domain Riccati integration: u(φ) (cloud, thin, reproducibility) |
+
+**Known issue — test_7c**: ~1e-3 systematic discrepancy between converged multilayer pydisort
+and Riccati (tol=1e-8) for tau-varying ω+g with BDRF (rho=0.3, tau_bot=1).  Multilayer has
+converged (50 and 500 layers give the same answer), so this is method-vs-method, not an
+O(h^2) convergence failure.  Needs independent investigation.
 
 `tests/_helpers.py` provides `get_reference`, `pydisort_toa_full_phi`, `multilayer_pydisort_toa_full_phi`, `make_cloud_profile`, `assert_close_to_reference_phi`, `assert_convergence_phi`, and `PHI_VALUES`.
 `tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
