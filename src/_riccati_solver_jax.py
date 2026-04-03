@@ -5,7 +5,7 @@ Integrates the invariant-imbedding Riccati ODE using diffrax's Kvaerno5
 (L-stable ESDIRK, order 5, adaptive) with PIDController step-size control.
 
     dR/dσ = α·R + R·α + R·β·R + β           [N×N, nonlinear Riccati]
-    dT/dσ = T·(α + β·R)                      [N×N, linear in T]
+    dT/dσ = (α + R·β)·T                      [N×N, linear in T]
     ds/dσ = (α + R·β)·s + R·q₁ + q₂         [N, linear in s]
 
 State is a PyTree {'R': (N,N), 'T': (N,N), 's': (N,)} — no flattening needed.
@@ -257,13 +257,12 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
 
         alpha = alpha_func(sigma)
         beta = beta_func(sigma)
-        beta_R = beta @ R
 
         # Riccati: dR/dsigma = alpha R + R alpha + R beta R + beta
-        dR = alpha @ R + R @ alpha + R @ beta_R + beta
+        dR = alpha @ R + R @ alpha + R @ beta @ R + beta
 
-        # Transmission: dT/dsigma = T (alpha + beta R)
-        dT = T @ (alpha + beta_R)
+        # Transmission: dT/dsigma = (alpha + R beta) T
+        dT = (alpha + R @ beta) @ T
 
         # Source: ds/dsigma = (alpha + R beta) s + R q1 + q2
         if has_source:
