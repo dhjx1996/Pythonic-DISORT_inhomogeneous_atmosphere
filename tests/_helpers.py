@@ -3,7 +3,7 @@ Shared utilities for the pydisort_riccati test suite.
 
 Reference values are obtained by running pydisort (exact eigendecomposition
 solver) on-the-fly.  If PythonicDISORT.pydisort is unavailable (e.g. in an
-environment that only has the Magnus module installed), the tests fall back to
+environment that only has the Riccati module installed), the tests fall back to
 pre-computed .npz files stored in reference_results/.
 """
 from __future__ import annotations
@@ -14,68 +14,56 @@ from pathlib import Path
 import numpy as np
 REFERENCE_DIR = Path(__file__).parent / "reference_results"
 
-# ---------------------------------------------------------------------------
-# pydisort reference wrapper (single layer, ToA evaluation)
-# ---------------------------------------------------------------------------
-
-def pydisort_toa(
-    tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
-    b_pos=0, b_neg=0, BDRF_Fourier_modes=(),
-):
-    """
-    Run pydisort for a single homogeneous layer and return
-    (flux_up_ToA, u0_ToA) at tau = 0.
-    """
-    from PythonicDISORT.pydisort import pydisort
-
-    mu_arr, Fp, Fm, u0f, uf = pydisort(
-        np.array([float(tau_bot)]),
-        np.array([float(omega)]),
-        int(NQuad),
-        np.atleast_2d(np.asarray(g_l, dtype=float)),
-        float(mu0), float(I0), float(phi0),
-        NLeg=NQuad, NFourier=NQuad,
-        only_flux=False,
-        b_pos=b_pos, b_neg=b_neg,
-        BDRF_Fourier_modes=list(BDRF_Fourier_modes),
-    )
-    return float(Fp(0)), u0f(0)
-
+# Standard azimuthal angles for full-field comparison against pydisort.
+PHI_VALUES = (0.0, pi / 4, pi / 2, pi, 3 * pi / 2)
 
 def get_reference(
     test_name, tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     b_pos=0, b_neg=0, BDRF_Fourier_modes=(),
 ):
     """
-    Return (flux_up_ToA, u0_ToA) from the reference solver.
+    Return u_func from the reference solver.
 
-    Tries pydisort on-the-fly first; falls back to a stored .npz file if
-    pydisort is not importable.
+    On-the-fly path: u_func = pydisort's u(tau, phi) -> (2N,).
+    Fallback path:   u_func wraps stored u_phi_ToA -> (N,),
+                     only valid at tau=0 and PHI_VALUES.
+    Both paths are compatible with assert_close_to_reference_phi (which
+    calls u_func(0, phi)[:N]).
     """
     try:
-        return pydisort_toa(
+        _, _, uf = pydisort_toa_full_phi(
             tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
             b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
         )
+        return uf
     except ImportError:
         data = np.load(REFERENCE_DIR / f"{test_name}.npz")
-        return float(data["flux_up_ToA"]), data["u0_ToA"]
+        u_phi_ToA = data["u_phi_ToA"]  # (N, n_phi)
+        phi_to_col = {phi: i for i, phi in enumerate(PHI_VALUES)}
+        def _u_func(tau, phi):
+            col = phi_to_col.get(phi)
+            if col is not None:
+                return u_phi_ToA[:, col]
+            raise ValueError(f"phi={phi} not in stored PHI_VALUES")
+        return _u_func
 
 
 # ---------------------------------------------------------------------------
 # Multi-layer pydisort reference (for convergence tests)
 # ---------------------------------------------------------------------------
 
-def multilayer_pydisort_toa(
+def multilayer_pydisort_toa_full_phi(
     tau_bot, omega_func, Leg_coeffs_func, NLayers, NQuad, NLeg, mu0, I0, phi0,
     b_pos=0, b_neg=0, BDRF_Fourier_modes=(),
 ):
     """
     Approximate tau-varying (omega, g_l) with NLayers piecewise-constant layers
-    (midpoint rule) and return (flux_up_ToA, u0_ToA) from pydisort.
+    (midpoint rule) and return (flux_up_ToA, u0_ToA, u_func) from pydisort.
+    u_func = u(tau, phi) is the full azimuthally-resolved intensity.
     """
     from PythonicDISORT.pydisort import pydisort
 
+    N = NQuad // 2
     edges = np.linspace(0, tau_bot, NLayers + 1)
     mids = 0.5 * (edges[:-1] + edges[1:])
     tau_arr = edges[1:]
@@ -91,31 +79,12 @@ def multilayer_pydisort_toa(
         b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=list(BDRF_Fourier_modes),
     )
-    return float(Fp(0)), u0f(0)
-
-
-# ---------------------------------------------------------------------------
-# Assertion helpers
-# ---------------------------------------------------------------------------
-
-def assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3):
-    """Assert Magnus matches pydisort reference within relative tolerance."""
-    flux_scale = max(abs(flux_ref), 1e-8)
-    rel_err_flux = abs(flux_mag - flux_ref) / flux_scale
-    assert rel_err_flux < rel_tol, (
-        f"flux_up_ToA: Magnus={flux_mag:.6e}, ref={flux_ref:.6e}, "
-        f"rel_err={rel_err_flux:.3e} >= tol={rel_tol}"
-    )
-    u0_scale = max(float(np.max(np.abs(u0_ref))), 1e-8)
-    rel_err_u0 = float(np.max(np.abs(u0_mag - u0_ref))) / u0_scale
-    assert rel_err_u0 < rel_tol, (
-        f"u0_ToA max rel_err={rel_err_u0:.3e} >= tol={rel_tol}"
-    )
+    return float(Fp(0)), u0f(0)[:N], uf
 
 
 def make_cloud_profile(tau_bot, omega_top, omega_bot, g_top, g_bot, NLeg, NQuad):
     """
-    Build (omega_func, Leg_coeffs_func, D_m_funcs) for a linearly-interpolated cloud.
+    Build (omega_func, Leg_coeffs_func) for a linearly-interpolated cloud.
 
     omega and g vary linearly from top (tau=0) to bottom (tau=tau_bot).
     Phase function is Henyey-Greenstein: g_l(tau) = g(tau)^l.
@@ -137,9 +106,11 @@ def pydisort_toa_full_phi(
     """
     Run pydisort for a single homogeneous layer and return
     (flux_up_ToA, u0_ToA, u_func) where u_func = u(tau, phi).
+    Callers typically discard flux and u0 and use only u_func.
     """
     from PythonicDISORT.pydisort import pydisort
 
+    N = NQuad // 2
     mu_arr, Fp, Fm, u0f, uf = pydisort(
         np.array([float(tau_bot)]),
         np.array([float(omega)]),
@@ -151,121 +122,55 @@ def pydisort_toa_full_phi(
         b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=list(BDRF_Fourier_modes),
     )
-    return float(Fp(0)), u0f(0), uf
+    return float(Fp(0)), u0f(0)[:N], uf
 
 
 # ---------------------------------------------------------------------------
 # Azimuthal intensity assertion helper
 # ---------------------------------------------------------------------------
 
-def assert_close_to_reference_phi(u_func_mag, u_func_ref, phi_values, N, rel_tol=5e-3):
+def assert_close_to_reference_phi(u_func_ric, u_func_ref, phi_values, N, rel_tol=5e-3):
     """
-    Compare Magnus u_ToA_func(phi) vs pydisort u(0, phi) at several azimuthal angles.
+    Compare Riccati u_ToA_func(phi) vs pydisort u(0, phi) at several azimuthal angles.
 
-    Only upward-hemisphere intensities (first N elements) are compared.
-    u_func_mag: phi -> (NQuad,) from pydisort_riccati
+    Only upwelling intensities (first N elements) are compared.
+    u_func_ric: phi -> (N,) from pydisort_riccati_jax
     u_func_ref: u(tau, phi) from pydisort (called at tau=0)
-    N: half the number of quadrature streams (upward hemisphere size)
+    N: half the number of quadrature streams (upwelling hemisphere size)
     """
     for phi in phi_values:
-        u_mag = u_func_mag(phi)[:N]
+        u_ric = u_func_ric(phi)[:N]
         u_ref = u_func_ref(0, phi)[:N]
         scale = max(float(np.max(np.abs(u_ref))), 1e-8)
-        rel_err = float(np.max(np.abs(u_mag - u_ref))) / scale
+        rel_err = float(np.max(np.abs(u_ric - u_ref))) / scale
         assert rel_err < rel_tol, (
             f"phi={phi:.4f}: u_ToA rel_err={rel_err:.3e} >= tol={rel_tol}"
         )
 
 
-def assert_convergence(
-    flux_ref, flux_coarse, flux_fine,
-    u0_ref, u0_coarse, u0_fine,
-    min_ratio=8.0, abs_tol=1e-2,
-):
+def assert_convergence_phi(u_ref_phi, u_coarse_phi, u_fine_phi,
+                           min_ratio=8.0, abs_tol=1e-2):
     """
-    Assert that the multi-layer pydisort solution converges toward the
-    Magnus reference as the layer count increases.
+    Assert that multilayer pydisort u(phi) converges toward Riccati u(phi).
 
-    min_ratio : error at coarse must be at least this many times larger than
-                error at fine (checks O(h^2) convergence direction).
-    abs_tol   : error at fine must be below this relative to Magnus reference.
+    All inputs are (N, n_phi) arrays of upwelling intensities at ToA,
+    evaluated at the same set of azimuthal angles.
+
+    min_ratio : coarse_err / fine_err must exceed this threshold.
+    abs_tol   : fine_err must be below this.
     """
-    scale_flux = max(abs(flux_ref), 1e-8)
-    err_coarse = abs(flux_coarse - flux_ref) / scale_flux
-    err_fine   = abs(flux_fine   - flux_ref) / scale_flux
+    scale = max(float(np.max(np.abs(u_ref_phi))), 1e-8)
+    err_coarse = float(np.max(np.abs(u_coarse_phi - u_ref_phi))) / scale
+    err_fine   = float(np.max(np.abs(u_fine_phi   - u_ref_phi))) / scale
 
-    # Fine must be more accurate than coarse
     assert err_fine < err_coarse, (
         f"Fine grid ({err_fine:.3e}) not more accurate than coarse ({err_coarse:.3e})"
     )
-    # Convergence ratio
     ratio = err_coarse / max(err_fine, 1e-15)
     assert ratio >= min_ratio, (
         f"Convergence ratio {ratio:.1f} < required {min_ratio:.1f} "
         f"(coarse err={err_coarse:.3e}, fine err={err_fine:.3e})"
     )
-    # Absolute accuracy of fine grid
     assert err_fine < abs_tol, (
-        f"Fine-grid flux rel_err={err_fine:.3e} >= abs_tol={abs_tol}"
-    )
-
-    # Same checks for u0
-    scale_u0 = max(float(np.max(np.abs(u0_ref))), 1e-8)
-    err_u0_fine = float(np.max(np.abs(u0_fine - u0_ref))) / scale_u0
-    assert err_u0_fine < abs_tol, (
-        f"Fine-grid u0 rel_err={err_u0_fine:.3e} >= abs_tol={abs_tol}"
-    )
-
-
-def assert_convergence_and_accuracy(
-    K_values, flux_results, u0_results,
-    flux_ref, u0_ref,
-    expected_order=2, rel_tol=5e-3, min_ratio_frac=0.5,
-    noise_floor=1e-4,
-):
-    """
-    Assert that the solver converges at the expected rate and achieves
-    the required accuracy at the finest resolution.
-
-    For each consecutive pair (K_i, K_{i+1}) with K_{i+1} > K_i, the
-    expected error ratio is (K_{i+1}/K_i)^p where p = expected_order.
-    The measured ratio must be at least min_ratio_frac times the expected
-    ratio.  The finest-K error must be below rel_tol.
-
-    Only checks the convergence ratio when the coarser error is above
-    the noise floor to avoid contamination from reference error.
-    """
-    flux_scale = max(abs(flux_ref), 1e-8)
-    u0_scale = max(float(np.max(np.abs(u0_ref))), 1e-8)
-
-    flux_errs = [abs(f - flux_ref) / flux_scale for f in flux_results]
-    u0_errs = [float(np.max(np.abs(u - u0_ref))) / u0_scale for u in u0_results]
-
-    print(f"  {'K':>6s}  {'flux_err':>10s}  {'u0_err':>10s}  {'flux_ratio':>10s}")
-    for i, K in enumerate(K_values):
-        ratio_str = ""
-        if i > 0 and flux_errs[i - 1] > noise_floor:
-            ratio_str = f"{flux_errs[i - 1] / max(flux_errs[i], 1e-15):.1f}"
-        print(f"  {K:6d}  {flux_errs[i]:10.3e}  {u0_errs[i]:10.3e}  {ratio_str:>10s}")
-
-    # Check convergence ratios (flux)
-    for i in range(1, len(K_values)):
-        if flux_errs[i - 1] < noise_floor:
-            continue  # below noise floor
-        k_ratio = K_values[i] / K_values[i - 1]
-        expected_ratio = k_ratio ** expected_order
-        min_ratio = min_ratio_frac * expected_ratio
-        measured = flux_errs[i - 1] / max(flux_errs[i], 1e-15)
-        assert measured >= min_ratio, (
-            f"K={K_values[i-1]}->{K_values[i]}: flux convergence ratio "
-            f"{measured:.1f} < min {min_ratio:.1f} "
-            f"(expected ~{expected_ratio:.0f} for O(h^{expected_order}))"
-        )
-
-    # Check accuracy at finest K
-    assert flux_errs[-1] < rel_tol, (
-        f"Finest K={K_values[-1]}: flux rel_err={flux_errs[-1]:.3e} >= {rel_tol}"
-    )
-    assert u0_errs[-1] < rel_tol, (
-        f"Finest K={K_values[-1]}: u0 rel_err={u0_errs[-1]:.3e} >= {rel_tol}"
+        f"Fine-grid u(phi) rel_err={err_fine:.3e} >= abs_tol={abs_tol}"
     )

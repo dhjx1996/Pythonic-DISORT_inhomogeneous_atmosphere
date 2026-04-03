@@ -9,13 +9,14 @@ import numpy as np
 from math import pi
 from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import (
-    make_cloud_profile, multilayer_pydisort_toa,
-    assert_close_to_reference,
+    make_cloud_profile, multilayer_pydisort_toa_full_phi,
+    assert_close_to_reference_phi, PHI_VALUES,
 )
 
 NQuad = 8
 NLeg = NQuad
 NFourier = NQuad
+N = NQuad // 2
 
 
 def test_15a():
@@ -32,13 +33,13 @@ def test_15a():
     )
     # Reference: high-resolution multilayer pydisort
     NLayers_ref = 6000
-    flux_ref, u0_ref = multilayer_pydisort_toa(
+    _, _, uf_ref = multilayer_pydisort_toa_full_phi(
         tau_bot, omega_func, Leg_coeffs_func, NLayers_ref, NQuad, NLeg,
         mu0, I0, phi0, BDRF_Fourier_modes=BDRF,
     )
 
     # Riccati solve
-    _, flux_hyb, u0_hyb, _, tau_grid = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
@@ -46,7 +47,7 @@ def test_15a():
 
     n_steps = len(tau_grid) - 1
     print(f"  Riccati grid points: {n_steps}")
-    assert_close_to_reference(flux_hyb, u0_hyb, flux_ref, u0_ref, rel_tol=5e-3)
+    assert_close_to_reference_phi(u_ToA_func, uf_ref, PHI_VALUES, N)
 
 
 def test_15b():
@@ -61,19 +62,21 @@ def test_15b():
     Leg_coeffs_func = lambda tau: g_l
 
     # First Riccati solve
-    _, flux_adap, u0_adap, _, grid_adap = pydisort_riccati_jax(
+    _, _, _, u_func_1, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 
     # Same call again — should reproduce identically
-    _, flux_hyb, u0_hyb, _, grid_hyb = pydisort_riccati_jax(
+    _, _, _, u_func_2, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
 
-    # Results should be identical (same code path)
-    assert np.allclose(flux_adap, flux_hyb, atol=1e-14)
-    assert np.allclose(u0_adap, u0_hyb, atol=1e-14)
-    n_steps = len(grid_hyb) - 1
-    print(f"  steps: {n_steps} (Riccati)")
+    # Results should be identical at all phi values
+    for phi in PHI_VALUES:
+        u1 = u_func_1(phi)[:N]
+        u2 = u_func_2(phi)[:N]
+        assert np.allclose(u1, u2, atol=1e-14), (
+            f"phi={phi:.4f}: reproducibility failed, max diff={np.max(np.abs(u1 - u2)):.2e}"
+        )

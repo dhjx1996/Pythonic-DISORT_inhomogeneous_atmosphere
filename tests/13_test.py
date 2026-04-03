@@ -10,13 +10,14 @@ import numpy as np
 from math import pi
 from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import (
-    make_cloud_profile, multilayer_pydisort_toa,
-    assert_close_to_reference,
+    make_cloud_profile, multilayer_pydisort_toa_full_phi,
+    assert_close_to_reference_phi, PHI_VALUES,
 )
 
 NQuad = 8
 NLeg = NQuad
 NFourier = NQuad
+N = NQuad // 2
 
 
 def test_13a():
@@ -31,13 +32,13 @@ def test_13a():
 
     # Reference: high-resolution multilayer pydisort
     NLayers_ref = 5000
-    flux_ref, u0_ref = multilayer_pydisort_toa(
+    _, _, uf_ref = multilayer_pydisort_toa_full_phi(
         tau_bot, omega_func, Leg_coeffs_func, NLayers_ref, NQuad, NLeg,
         mu0, I0, phi0,
     )
 
     # Adaptive solve
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
@@ -48,7 +49,7 @@ def test_13a():
     assert tau_grid is not None
     assert abs(tau_grid[0]) < 1e-14
     assert abs(tau_grid[-1] - tau_bot) < 1e-12
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3)
+    assert_close_to_reference_phi(u_ToA_func, uf_ref, PHI_VALUES, N)
 
 
 def test_13b():
@@ -66,13 +67,13 @@ def test_13b():
 
     # Reference
     NLayers_ref = 6000
-    flux_ref, u0_ref = multilayer_pydisort_toa(
+    _, _, uf_ref = multilayer_pydisort_toa_full_phi(
         tau_bot, omega_func, Leg_coeffs_func, NLayers_ref, NQuad, NLeg,
         mu0, I0, phi0, BDRF_Fourier_modes=BDRF,
     )
 
     # Adaptive solve
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
         BDRF_Fourier_modes=BDRF,
@@ -80,7 +81,7 @@ def test_13b():
 
     n_steps = len(tau_grid) - 1
     print(f"  Riccati steps: {n_steps}")
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3)
+    assert_close_to_reference_phi(u_ToA_func, uf_ref, PHI_VALUES, N)
     # Riccati should use far fewer than 2000 equidistant steps
     assert n_steps < 2000, f"Riccati used {n_steps} steps, expected << 2000"
 
@@ -97,7 +98,7 @@ def test_13c():
     Leg_coeffs_func = lambda tau: g_l
 
     # Adaptive solve (commutator = 0 for constant A, so only stability ceiling)
-    _, flux_mag, u0_mag, _, tau_grid = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-3,
     )
@@ -106,10 +107,13 @@ def test_13c():
     print(f"  Riccati steps: {n_steps}")
 
     # Reference: tight-tolerance Riccati
-    _, flux_ref, u0_ref, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ref_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-6,
     )
 
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref, rel_tol=5e-3)
+    # Wrap one-arg u_ref_func to match two-arg convention of assert_close_to_reference_phi
+    assert_close_to_reference_phi(
+        u_ToA_func, lambda tau, phi: u_ref_func(phi), PHI_VALUES, N,
+    )
     assert n_steps < 50, f"constant-omega used {n_steps} steps, expected few"

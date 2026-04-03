@@ -28,8 +28,8 @@ def _solve_bc_riccati_jax(
 
     Returns
     -------
-    u0 : (2N,) JAX array
-        Intensity at tau=0: first N = upward, last N = downward (= b_neg_m).
+    I_plus_top : (N,) JAX array
+        Upwelling intensity at tau=0.
     """
     m_equals_0 = int(m == 0)
     mu_arr_pos_times_W = mu_arr_pos * W
@@ -75,4 +75,4 @@ def _solve_bc_riccati_jax(
     # Recovery: I+(0) = R_up b_neg + T_up I+_bot + s_up
     I_plus_top = (R_up @ b_neg_m + T_up @ I_plus_bot + s_up).real
 
-    return jnp.concatenate([I_plus_top, b_neg_m])
+    return I_plus_top

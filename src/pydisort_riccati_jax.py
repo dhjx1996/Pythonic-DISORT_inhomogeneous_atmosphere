@@ -78,10 +78,10 @@ def pydisort_riccati_jax(
 
     Returns
     -------
-    mu_arr : (NQuad,) ndarray
+    mu_arr_pos : (N,) ndarray  — positive quadrature cosines (upwelling)
     flux_up_ToA : float
-    u0_ToA : (NQuad,) ndarray
-    u_ToA_func : callable  phi -> (NQuad,) or (NQuad, len(phi))
+    u0_ToA : (N,) ndarray  — upwelling intensity at ToA (zeroth Fourier mode)
+    u_ToA_func : callable  phi -> (N,) or (N, len(phi))
     tau_grid : ndarray  [0, ..., tau_bot]
 
     Notable internal variables
@@ -188,7 +188,6 @@ def pydisort_riccati_jax(
     ######################################################################
 
     mu_arr_pos, W = subroutines.Gauss_Legendre_quad(N)
-    mu_arr = np.concatenate([mu_arr_pos, -mu_arr_pos])
 
     # JAX arrays for the Riccati ODE vector field
     mu_arr_pos_jax = jnp.array(mu_arr_pos)
@@ -311,23 +310,23 @@ def pydisort_riccati_jax(
     #       Assemble outputs (rescale back, convert to numpy)           #
     ######################################################################
 
-    u_modes_arr = np.array([np.asarray(u) for u in u_modes])  # (NFourier, 2N)
+    u_modes_arr = np.array([np.asarray(u) for u in u_modes])  # (NFourier, N)
     if rescale_factor > 0:
         u_modes_arr *= rescale_factor
 
-    u0_ToA = u_modes_arr[0]  # (2N,) zeroth Fourier mode at tau=0
+    u0_ToA = u_modes_arr[0]  # (N,) zeroth Fourier mode at tau=0
 
     # Upward diffuse flux at ToA: 2pi * sum_i w_i mu_i u+(0)_i
-    flux_up_ToA = float(2 * pi * np.dot(mu_arr_pos * W, u0_ToA[:N]))
+    flux_up_ToA = float(2 * pi * np.dot(mu_arr_pos * W, u0_ToA))
 
-    # Full-intensity function at tau=0
+    # Upwelling intensity function at tau=0
     def u_ToA_func(phi):
         phi = np.atleast_1d(phi)
         m_arr = np.arange(NFourier)
         cos_phases = np.cos(np.outer(m_arr, phi0 - phi))  # (NFourier, len(phi))
-        result = u_modes_arr.T @ cos_phases  # (2N, len(phi))
+        result = u_modes_arr.T @ cos_phases  # (N, len(phi))
         if result.shape[1] == 1:
             return result[:, 0]
         return result
 
-    return mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid_m0
+    return mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid_m0

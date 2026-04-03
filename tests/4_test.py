@@ -6,16 +6,17 @@ isotropic-scattering media with diffuse top / bottom illumination).
 All tests use single-layer atmospheres with constant optical properties.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/4{a-c}_test.npz
+Fallback:  reference_results/4{a-d}.npz
 """
 import numpy as np
 from math import pi
 from pydisort_riccati_jax import pydisort_riccati_jax
-from _helpers import get_reference, assert_close_to_reference
+from _helpers import get_reference, assert_close_to_reference_phi, PHI_VALUES
 
 NQuad = 8
 NLeg  = NQuad
 NFourier = NQuad
+N = NQuad // 2
 
 
 def _make_isotropic():
@@ -36,14 +37,14 @@ def test_4a():
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "4a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_neg=b_neg,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_4b():
@@ -55,14 +56,14 @@ def test_4b():
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "4b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_4c():
@@ -74,15 +75,15 @@ def test_4c():
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "4c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_4d():
@@ -94,11 +95,11 @@ def test_4d():
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_neg=b_neg,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)

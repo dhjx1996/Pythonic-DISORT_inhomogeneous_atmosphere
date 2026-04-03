@@ -42,20 +42,20 @@ added to `sys.path` by `tests/conftest.py`).
 
 | File | What it covers |
 |---|---|
-| `1_test.py` – `3_test.py` | Constant-ω Riccati vs pydisort reference (isotropic, Rayleigh-like, HG) |
-| `4_test.py` | Non-zero diffuse BCs (b_pos, b_neg, purely absorbing) |
-| `5_test.py` | Lambertian BDRF surface (scalar, callable, combined with BCs, high albedo) |
-| `6_test.py` | τ-varying ω convergence: multi-layer pydisort → Riccati reference |
-| `7_test.py` | τ-varying ω and g, including BDRF |
-| `8_test.py` | Thick atmospheres + BCs (constant ω, BDRF, b_pos) |
-| `9_test.py` | Thick atmospheres + τ-varying properties (convergence) |
-| `10_test.py` | Adiabatic cloud profiles (convergence) |
-| `11_test.py` | NQuad variation (4, 16) + azimuthal u_ToA_func validation |
-| `13_test.py` | Adaptive Riccati solver (thin, cloud, constant-ω) |
+| `1_test.py` – `3_test.py` | Constant-ω Riccati vs pydisort reference: u(φ) (isotropic, Rayleigh-like, HG) |
+| `4_test.py` | Non-zero diffuse BCs: u(φ) (b_pos, b_neg, purely absorbing) |
+| `5_test.py` | Lambertian BDRF surface: u(φ) (scalar, callable, combined with BCs, high albedo) |
+| `6_test.py` | τ-varying ω convergence: multi-layer pydisort u(φ) → Riccati reference |
+| `7_test.py` | τ-varying ω and g, including BDRF: u(φ) convergence |
+| `8_test.py` | Thick atmospheres + BCs: u(φ) (constant ω, BDRF, b_pos) |
+| `9_test.py` | Thick atmospheres + τ-varying properties: u(φ) convergence |
+| `10_test.py` | Adiabatic cloud profiles: u(φ) convergence |
+| `11_test.py` | NQuad variation (4, 16): u(φ) |
+| `13_test.py` | Adaptive Riccati solver: u(φ) (thin, cloud, constant-ω) |
 | `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
-| `15_test.py` | Full-domain Riccati integration (cloud, thin) |
+| `15_test.py` | Full-domain Riccati integration: u(φ) (cloud, thin, reproducibility) |
 
-`tests/_helpers.py` provides `make_cloud_profile`, `pydisort_toa`, `pydisort_toa_full_phi`, `get_reference`, `multilayer_pydisort_toa`, `assert_close_to_reference`, `assert_close_to_reference_phi`, `assert_convergence`, and `assert_convergence_and_accuracy`.
+`tests/_helpers.py` provides `get_reference`, `pydisort_toa_full_phi`, `multilayer_pydisort_toa_full_phi`, `make_cloud_profile`, `assert_close_to_reference_phi`, `assert_convergence_phi`, and `PHI_VALUES`.
 `tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
 
 ### Documentation
@@ -85,6 +85,8 @@ invariant — no positive exponents anywhere in the code.
 ## Riccati forward solver (`pydisort_riccati_jax`)
 
 **Ultimate goal**: retrieve effective radius profile r_e(τ) given a lookup table r_e(τ) → (τ-dependent phase function, τ-dependent ω). The Riccati forward solver is the first building block.
+
+**Retrieval observable**: the full upwelling radiance field u⁺(τ=0, μ, φ) at ToA — not just the flux.  Tests must compare the full azimuthally-resolved `u_ToA_func(φ)` against pydisort, not only the zeroth Fourier mode `u0` or scalar `flux_up`.
 
 **Purpose**: `pydisort_riccati_jax` is a forward solver for a single atmospheric column with continuously τ-varying single-scattering albedo ω(τ) and phase function g_l(τ), yielding the upward field at ToA (τ=0). Uses the invariant-imbedding Riccati ODE integrated via diffrax's Kvaerno5 solver (L-stable ESDIRK, order 5, adaptive PIDController step-size).
 
@@ -149,7 +151,9 @@ NQuad ≥ 6 required: Riccati ARE is ill-conditioned for NQuad=4 (‖R_stab‖ �
 
 ### Return value
 
-Always a 5-tuple: `(mu_arr, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
+Always a 5-tuple: `(mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
+All intensity outputs are upwelling-only (size N = NQuad // 2):
+`mu_arr_pos` is `(N,)`, `u0_ToA` is `(N,)`, `u_ToA_func(φ)` returns `(N,)` or `(N, len(φ))`.
 `tau_grid` is an ndarray of step boundary points from the forward Riccati sweep.
 
 ### Deferred features (not yet implemented — do not forget)

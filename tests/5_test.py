@@ -6,16 +6,17 @@ surface reflectance with direct-beam + diffuse scattering).
 Exercises both the scalar and callable BDRF code paths in _solve_bc_riccati.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/5{a-c}_test.npz
+Fallback:  reference_results/5{a-e}.npz
 """
 import numpy as np
 from math import pi
 from pydisort_riccati_jax import pydisort_riccati_jax
-from _helpers import get_reference, assert_close_to_reference
+from _helpers import get_reference, assert_close_to_reference_phi, PHI_VALUES
 
 NQuad = 8
 NLeg  = NQuad
 NFourier = NQuad
+N = NQuad // 2
 
 
 def _make_isotropic():
@@ -33,20 +34,19 @@ def test_5a():
     tau_bot, omega = 0.5, 0.5
     mu0, I0, phi0  = 0.5, 1.0, 0.0
     rho = 0.1
-    # pydisort BDRF convention: scalar mode-0 coefficient = rho/pi
     BDRF = [rho / pi]
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "5a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_5b():
@@ -59,15 +59,15 @@ def test_5b():
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "5b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_5c():
@@ -89,15 +89,15 @@ def test_5c():
     Leg_coeffs_func = lambda tau: g_l
 
     # Reference uses scalar BDRF (equivalent result for Lambertian surface)
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "5c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_scalar,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_callable,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_5d():
@@ -111,16 +111,16 @@ def test_5d():
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "5d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
 
 def test_5e():
@@ -133,12 +133,12 @@ def test_5e():
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
-    flux_ref, u0_ref = get_reference(
+    u_func_ref = get_reference(
         "5e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    _, flux_mag, u0_mag, _, _ = pydisort_riccati_jax(
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_close_to_reference(flux_mag, u0_mag, flux_ref, u0_ref)
+    assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
