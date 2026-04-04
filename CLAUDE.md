@@ -39,7 +39,7 @@ added to `sys.path` by `tests/conftest.py`).
 
 ### Tests
 
-`tests/` contains the PyTest suite for `pydisort_riccati_jax` (56 tests across 14 files):
+`tests/` contains the PyTest suite for `pydisort_riccati_jax` (57 tests across 14 files):
 
 | File | What it covers |
 |---|---|
@@ -53,7 +53,7 @@ added to `sys.path` by `tests/conftest.py`).
 | `10_test.py` | Adiabatic cloud profiles: u(φ) convergence, 50/500 layers, min_ratio=50 |
 | `11_test.py` | NQuad variation (4, 16): u(φ) |
 | `13_test.py` | Adaptive Riccati solver: u(φ) (thin, cloud, constant-ω) |
-| `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source) |
+| `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source, T_up tau-varying vs pydisort) |
 | `15_test.py` | Full-domain Riccati integration: u(φ) (cloud, thin, reproducibility) |
 
 `tests/_helpers.py` provides `get_reference`, `pydisort_toa_full_phi`, `multilayer_pydisort_toa_full_phi`, `make_cloud_profile`, `assert_close_to_reference_phi`, `assert_convergence_phi`, and `PHI_VALUES`.

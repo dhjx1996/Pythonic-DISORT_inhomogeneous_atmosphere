@@ -10,6 +10,7 @@ into pydisort_riccati_jax).
   14c: T validation — T_up propagates boundary correctly.
   14d: R_up = R_down for homogeneous slab.
   14e: s_up validation — beam source via loose vs tight tolerance.
+  14f: T_up with tau-varying properties — vs multilayer pydisort (catches ODE ordering errors).
 """
 import numpy as np
 import jax.numpy as jnp
@@ -20,6 +21,8 @@ from _riccati_solver_jax import (
     _make_alpha_beta_funcs_jax, _make_q_funcs_jax,
     _precompute_legendre, _riccati_rhs_jax,
 )
+from pydisort_riccati_jax import pydisort_riccati_jax
+from _helpers import multilayer_pydisort_toa_full_phi
 
 NQuad = 16
 NLeg = NQuad
@@ -213,3 +216,54 @@ def test_14e():
     )
     print(f"  R_up rel_err: {rel_err_R:.3e}")
     assert rel_err_R < 1e-3, f"R_up rel_err {rel_err_R:.3e} >= 1e-3"
+
+
+# ---------------------------------------------------------------------------
+# Tau-varying setup for test_14f
+# ---------------------------------------------------------------------------
+_tau_14f = 1.0
+_NQuad_14f = 8
+_NLeg_14f = _NQuad_14f
+_N_14f = _NQuad_14f // 2
+
+_omega_func_14f = lambda tau: 0.90 - 0.30 * tau / _tau_14f
+_g_func_14f = lambda tau: 0.70 - 0.40 * tau / _tau_14f
+_Leg_coeffs_func_14f = lambda tau: _g_func_14f(tau) ** np.arange(_NLeg_14f)
+_b_pos_14f = np.random.RandomState(44).rand(_N_14f)
+
+
+def test_14f():
+    """T_up with tau-varying omega/g: I0=0, b_pos-only propagation vs multilayer pydisort.
+
+    With I0=0, b_neg=0, no BDRF, the ToA upwelling reduces to I+(0) = T_up @ b_pos.
+    Validates T_up against an independent reference (not self-convergence).
+    Would have caught the dT/dσ = T(α+βR) vs (α+Rβ)T ordering bug.
+    """
+    print("\n--- Test 14f: T_up tau-varying vs multilayer pydisort ---")
+    mu0, phi0 = 0.5, 0.0  # dummy (no beam)
+
+    # Riccati solver
+    _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
+        _tau_14f, _omega_func_14f, _Leg_coeffs_func_14f, _NQuad_14f,
+        mu0, 0.0, phi0,      # I0 = 0
+        b_pos=_b_pos_14f,
+        tol=1e-8,
+    )
+
+    # Independent reference: 500-layer multilayer pydisort
+    _, _, uf_ref = multilayer_pydisort_toa_full_phi(
+        _tau_14f, _omega_func_14f, _Leg_coeffs_func_14f, 500,
+        _NQuad_14f, _NLeg_14f, mu0, 0.0, phi0,
+        b_pos=_b_pos_14f,
+    )
+
+    # Compare at phi=0 (no azimuthal dependence when I0=0)
+    u_ric = np.asarray(u_ToA_func(0.0))[:_N_14f]
+    u_ref = np.asarray(uf_ref(0, 0.0))[:_N_14f]
+    scale = max(float(np.max(np.abs(u_ref))), 1e-8)
+    rel_err = float(np.max(np.abs(u_ric - u_ref))) / scale
+
+    print(f"  T_up tau-varying rel_err: {rel_err:.3e}")
+    assert rel_err < 5e-3, (
+        f"T_up tau-varying: rel_err={rel_err:.3e} >= 5e-3"
+    )
