@@ -307,26 +307,135 @@ def pydisort_riccati_jax(
         u_modes.append(u_m)
 
     ######################################################################
-    #       Assemble outputs (rescale back, convert to numpy)           #
+    #       Assemble outputs (rescale back, JAX-traceable)              #
     ######################################################################
 
-    u_modes_arr = np.array([np.asarray(u) for u in u_modes])  # (NFourier, N)
+    u_modes_arr = jnp.stack(u_modes)  # (NFourier, N)
     if rescale_factor > 0:
-        u_modes_arr *= rescale_factor
+        u_modes_arr = u_modes_arr * rescale_factor
 
     u0_ToA = u_modes_arr[0]  # (N,) zeroth Fourier mode at tau=0
 
     # Upward diffuse flux at ToA: 2pi * sum_i w_i mu_i u+(0)_i
-    flux_up_ToA = float(2 * pi * np.dot(mu_arr_pos * W, u0_ToA))
+    flux_up_ToA = float(2 * pi * jnp.dot(mu_arr_pos_jax * W_jax, u0_ToA))
 
     # Upwelling intensity function at tau=0
     def u_ToA_func(phi):
-        phi = np.atleast_1d(phi)
-        m_arr = np.arange(NFourier)
-        cos_phases = np.cos(np.outer(m_arr, phi0 - phi))  # (NFourier, len(phi))
+        phi = jnp.atleast_1d(jnp.asarray(phi, dtype=float))
+        m_arr = jnp.arange(NFourier)
+        cos_phases = jnp.cos(jnp.outer(m_arr, phi0 - phi))  # (NFourier, len(phi))
         result = u_modes_arr.T @ cos_phases  # (N, len(phi))
         if result.shape[1] == 1:
             return result[:, 0]
         return result
 
     return mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid_m0
+
+
+# ======================================================================
+# Barycentric Lagrange interpolation in mu (JAX-traceable)
+# ======================================================================
+
+def _compute_bary_weights(nodes):
+    """Barycentric weights for Lagrange interpolation.
+
+    Parameters
+    ----------
+    nodes : (N,) numpy array of distinct interpolation nodes.
+
+    Returns
+    -------
+    weights : (N,) numpy array, w_j = 1 / prod_{k != j} (x_j - x_k).
+    """
+    nodes = np.asarray(nodes, dtype=float)
+    n = len(nodes)
+    weights = np.ones(n)
+    for j in range(n):
+        for k in range(n):
+            if k != j:
+                weights[j] /= (nodes[j] - nodes[k])
+    return weights
+
+
+def _barycentric_interpolate(mu_query, mu_nodes, values, bary_weights):
+    """Barycentric Lagrange interpolation — JAX-traceable.
+
+    Parameters
+    ----------
+    mu_query : (M,) JAX array of query points.
+    mu_nodes : (N,) JAX array of interpolation nodes.
+    values : (N,) or (N, K) JAX array of function values at nodes.
+    bary_weights : (N,) JAX array of precomputed barycentric weights.
+
+    Returns
+    -------
+    result : (M,) or (M, K) interpolated values.
+    """
+    # diff[i, j] = mu_query[i] - mu_nodes[j], shape (M, N)
+    diff = mu_query[:, None] - mu_nodes[None, :]
+
+    # Detect exact node matches (avoid division by zero).
+    # Both branches of jnp.where must be NaN-free for clean JAX gradients.
+    is_node = jnp.abs(diff) < 1e-14
+    safe_diff = jnp.where(is_node, 1.0, diff)
+
+    # Kernel: w_j / (mu - mu_j), zeroed at exact matches
+    kernel = jnp.where(is_node, 0.0, bary_weights[None, :] / safe_diff)  # (M, N)
+
+    if values.ndim == 1:
+        numer = kernel @ values                 # (M,)
+        denom = kernel.sum(axis=1)              # (M,)
+        interp = numer / denom                  # (M,)
+        # At exact nodes: pick the node value directly
+        node_val = is_node @ values             # (M,) — at most one True per row
+    else:
+        numer = kernel @ values                 # (M, K)
+        denom = kernel.sum(axis=1, keepdims=True)  # (M, 1)
+        interp = numer / denom                  # (M, K)
+        node_val = is_node.astype(values.dtype) @ values  # (M, K)
+
+    any_exact = is_node.any(axis=1)  # (M,)
+    if values.ndim == 1:
+        return jnp.where(any_exact, node_val, interp)
+    else:
+        return jnp.where(any_exact[:, None], node_val, interp)
+
+
+def interpolate(u_ToA_func, mu_arr_pos):
+    """Barycentric interpolation in mu for ToA upwelling intensity.
+
+    Analog of ``PythonicDISORT.subroutines.interpolate``, restricted to
+    tau=0 (ToA) and positive mu (upwelling hemisphere). JAX-traceable for
+    autodiff through the entire forward model chain.
+
+    Parameters
+    ----------
+    u_ToA_func : callable
+        ``phi -> (N,)`` or ``phi -> (N, len(phi))``, as returned by
+        ``pydisort_riccati_jax``.
+    mu_arr_pos : (N,) ndarray
+        Positive Gauss-Legendre quadrature cosines, as returned by
+        ``pydisort_riccati_jax``.
+
+    Returns
+    -------
+    u_interp : callable
+        ``(mu, phi) -> intensity`` where *mu* is a scalar or 1-D array
+        of positive cosines in (0, 1] and *phi* is a scalar or 1-D array
+        of azimuthal angles.  Return shape follows broadcasting:
+        scalar mu & scalar phi -> scalar; array mu & scalar phi -> (M,);
+        scalar mu & array phi -> (K,); array mu & array phi -> (M, K).
+    """
+    bary_weights = jnp.asarray(_compute_bary_weights(np.asarray(mu_arr_pos)))
+    mu_nodes = jnp.asarray(mu_arr_pos)
+
+    def u_interp(mu, phi):
+        mu_q = jnp.atleast_1d(jnp.asarray(mu, dtype=float))
+        vals = u_ToA_func(phi)  # (N,) or (N, K)
+        result = _barycentric_interpolate(mu_q, mu_nodes, vals, bary_weights)
+        # Squeeze singleton dimensions to match scalar inputs
+        if jnp.ndim(mu) == 0 and result.ndim >= 1:
+            result = result[0]
+        return result
+
+    return u_interp

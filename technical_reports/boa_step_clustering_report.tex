@@ -1,0 +1,963 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcommand{\bR}{\mathbf{R}}
+\newcommand{\bT}{\mathbf{T}}
+\newcommand{\bs}{\mathbf{s}}
+\newcommand{\bI}{\mathbf{I}}
+\newcommand{\balpha}{\boldsymbol{\alpha}}
+\newcommand{\bbeta}{\boldsymbol{\beta}}
+\newcommand{\norm}[1]{\lVert #1 \rVert}
+
+\title{Step clustering near the bottom of atmosphere\\
+  in the adaptive Riccati solver}
+\author{Technical note}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+%% ================================================================
+\section{Problem statement}
+
+The forward Riccati solver \texttt{pydisort\_riccati\_jax} integrates
+the coupled system
+\begin{align}
+  \frac{d\bR}{d\sigma}
+    &= \balpha\bR + \bR\balpha + \bR\bbeta\bR + \bbeta,
+    \label{eq:riccati}\\
+  \frac{d\bT}{d\sigma}
+    &= (\balpha + \bR\bbeta)\,\bT,
+    \label{eq:T}\\
+  \frac{d\bs}{d\sigma}
+    &= (\balpha + \bR\bbeta)\,\bs + \bR\,\mathbf{q}_1 + \mathbf{q}_2
+    \label{eq:s}
+\end{align}
+from $\sigma=0$ (BoA, $\tau=\tau_\mathrm{bot}$) to $\sigma=\tau_\mathrm{bot}$
+(ToA, $\tau=0$), with initial conditions $\bR(0)=\mathbf{0}$,
+$\bT(0)=\bI$, $\bs(0)=\mathbf{0}$.  The integration variable is
+$\sigma$, mapped to optical depth as $\tau = \tau_\mathrm{bot}-\sigma$.
+An adaptive Kvaerno5 solver (L-stable ESDIRK, order 5) with
+PIDController step-size control determines the step grid.
+
+\medskip
+\noindent\textbf{Observation.}
+The adaptive solver places roughly $22\text{--}28\%$ of all
+steps in the region $\tau>25$ (near BoA), corresponding to
+$\sigma<5$.  This clustering persists across a wide range of
+tolerances ($10^{-2}$ to $5\times10^{-5}$).  This note
+investigates why these steps arise and whether they are
+necessary for the accuracy of the observable at ToA.
+
+
+%% ================================================================
+\section{Test problem}
+
+We use the ``adiabatic cloud with drizzle'' profile:
+$\tau_\mathrm{bot}=30$, $N_\mathrm{Quad}=16$ ($N=8$ half-streams),
+$\mu_0=0.5$, $I_0=1$.  The single-scattering albedo and asymmetry
+parameter are
+\begin{align}
+  \omega(\tau) &= 0.85 + 0.11\,\frac{\tau}{\tau_\mathrm{bot}}
+    - 0.15\,\exp\!\Bigl[-\tfrac{1}{2}\Bigl(\frac{\tau-15}{0.5}\Bigr)^{\!2}\Bigr],\\
+  g(\tau) &= 0.865 - 0.045\,\frac{\tau}{\tau_\mathrm{bot}}
+    + 0.04\,\exp\!\Bigl[-\tfrac{1}{2}\Bigl(\frac{\tau-15}{0.5}\Bigr)^{\!2}\Bigr],
+\end{align}
+featuring a Gaussian perturbation (``drizzle spike'') centred at
+$\tau=15$.  The Henyey--Greenstein phase function gives
+Legendre coefficients $g_l(\tau) = g(\tau)^l$.
+
+
+%% ================================================================
+\section{Eigenvalue structure of $\balpha$}
+\label{sec:eigenvalues}
+
+The matrix $\balpha(\tau)$ entering the Riccati ODE is
+\[
+  \balpha = \mathbf{M}^{-1}\!\bigl(\omega\,\mathbf{D}^+\!\mathbf{W}
+    - \bI\bigr),
+\]
+where $\mathbf{M}^{-1} = \mathrm{diag}(1/\mu_i)$ and
+$\mathbf{D}^+\!\mathbf{W}$ is the discretised forward-scattering kernel.
+Since $\omega\,\mathbf{D}^+\!\mathbf{W}$ has eigenvalues bounded by
+$\omega<1$, the matrix $\balpha$ has all negative eigenvalues.
+
+At the BoA ($\tau=30$, $\omega=0.96$) the eigenvalues of $\balpha$
+for $N_\mathrm{Quad}=16$ are:
+
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+Stream $i$ & $\mu_i$ & $\lambda_i(\balpha)$\\
+\midrule
+1 & 0.020 & $-46.4$\\
+2 & 0.102 & $-8.1$\\
+3 & 0.237 & $-3.1$\\
+4 & 0.408 & $-1.7$\\
+5 & 0.592 & $-1.1$\\
+6 & 0.763 & $-0.83$\\
+7 & 0.898 & $-0.62$\\
+8 & 0.980 & $-0.22$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The stiffness ratio is $|\lambda_1/\lambda_8| \approx 214$,
+almost entirely determined by $\mu_\mathrm{max}/\mu_\mathrm{min}
+\approx 50$.  This stiffness is an intrinsic property of the
+Gauss--Legendre quadrature: the steepest stream
+($\mu_1\approx0.02$) sees an optical path $\tau/\mu_1\approx 50\tau$
+per unit $\tau$, making it respond ${\sim}50$ times faster than
+the most vertical stream ($\mu_8\approx0.98$).
+
+The eigenvalues are nearly constant across $\tau$
+(varying by $<1\%$) because the dominant $1/\mu_i$ factor in
+$\mathbf{M}^{-1}$ overwhelms the $\tau$-dependence of
+$\omega$ and $g$.
+
+
+%% ================================================================
+\section{Settling dynamics of $\bR$}
+
+\subsection{Per-stream settling timescales}
+
+Starting from $\bR(0)=\mathbf{0}$, the diagonal entries $R_{ii}$
+settle to quasi-steady values on timescales proportional to $\mu_i$:
+
+\begin{center}
+\begin{tabular}{cccc}
+\toprule
+Stream $i$ & $\mu_i$ & $R_{ii}(\sigma=3)$ & $\sigma$ at 90\% of $R_{ii}(\sigma\!=\!3)$\\
+\midrule
+1 & 0.020 & $4.84\times10^{-2}$ & 0.045\\
+2 & 0.102 & $8.98\times10^{-2}$ & 0.226\\
+3 & 0.237 & $8.40\times10^{-2}$ & 0.799\\
+4 & 0.408 & $7.29\times10^{-2}$ & 1.734\\
+7 & 0.898 & $1.89\times10^{-2}$ & 2.729\\
+8 & 0.980 & $7.05\times10^{-3}$ & 2.774\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The steepest stream ($\mu_1\approx0.02$) reaches 90\%
+of its $\sigma=3$ value by $\sigma=0.045$ --- an interval much shorter
+than a single step at the eventual ``cruising'' step size of
+$\Delta\sigma\approx1$.  The shallowest stream
+($\mu_8\approx0.98$) needs $\sigma\approx2.8$ to settle.
+
+\subsection{Linear vs.\ nonlinear regime}
+
+Decomposing the Riccati RHS into its linear part
+$(\balpha\bR + \bR\balpha + \bbeta)$ and nonlinear part
+$(\bR\bbeta\bR)$:
+
+\begin{center}
+\begin{tabular}{ccccl}
+\toprule
+$\sigma$ & $\norm{d\bR/d\sigma}$ & $\norm{\text{linear}}$ & $\norm{\bR\bbeta\bR}$ & Ratio\\
+\midrule
+$0.00$ & $1.05\times10^{1}$ & $1.05\times10^{1}$ & $0$ & $0$\\
+$0.08$ & $1.00$ & $0.92$ & $0.13$ & $0.14$\\
+$0.30$ & $0.30$ & $0.28$ & $0.23$ & $0.84$\\
+$0.75$ & $0.13$ & $0.28$ & $0.30$ & $1.07$\\
+$1.51$ & $0.070$ & $0.33$ & $0.34$ & $1.04$\\
+$3.00$ & $0.031$ & $0.36$ & $0.36$ & $1.01$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The nonlinear term $\bR\bbeta\bR$ becomes comparable to the
+linear terms around $\sigma\approx0.5$.  After that, the two
+contributions nearly cancel (the ratio $\approx 1$ while $\norm{d\bR/d\sigma}$
+is small), indicating that $\bR$ has entered its quasi-steady
+regime.
+
+The transition from the linear-dominated to the cancellation regime
+explains the step-size drop observed in the adaptive grid at
+$\sigma\approx1.8$: the PIDController, having ramped up aggressively
+during the linear phase, encounters the changed dynamics at the
+nonlinear crossover and must recalibrate.
+
+
+%% ================================================================
+\section{Step distribution vs.\ tolerance}
+
+Running the full solver at tolerances from $10^{-2}$ to $5\times10^{-5}$,
+with the tightest tolerance as reference:
+
+\begin{center}
+\begin{tabular}{r r r r r r r}
+\toprule
+tol & Steps & BoA & Spike & ToA & $\max|\Delta u|$ & $\max|\Delta u/u|$\\
+\midrule
+$10^{-2}$          &  47 & 13 & 20 &  4 & $1.2\times10^{-3}$ & $3.8\times10^{-1}$\\
+$5\times10^{-3}$   &  51 & 13 & 21 &  4 & $1.8\times10^{-3}$ & $1.4\times10^{-1}$\\
+$10^{-3}$          &  69 & 15 & 31 &  4 & $9.7\times10^{-4}$ & $3.7\times10^{-2}$\\
+$5\times10^{-4}$   &  86 & 19 & 39 &  5 & $2.9\times10^{-4}$ & $2.6\times10^{-2}$\\
+$10^{-4}$          & 132 & 28 & 66 &  8 & $4.8\times10^{-5}$ & $1.6\times10^{-2}$\\
+$5\times10^{-5}$   & 151 & 35 & 67 & 10 & \multicolumn{2}{c}{[reference]}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The BoA fraction (steps with $\tau>25$) remains
+$22\text{--}28\%$ at all tolerances.  The ToA radiance converges
+as tolerance tightens, driven primarily by additional steps in the
+spike region (20$\to$67) and near ToA (4$\to$10), with only
+modest growth in BoA steps (13$\to$35).
+
+
+%% ================================================================
+\section{Contraction property: the BoA transient is forgotten}
+
+The decisive test: inject a random symmetric perturbation
+$\delta\bR$ with $\norm{\delta\bR}\approx 0.01$ to $\bR$
+at various $\sigma$ values, then integrate to $\sigma=30$ (ToA)
+and measure the perturbation in the final state.
+
+\begin{center}
+\begin{tabular}{c c c c}
+\toprule
+$\sigma_\mathrm{start}$ & $\norm{\delta\bR_\mathrm{init}}$
+  & $\norm{\delta\bR_\mathrm{final}}$ & Attenuation factor\\
+\midrule
+$0.5$  & $6.1\times10^{-2}$ & $1.0\times10^{-8}$ & $1.7\times10^{-7}$\\
+$1.0$  & $6.3\times10^{-2}$ & $4.4\times10^{-9}$ & $6.9\times10^{-8}$\\
+$2.0$  & $4.4\times10^{-2}$ & $8.9\times10^{-9}$ & $2.0\times10^{-7}$\\
+$5.0$  & $6.0\times10^{-2}$ & $1.8\times10^{-8}$ & $3.0\times10^{-7}$\\
+$10.0$ & $5.1\times10^{-2}$ & $1.5\times10^{-7}$ & $2.9\times10^{-6}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Perturbations at $\sigma=0.5$ ($\tau=29.5$, near BoA) are
+attenuated by a factor of ${\sim}10^7$ by the time they
+reach ToA.  Even perturbations injected at $\sigma=10$
+($\tau=20$, mid-atmosphere) are attenuated by ${\sim}10^6$.
+The source vector $\bs$ shows the same insensitivity:
+$\norm{\delta\bs_\mathrm{final}}\sim10^{-8}$.
+
+This contraction is a consequence of the nonlinear Riccati
+structure: the map $\bR_0 \mapsto \bR(\sigma)$ defined by
+\eqref{eq:riccati} is a contraction for $\sigma$ large enough
+that all modes have settled.  The settling timescale of the
+slowest mode is ${\sim}1/|\lambda_8(\balpha)| \approx 5$,
+so by $\sigma\approx 15$ (a few times this timescale), the
+initial condition is forgotten to machine precision.
+
+
+%% ================================================================
+\section{Jacobian structure: direct sensitivity computation}
+\label{sec:jacobian}
+
+The contraction analysis (Section~5) provides indirect evidence
+that the BoA region is informationally irrelevant.  We now
+compute the Jacobians
+$\partial u^+_0(\tau\!=\!0)/\partial\omega(\tau)$ and
+$\partial u^+_0(\tau\!=\!0)/\partial g(\tau)$ directly via
+JAX reverse-mode autodifferentiation (\texttt{jax.jacrev})
+through the full Riccati ODE (forward and backward sweeps)
+and BC solve.
+
+\subsection{Method}
+
+The atmospheric profiles $\omega(\tau)$ and
+$g(\tau)$ (the Henyey--Greenstein asymmetry parameter,
+with $g_l = g^l$) are perturbed by
+piecewise-linear functions on a uniform grid of $K=61$ nodes
+spanning $[0,\,\tau_\mathrm{bot}]$.  The Jacobians have shape
+$(N,K) = (8,61)$: row~$i$ gives the sensitivity of
+stream~$\mu_i$ at ToA to a perturbation at each $\tau$-node.
+
+Reverse-mode AD is used because $N=8 < K=61$, requiring only
+$N$ backward passes through the \texttt{RecursiveCheckpointAdjoint}
+of \texttt{diffrax.diffeqsolve}.  The computation uses the
+$m=0$ Fourier mode (azimuthally-averaged field, dominant
+contribution); the Riccati contraction property applies
+identically to all modes.
+
+\subsection{Finite-difference validation}
+
+Central finite differences ($\varepsilon = 10^{-5}$) at $\tau=0$
+give $1{-}3\%$ agreement with the AD Jacobian.  At deeper $\tau$,
+finite differences fail because the true sensitivity is so small
+that the perturbation signal ($J\cdot\varepsilon \sim 10^{-8}$)
+falls below the ODE solver noise floor --- itself a confirmation
+of the extreme BoA insensitivity.
+
+\subsection{Regional sensitivity}
+
+We report $\norm{\partial u^+_0 / \partial p(\tau_j)}_2$
+(column-wise $\ell_2$ norm across all $N=8$ streams) averaged
+over each region:
+
+\begin{center}
+\begin{tabular}{l c c}
+\toprule
+Region & $\norm{\partial u^+_0/\partial\omega}_2$
+       & $\norm{\partial u^+_0/\partial g}_2$\\
+\midrule
+ToA ($\tau<5$)       & $5.1\times10^{-2}$ & $5.3\times10^{-2}$\\
+Mid ($5\!\leq\!\tau\!<\!13$) & $8.4\times10^{-4}$ & $6.2\times10^{-4}$\\
+Spike ($13\!\leq\!\tau\!<\!17$) & $2.1\times10^{-5}$ & $1.6\times10^{-5}$\\
+Deep ($17\!\leq\!\tau\!<\!25$) & $2.5\times10^{-6}$ & $1.0\times10^{-6}$\\
+BoA ($\tau\geq 25$)  & $1.5\times10^{-7}$ & $7.4\times10^{-8}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The BoA-to-ToA mean sensitivity ratio is
+$3.0\times10^{-6}$ for $\omega$ and $1.4\times10^{-6}$
+for $g$, consistent with the ${\sim}10^{-6}$--$10^{-7}$
+attenuation factors from the contraction test (Section~5).
+Both parameters show the same spatial decay pattern:
+sensitivity drops monotonically with depth, spanning five
+orders of magnitude from ToA to BoA.
+
+\subsection{Per-stream attenuation}
+
+The attenuation is stream-dependent.  At $\tau=30$ (BoA)
+versus $\tau=0$ (ToA), for the $\omega$ Jacobian:
+
+\begin{center}
+\begin{tabular}{c c c c c}
+\toprule
+Stream $i$ & $\mu_i$ & $|J_{i,\mathrm{BoA}}|$
+  & $|J_{i,\mathrm{ToA}}|$ & Ratio\\
+\midrule
+1 & 0.020 & $5.3\times10^{-10}$ & $1.3\times10^{-1}$ & $4.2\times10^{-9}$\\
+2 & 0.102 & $7.5\times10^{-10}$ & $1.3\times10^{-1}$ & $5.7\times10^{-9}$\\
+3 & 0.237 & $1.1\times10^{-9}$ & $1.0\times10^{-1}$ & $1.0\times10^{-8}$\\
+4 & 0.408 & $1.6\times10^{-9}$ & $6.8\times10^{-2}$ & $2.3\times10^{-8}$\\
+5 & 0.592 & $2.3\times10^{-9}$ & $4.0\times10^{-2}$ & $5.8\times10^{-8}$\\
+6 & 0.763 & $3.2\times10^{-9}$ & $2.6\times10^{-2}$ & $1.3\times10^{-7}$\\
+7 & 0.898 & $4.3\times10^{-9}$ & $2.2\times10^{-2}$ & $1.9\times10^{-7}$\\
+8 & 0.980 & $5.1\times10^{-9}$ & $1.4\times10^{-2}$ & $3.5\times10^{-7}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The steepest stream ($\mu_1\approx0.02$) is attenuated
+by $4\times10^{-9}$, while the shallowest ($\mu_8\approx0.98$)
+by $4\times10^{-7}$.  Steeper streams traverse more
+optical path per unit $\tau$ (path $= \tau/\mu$), so
+their signal is scattered more severely on the way from
+BoA to ToA.
+
+\subsection{Interpretation for the absorbing case}
+
+A perturbation $\delta\omega = 0.01$ at BoA changes
+$u^+_0(\mathrm{ToA})$ by ${\sim}10^{-9}$, which is
+${\sim}2\times10^{-8}$ relative to $|u^+_0| \approx 0.05$.
+This is far below any realistic measurement noise.
+The ${\sim}15$ adaptive steps near BoA (22\% of the 69-step
+grid) resolve a transient that is invisible to the ToA
+observable.
+
+
+%% ================================================================
+\section{Conservative atmosphere: isolating the diffusion mechanism}
+\label{sec:conservative}
+
+The absorbing test problem (Sections~\ref{sec:jacobian}) combines
+two mechanisms of information loss with depth: (i)~photon
+absorption ($\omega < 1$), and (ii)~angular isotropisation
+by multiple scattering (diffusion).  To disentangle them we
+repeat the Jacobian computation for a \emph{conservative}
+adiabatic cloud: $\omega = 1 - 10^{-6}$ (constant),
+$g(\tau)$ linear from $g_\mathrm{top}=0.865$ to
+$g_\mathrm{bot}=0.820$ (no drizzle spike), all other
+parameters unchanged ($\tau_\mathrm{bot}=30$,
+$N_\mathrm{Quad}=16$, $\mu_0=0.5$).  This simulates the
+optical properties of an idealised cloud in the visible band.
+
+\subsection{Grid distribution}
+
+The adaptive solver selects 35~steps (vs.\ 69 in the absorbing
+case): 5~at ToA ($\tau<5$), 14~at BoA ($\tau>25$, i.e.\ 40\%
+of the grid).  The higher BoA fraction (40\% vs.\ 22\%) reflects
+a slower settling transient in the near-conservative Riccati
+equation, where the eigenvalues of~$\balpha$ are closer to zero.
+
+\subsection{Regional sensitivity}
+
+\begin{center}
+\begin{tabular}{l c c}
+\toprule
+Region & $\norm{\partial u^+_0/\partial\omega}_2$
+       & $\norm{\partial u^+_0/\partial g}_2$\\
+\midrule
+ToA ($\tau<5$)       & $5.7\times10^{-1}$ & $2.8\times10^{-2}$\\
+Mid ($5\!\leq\!\tau\!<\!13$) & $3.3\times10^{-1}$ & $6.2\times10^{-3}$\\
+Mid ($13\!\leq\!\tau\!<\!17$) & $2.0\times10^{-1}$ & $6.5\times10^{-3}$\\
+Deep ($17\!\leq\!\tau\!<\!25$) & $9.4\times10^{-2}$ & $6.1\times10^{-3}$\\
+BoA ($\tau\geq 25$)  & $2.0\times10^{-2}$ & $5.9\times10^{-3}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The results are qualitatively different from the absorbing case:
+
+\begin{itemize}
+\item \textbf{The $g$ Jacobian magnitude decays weakly.}
+  The BoA-to-ToA sensitivity ratio is $2.1\times10^{-1}$
+  (${\sim}5\times$ drop) --- far weaker than the
+  five-order-of-magnitude decay in the absorbing atmosphere.
+  However, the angular \emph{content} of the Jacobian collapses
+  rapidly: by $\tau\approx 5$, all columns are proportional
+  (Section~\ref{sec:angular}), so the relatively flat magnitude
+  masks a loss of angular information.
+
+\item \textbf{The $\omega$ Jacobian decays gently.}
+  The BoA-to-ToA ratio is $3.6\times10^{-2}$
+  (${\sim}28\times$ drop), five orders of magnitude weaker
+  than the $3\times10^{-6}$ in the absorbing atmosphere.
+  The residual decay arises because perturbing $\omega$
+  introduces a small amount of absorption; the round-trip
+  attenuation through $\tau=30$ of nearly conservative medium
+  is modest but non-zero.
+\end{itemize}
+
+\subsection{Comparison: absorption vs.\ diffusion}
+
+\begin{center}
+\begin{tabular}{l l c c}
+\toprule
+Atmosphere & Parameter & BoA/ToA ratio & Decay mechanism\\
+\midrule
+Absorbing ($\omega\!\sim\!0.85{-}0.96$) & $\omega$
+  & $3.0\times10^{-6}$ & absorption + diffusion\\
+Absorbing & $g$
+  & $1.4\times10^{-6}$ & absorption + diffusion\\[3pt]
+Conservative ($\omega\!=\!1{-}10^{-6}$) & $\omega$
+  & $3.6\times10^{-2}$ & residual absorption\\
+Conservative & $g$
+  & $2.1\times10^{-1}$ & diffusion (angular collapse)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The five-order-of-magnitude decay in the absorbing case is
+almost entirely due to photon absorption.  In the conservative
+atmosphere, the $g$ Jacobian magnitude decays only modestly
+($5\times$), but this masks a rapid loss of angular information:
+by $\tau\approx 5$, all Jacobian columns are proportional
+(rank~1), meaning the measurement cannot distinguish perturbations
+at different depths (Section~\ref{sec:angular}).
+In the language of diffusion theory, the diffusion length
+diverges as $\omega\to 1$, so photon flux is preserved, but
+the angular pattern freezes to a single diffusion eigenmode.
+
+
+%% ================================================================
+\section{Angular mode analysis: the HG-parameter Jacobian}
+\label{sec:angular}
+
+The $g$ Jacobian introduced in Section~\ref{sec:conservative}
+decays only modestly in magnitude for conservative atmospheres.
+To understand \emph{why} the BoA region is nevertheless
+informationally redundant, we decompose the angular content
+of $J_g$ using shifted Legendre polynomials.  The HG perturbation
+$\delta g$ excites all Legendre orders via $\delta g_l = l\,g^{l-1}\,\delta g$
+--- higher modes more strongly --- making it a broad probe of
+angular diversity.
+
+\subsection{Shifted-Legendre mode decomposition}
+
+Each Jacobian column $J_g[:,\,j]$ (the 8-stream ToA response to a
+$g$-perturbation at $\tau_j$) is projected onto shifted Legendre
+polynomials $\tilde{P}_l(\mu) = P_l(2\mu - 1)$, orthogonal on
+$[0,1]$ with the double-Gauss quadrature weights:
+\[
+  c_l(\tau_j) = (2l+1)\sum_{i=1}^{N}
+    J_{g}[i,\,j]\;\tilde{P}_l(\mu_i)\;W_i.
+\]
+
+\begin{center}
+\begin{tabular}{l c c c c c c}
+\toprule
+Region & $|c_0|$ & $|c_1|$ & $|c_2|$ & $|c_3|$ & $|c_4|$ & $|c_5|$\\
+\midrule
+ToA ($\tau<5$)  & $3.8\mathrm{e}{-3}$ & $7.3\mathrm{e}{-3}$
+  & $7.5\mathrm{e}{-3}$ & $2.5\mathrm{e}{-3}$ & $4.6\mathrm{e}{-3}$ & $1.6\mathrm{e}{-2}$\\
+Mid ($5\!\leq\!\tau\!<\!13$) & $2.1\mathrm{e}{-3}$ & $1.1\mathrm{e}{-3}$
+  & $1.2\mathrm{e}{-4}$ & $6.6\mathrm{e}{-5}$ & $3.3\mathrm{e}{-5}$ & $1.7\mathrm{e}{-5}$\\
+Deep ($17\!\leq\!\tau\!<\!25$) & $2.0\mathrm{e}{-3}$ & $1.1\mathrm{e}{-3}$
+  & $1.2\mathrm{e}{-4}$ & $6.3\mathrm{e}{-5}$ & $3.3\mathrm{e}{-5}$ & $1.7\mathrm{e}{-5}$\\
+BoA ($\tau\geq 25$)  & $2.0\mathrm{e}{-3}$ & $1.1\mathrm{e}{-3}$
+  & $1.2\mathrm{e}{-4}$ & $6.1\mathrm{e}{-5}$ & $3.2\mathrm{e}{-5}$ & $1.7\mathrm{e}{-5}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Near ToA, multiple modes are active: $|c_2|\approx|c_1|$, and
+$|c_5| > |c_1|$ (the HG perturbation excites higher modes more
+strongly).  Below $\tau\approx 5$, the mode ratios freeze:
+$|c_2/c_1| = 0.11$, $|c_3/c_1| = 0.058$, $|c_4/c_1| = 0.030$,
+$|c_5/c_1| = 0.016$ --- constant from mid-atmosphere to BoA.
+The angular pattern is not pure~$P_1$, but it is a \emph{single
+fixed pattern} whose amplitude varies slowly with depth.
+
+\subsection{Three definitions of retrieval-grid redundancy}
+
+We evaluate three criteria for determining which $\tau$-grid
+points are informationally redundant for the retrieval.
+
+\paragraph{Definition A: BoA-anchored attribution.}
+Starting from a fixed BoA point ($\tau=30$), greedily select the
+column with the largest residual after projection onto the
+current span.  This is column-pivoted QR with forced first pivot.
+
+\begin{center}
+\begin{tabular}{c c c c}
+\toprule
+Rank & $\tau$ selected & Residual & Region\\
+\midrule
+0 (anchor) & 30.0 & $3.0\times10^{-3}$ & BoA\\
+1 & 0.0  & $1.7\times10^{-1}$ & ToA\\
+2 & 1.0  & $1.6\times10^{-2}$ & ToA\\
+3 & 0.5  & $4.9\times10^{-3}$ & ToA\\
+4 & 1.5  & $1.2\times10^{-3}$ & ToA\\
+5 & 2.0  & $6.4\times10^{-4}$ & ToA\\
+6 & 3.5  & $1.0\times10^{-4}$ & ToA\\
+7 & 2.5  & $2.3\times10^{-5}$ & ToA\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All $N=8$ selected points lie in $\tau\in[0,\,3.5]$.  No point
+from $\tau>3.5$ is ever selected.  The cosine similarity of every
+column at $\tau\geq 5$ with the BoA column is $\geq 0.9999$.
+
+\paragraph{Definition B: Regional intrinsic dimensionality.}
+SVD of $J_g$ restricted to depth regions:
+
+\begin{center}
+\begin{tabular}{l c c c c}
+\toprule
+Region & Cols & $\sigma_2/\sigma_1$ & Rank ($>$1\%) & Rank ($>$0.1\%)\\
+\midrule
+ToA ($\tau<5$)       & 10 & $1.4\times10^{-1}$ & 4 & 6\\
+Mid ($5\!\leq\!\tau\!<\!25$)  & 40 & $2.3\times10^{-3}$ & 1 & 2\\
+BoA ($\tau\geq 25$)  & 11 & $3.1\times10^{-8}$ & 1 & 1\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The BoA block is spectacularly rank-1 ($\sigma_2/\sigma_1 =
+3\times10^{-8}$).  All 11 BoA columns are mutually proportional
+to machine precision.  The mid block is also effectively rank-1.
+Only the ToA block has multiple independent angular directions
+(rank 4--6).
+
+\paragraph{Definition C: Local resolving length.}
+$L_\mathrm{res}(\tau) = \norm{J_g(\tau)} / \norm{dJ_g/d\tau}$
+measures how finely the measurement can resolve $g(\tau)$:
+
+\begin{center}
+\begin{tabular}{l c c}
+\toprule
+Region & Mean $L_\mathrm{res}$ & Implied grid points\\
+\midrule
+ToA ($\tau<5$)       & 2.2  & 7.1\\
+Mid ($5\!\leq\!\tau\!<\!13$)  & 3.3  & 15.8\\
+Mid ($13\!\leq\!\tau\!<\!17$) & 1.0  & 7.9\\
+Deep ($17\!\leq\!\tau\!<\!25$) & 2.5  & 4.5\\
+BoA ($\tau\geq 25$)  & 8.9  & 3.3\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Definition~C prescribes ${\approx}16$ points in the mid
+region where Definition~B gives rank~1.  This is the predicted
+disagreement: the Jacobian amplitude varies locally
+(short $L_\mathrm{res}$), but the angular \emph{pattern}
+is frozen (rank~1).  Criterion~C detects amplitude variation
+but misses global angular redundancy.
+
+\subsection{Feature-reactivity test: Gaussian spike position sweep}
+
+To test whether the angular collapse depends on the
+$g(\tau)$ profile shape, we place a Gaussian spike
+\[
+  g_\mathrm{spike}(\tau) = g_\mathrm{smooth}(\tau)
+  + 0.04\,\exp\!\Bigl[-\tfrac{1}{2}\Bigl(\frac{\tau-\tau_s}{0.5}\Bigr)^{\!2}\Bigr]
+\]
+at nine positions $\tau_s \in \{0,\,1,\,2,\,3,\,4,\,5,\,6,\,8,\,15\}$,
+spanning from the surface boundary ($\tau=0$, half-spike) through the
+collapse threshold ($\tau\approx 5$) and well past it.
+
+\paragraph{Results.}
+The angular structure is invariant across all spike positions:
+
+\begin{center}
+\begin{tabular}{c c c c c c}
+\toprule
+$\tau_s$ & Steps & ToA pts & ToA rank (1\%)
+  & BoA $\sigma_2/\sigma_1$ & $\cos_\mathrm{sim}$ Mid min\\
+\midrule
+smooth  & 35 &  5 & 4 & $3.2\times10^{-8}$ & 0.9999\\
+0 (half)& 50 & 20 & 4 & $3.4\times10^{-8}$ & 0.9999\\
+1       & 57 & 27 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+2       & 60 & 30 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+3       & 54 & 24 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+4       & 56 & 23 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+5       & 57 & 15 & 4 & $3.6\times10^{-8}$ & 1.0000\\
+6       & 57 &  5 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+8       & 55 &  4 & 4 & $3.6\times10^{-8}$ & 0.9999\\
+15      & 54 &  4 & 4 & $3.7\times10^{-8}$ & 1.0000\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The frozen mode ratios are stable across all cases:
+$|c_2/c_1| = 0.110{-}0.123$, $|c_3/c_1| = 0.058{-}0.069$.
+The boundary half-spike ($\tau_s=0$) shifts the ratio
+slightly ($|c_2/c_1|=0.123$) since the truncated Gaussian
+modifies the effective surface optical properties, but the
+rank structure is unchanged.
+The greedy selection always picks
+from $\tau<4$; no spike-region point is ever selected.
+
+\paragraph{Solver response vs.\ angular invariance.}
+Near-surface spikes produce the strongest solver response:
+$\tau_s=2$ forces 30~ToA steps (vs.\ 5 for smooth), a
+$6\times$ increase.  Yet the ToA rank, BoA rank, cosine
+similarity profile, and rank structure are unchanged.
+The spike alters the Jacobian \emph{amplitudes} near ToA
+but not the angular \emph{pattern} --- the rank-4 subspace
+at ToA is the same subspace regardless of spike position.
+
+\paragraph{Interpretation.}
+The angular collapse at $\tau\approx 5$ is a structural property
+of multiple scattering in a thick medium, independent of the
+profile shape.  Spikes at any depth --- including at the
+surface boundary ($\tau_s=0$, half-spike) and before the
+transition --- do not break or shift the collapse.
+This profile-independence extends to the strongest possible
+test: a spike \emph{at the measurement surface} ($\tau=0$).
+The retrieval grid can therefore be prescribed once from the
+angular structure, without knowing the specific $g(\tau)$ profile.
+
+\subsection{Retrieval grid vs.\ solver grid}
+
+The angular analysis reveals a fundamental mismatch between
+the ODE solver's adaptive grid and the retrieval information
+grid:
+
+\begin{center}
+\begin{tabular}{l r r}
+\toprule
+ & Smooth & Spike\\
+\midrule
+Solver steps (total)     & 35  & 54\\
+Solver steps at BoA ($\tau>25$) & 14  & 14\\
+Retrieval DoF at BoA (Def.\ B) & 1   & 1\\[3pt]
+Solver steps near ToA ($\tau<5$) & 5   & 4\\
+Retrieval DoF near ToA (Def.\ B) & 4--6 & 4--6\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Near BoA, the solver allocates 14~steps where the retrieval
+needs 1 --- a $14\times$ over-resolution.  Near ToA, the solver
+uses 4--5~steps where 4--6 independent quantities exist ---
+marginal or under-resolved.  The solver grid is designed for ODE
+accuracy (resolving the Riccati transient), not for retrieval
+information content.  The retrieval parameterisation grid must
+therefore be designed independently from the ODE step grid.
+
+
+\subsection{Absorbing atmosphere: angular collapse with magnitude decay}
+
+The preceding analysis used a conservative atmosphere to isolate
+the diffusion mechanism.  We now compute $J_g$ for the absorbing
+adiabatic cloud ($\omega \sim 0.85{-}0.96$ with drizzle spike at
+$\tau=15$) to test whether the angular collapse co-locates with
+the five-order-of-magnitude decay documented in
+Section~\ref{sec:jacobian}.
+
+\begin{center}
+\begin{tabular}{l c c c}
+\toprule
+Region & $\norm{J_g}_2$ & $|c_2/c_1|$ & $\cos_\mathrm{sim}$ min\\
+\midrule
+ToA ($\tau<5$)       & $5.3\times10^{-2}$ & 0.621 & 0.36\\
+Mid ($5\!\leq\!\tau\!<\!13$) & $6.2\times10^{-4}$ & 0.123 & 0.989\\
+Spike ($13\!\leq\!\tau\!<\!17$) & $1.6\times10^{-5}$ & 0.286 & 1.000\\
+Deep ($17\!\leq\!\tau\!<\!25$) & $1.0\times10^{-6}$ & 0.296 & 1.000\\
+BoA ($\tau\geq 25$)  & $7.4\times10^{-8}$ & 0.297 & 1.000\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+SVD of the BoA block gives $\sigma_2/\sigma_1 = 2.2\times10^{-5}$
+(rank~1); the ToA block has rank~4 (1\%~threshold) and rank~6
+(0.1\%), matching the conservative case.
+
+Two differences from the conservative atmosphere are notable:
+\begin{itemize}
+\item The \emph{frozen mode ratios} differ: $|c_2/c_1| \approx 0.30$
+  at depth (absorbing) vs.\ $0.11$ (conservative).  The angular
+  pattern still collapses to a single fixed pattern, but the
+  pattern itself depends on the absorption profile.
+\item The \emph{angular collapse is slightly later}: $\cos_\mathrm{sim}$
+  reaches 0.989 at the bottom of the mid region ($\tau\approx 13$)
+  vs.\ $\geq 0.9999$ by $\tau\approx 5$ in the conservative case.
+  The sliding-window rank in the mid region is 1.8 (absorbing)
+  vs.\ 1.2 (conservative).
+\end{itemize}
+These differences do not affect the practical conclusion:
+the ToA rank is identical (4--6), and below $\tau\approx 13$
+the absorbing atmosphere is rank-1 with negligible absolute
+sensitivity ($\norm{J_g} < 10^{-5}$).  In the absorbing case,
+magnitude thresholding alone trims the grid more aggressively
+than angular analysis.
+
+\subsection{Full-radiance-field analysis}
+
+The preceding analyses use only the zeroth Fourier mode
+$u_0(\mu) = u_m(\mu)|_{m=0}$, which captures the azimuthally
+averaged radiance.  The full radiance field
+$u(\mu,\phi) = \sum_{m=0}^{N_\mathrm{Fourier}-1} u_m(\mu)\cos m(\phi_0-\phi)$
+contains additional azimuthal information.  We test whether
+this additional information increases the retrieval DoF by
+stacking the per-mode Jacobians:
+\[
+  J_g^\mathrm{full} = \begin{pmatrix} J_g^{m=0} \\ J_g^{m=1} \\ \vdots \\ J_g^{m=M-1} \end{pmatrix}
+  \in \mathbb{R}^{NM \times K}
+\]
+where $N = N_\mathrm{Quad}/2$ is the number of upwelling streams
+and $M$ is the number of Fourier modes.
+
+Three tiers of increasing measurement dimensionality were tested
+at $\tau_s = 3$ (conservative, $\omega \approx 1$):
+
+\begin{center}
+\begin{tabular}{l c c c c c}
+\toprule
+Tier & $N_\mathrm{Quad}$ & Modes $M$ & Rows
+  & ToA rank (1\%) & Mid rank (1\%)\\
+\midrule
+Baseline ($u_0$)  & 16 &  1 &   8 & 4 & 1\\
+(a) Full $u$      & 16 & 16 & 128 & 4 & 2\\
+(b) $u_0$, doubled& 32 &  1 &  16 & 4 & 1\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Neither azimuthal diversity (tier~a) nor doubled angular resolution
+(tier~b) increases the ToA rank beyond~4.  Tier~(a) adds one degree
+of freedom in the mid-atmosphere (rank $1\to 2$), but only where
+$\norm{J_g} < 10^{-3}$ --- well below the ToA signal.
+A third tier combining both ($N_\mathrm{Quad}=32$, all 32~Fourier
+modes) was attempted but not completed due to computational cost
+(each $\mathrm{jacrev}$ call at $N_\mathrm{Quad}=32$ exceeded
+20~minutes per mode); the combined effect remains untested.
+
+The per-mode BoA sensitivity reveals why azimuthal modes are
+unlikely to help: higher Fourier modes decay exponentially with
+depth.  At BoA ($\tau = 30$), $\norm{J_g^{m=1}} =
+9.0\times10^{-12}$ and $\norm{J_g^{m=2}} = 1.2\times10^{-16}$, compared
+to $\norm{J_g^{m=0}} = 3.1\times10^{-3}$.  Azimuthal modes are generated
+by single scattering (which decays as $e^{-\tau/\mu_0}$) and destroyed
+by multiple scattering, so they carry information only near the surface.
+At depth, the field is isotropized and only $m=0$ survives.
+
+
+\subsection{Single-scattering albedo scan}
+
+Absorption delays the angular collapse
+(Section~\ref{sec:angular}: $\tau\approx 13$ vs.\ $\tau\approx 5$)
+but also reduces the Jacobian magnitude.  We scan
+$\omega \in \{0.999,\, 0.99,\, 0.98,\, 0.95,\, 0.90\}$
+(uniform with $\tau$, no spike) to determine whether a useful
+window exists where the collapse is delayed but the signal remains
+detectable.
+
+\begin{center}
+\begin{tabular}{c c c c c}
+\toprule
+$\omega$ & BoA $\norm{J_g}$ & ToA rank (1\%)
+  & Mid sliding rank & $\cos_\mathrm{sim}$ Mid min\\
+\midrule
+$1 - 10^{-6}$ & $3.1\times10^{-3}$ & 4 & 1.2 & 1.0000\\
+0.999          & $2.4\times10^{-3}$ & 4 & 1.1 & 1.0000\\
+0.99           & $4.2\times10^{-4}$ & 4 & 1.5 & 0.9988\\
+0.98           & $8.9\times10^{-5}$ & 4 & 1.6 & 0.9976\\
+0.95           & $2.3\times10^{-6}$ & 4 & 1.6 & ---\\
+0.90           & $2.2\times10^{-8}$ & 4 & 1.6 & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The BoA $\norm{J_g}$ drops below $10^{-5}$ (the numerical noise
+floor given ODE tolerance $10^{-3}$) between $\omega = 0.95$
+and $\omega = 0.98$.  Absorption does delay the angular collapse:
+the mid-atmosphere sliding rank increases from 1.2 (conservative)
+to 1.6 ($\omega = 0.95$), and the cosine similarity departs from
+unity.  However, the ToA rank remains~4 for all $\omega$ ---
+absorption delays the collapse at depth but does not create new
+independent directions where the signal is strong.
+
+A full-u test at the threshold albedo ($\omega = 0.98$, spike at
+$\tau_s = 3$) with all 16~Fourier modes at $N_\mathrm{Quad}=16$
+gives ToA rank~4, matching the conservative result.  The
+corresponding $N_\mathrm{Quad}=32$ test was not completed due to
+computational cost.
+
+
+\subsection{Interpretation}
+
+\begin{enumerate}
+\item The angular collapse is fast and complete in both regimes.
+  In the conservative atmosphere, all higher angular modes
+  decay to fixed fractions of the $P_1$ mode by
+  $\tau\approx 5$ (roughly one transport mean free path
+  $\ell^* = 1/(1-g) \approx 7$).
+  In the absorbing atmosphere, the collapse occurs by
+  $\tau\approx 13$, with the five-order magnitude decay
+  providing a more aggressive trimming criterion.
+
+\item Although $\norm{J_g}$ decays only modestly in the conservative
+  atmosphere ($5\times$ from ToA to BoA), the angular structure
+  collapses: all modes except $P_1$ are effectively zeroed by
+  $\tau\approx 5$.  Magnitude alone is misleading --- the
+  information content is determined by the angular rank.
+
+\item The BoA region ($\tau\geq25$) is rank-1 to machine
+  precision.  A perturbation $\delta g$ at any depth in this
+  region produces the same angular signature at ToA --- the
+  measurement cannot distinguish which depth the perturbation
+  came from.  All 14 adaptive steps near BoA carry a single
+  degree of freedom, attributable to one grid point.
+
+\item Definitions A and B agree: the retrieval needs ${\sim}8$
+  points in $\tau\in[0,3.5]$ and 1 point at BoA.  Definition~C
+  disagrees in the mid-atmosphere, prescribing ${\sim}16$ points
+  where only 1--2 independent quantities exist --- the
+  ``individually relevant but collectively redundant'' phenomenon.
+
+\item Spike tests at $\tau_\mathrm{spike}\in\{0,1,2,3,4,5,6,8,15\}$
+  --- including a half-spike at the surface boundary ($\tau=0$) ---
+  confirm that the angular collapse is insensitive to local
+  profile features at \emph{every} depth.  The retrieval grid
+  criteria (greedy selection, SVD ranks, mode ratios) are invariant
+  across all spike positions.  Only the solver grid reacts to the
+  feature (adding up to 25~steps for ODE accuracy).
+
+\item When tested separately, neither azimuthal diversity
+  (all 16~Fourier modes at $N_\mathrm{Quad}=16$) nor doubled
+  angular resolution ($N_\mathrm{Quad}=32$, $m=0$ only) increases
+  the ToA rank beyond~4.  Higher Fourier modes decay exponentially
+  with depth ($\norm{J_g^{m=1}}$ at BoA is $10^{9}$ times smaller
+  than $\norm{J_g^{m=0}}$), so they carry information only at the
+  surface.  The combined test (all modes at $N_\mathrm{Quad}=32$)
+  was not completed due to computational cost.
+
+\item At $N_\mathrm{Quad}=16$, no useful $\omega$~window was found
+  for exploiting delayed angular collapse.  Reducing $\omega$ from
+  1 to 0.90 delays the collapse from $\tau\approx 5$ to past
+  $\tau\approx 13$, but the BoA sensitivity simultaneously drops
+  five orders of magnitude.  The ToA rank remains~4 for all
+  $\omega$ tested.
+\end{enumerate}
+
+
+%% ================================================================
+\section{Conclusions}
+
+\begin{enumerate}
+\item \textbf{The BoA step clustering is mathematically genuine.}
+  It resolves a stiff initial transient of $\bR$ as the
+  reflection matrix grows from zero.  The stiffness originates
+  from the Gauss--Legendre quadrature: the steepest stream
+  ($\mu_\mathrm{min}\approx 0.02$ for $N_\mathrm{Quad}=16$) has
+  a settling timescale ${\sim}\mu_\mathrm{min}\approx 0.02$,
+  which is ${\sim}50$ times shorter than the shallowest stream.
+  The adaptive controller correctly resolves this fast
+  transient.
+
+\item \textbf{The T equation amplifies the clustering.}
+  Integrating $\bR$ alone requires ${\sim}43$ steps vs.\
+  ${\sim}50$ for the coupled $(\bR,\bT,\bs)$ system.  The
+  fast eigenvalues of $\balpha$ drive exponential decay in
+  $\bT$ (from $\bI$ down to $\norm{\bT}\approx 8\times10^{-4}$),
+  adding ${\sim}7$ steps to track this decay.
+
+\item \textbf{Retrieval information is concentrated near ToA
+  in both absorption regimes
+  (Sections~\ref{sec:jacobian}--\ref{sec:angular}).}
+  \begin{itemize}
+  \item \emph{Absorbing atmosphere}
+    ($\omega \sim 0.85{-}0.96$): Jacobian magnitude drops
+    five orders of magnitude from ToA to BoA
+    (ratio~${\sim}10^{-6}$).  Angular collapse occurs by
+    $\tau\approx 13$; magnitude thresholding alone suffices
+    for grid trimming.
+  \item \emph{Conservative atmosphere}
+    ($\omega \approx 1$): Jacobian magnitude decays only
+    modestly ($5\times$), but the angular content collapses
+    by $\tau\approx 5$.  Below this depth, all Jacobian
+    columns are rank-1 (proportional).  The BoA region is
+    informationally redundant: 11 grid points carry a
+    single degree of freedom.
+  \end{itemize}
+  Angular information collapses rapidly with depth in both
+  regimes; the ToA region ($\tau < 5$) has rank~4--6, while
+  deeper regions are rank-1.
+
+\item \textbf{Implication for retrieval grid design.}
+  The retrieval parameterisation grid for $g(\tau)$ should be:
+  \begin{itemize}
+  \item Dense in $\tau \in [0,\,{\sim}5]$: this is where all
+    independent angular information resides (up to $N=8$
+    degrees of freedom).
+  \item Sparse below $\tau\approx 5$: only 1--2 grid points
+    are needed (the information is one-dimensional).
+  \item Always include a point at BoA ($\tau = \tau_\mathrm{bot}$)
+    to anchor the single retrievable degree of freedom
+    at depth.
+  \end{itemize}
+  This grid design applies to \emph{both} absorbing and
+  conservative atmospheres.  The adaptive ODE grid is
+  necessary for solver accuracy but is not the retrieval grid
+  --- the retrieval grid should be designed from the Jacobian
+  structure, not from the ODE step placement.
+
+\item \textbf{The retrieval grid is profile-independent.}
+  Gaussian spikes in $g(\tau)$ placed at nine positions
+  ($\tau_s \in \{0,1,2,3,4,5,6,8,15\}$) --- including a
+  half-spike at the surface boundary and spikes before, at,
+  and after the angular collapse threshold --- leave all
+  retrieval-grid criteria invariant.  The angular collapse at
+  $\tau\approx 5$ is a structural property of multiple
+  scattering in a thick medium.
+
+\item \textbf{The full radiance field does not add retrieval DoF
+  (tested separately).}
+  The Jacobian was computed with all $N_\mathrm{Fourier}=16$
+  azimuthal modes (at $N_\mathrm{Quad}=16$) and separately
+  with doubled streams ($N_\mathrm{Quad}=32$, $m=0$ only).
+  Neither increases the ToA rank beyond~4.  Higher Fourier
+  modes ($m\geq 1$) decay exponentially with depth and carry
+  information only at the surface.  The combined test (all
+  modes at $N_\mathrm{Quad}=32$) was not completed due to
+  computational cost.
+
+\item \textbf{No useful single-scattering albedo window found
+  (at $N_\mathrm{Quad}=16$).}
+  Reducing $\omega$ from 1 to 0.90 delays the angular collapse
+  from $\tau\approx 5$ to past $\tau\approx 13$, but the BoA
+  sensitivity drops below the numerical noise floor ($10^{-5}$)
+  between $\omega = 0.95$ and $\omega = 0.98$.  The ToA rank
+  remains~4 for all~$\omega$ tested.  At the threshold
+  ($\omega = 0.98$), a full-u test with 16~Fourier modes at
+  $N_\mathrm{Quad}=16$ also gives rank~4; the $N_\mathrm{Quad}=32$
+  test was not completed.
+\end{enumerate}
+
+\end{document}

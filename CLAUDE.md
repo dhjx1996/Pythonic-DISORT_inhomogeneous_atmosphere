@@ -55,6 +55,7 @@ added to `sys.path` by `tests/conftest.py`).
 | `13_test.py` | Adaptive Riccati solver: u(φ) (thin, cloud, constant-ω) |
 | `14_test.py` | Kvaerno5 Riccati solver standalone (R_up, tol-sweep, T, symmetry, beam source, T_up tau-varying vs pydisort) |
 | `15_test.py` | Full-domain Riccati integration: u(φ) (cloud, thin, reproducibility) |
+| `16_interpolate_test.py` | Barycentric μ-interpolation: identity at nodes, cross-check vs pydisort, autodiff |
 
 `tests/_helpers.py` provides `get_reference`, `pydisort_toa_full_phi`, `multilayer_pydisort_toa_full_phi`, `make_cloud_profile`, `assert_close_to_reference_phi`, `assert_convergence_phi`, and `PHI_VALUES`.
 `tests/supplementary/generate_reference.py` pre-computes `.npz` fallback files (run once when tau values change).
@@ -156,6 +157,24 @@ Always a 5-tuple: `(mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`.
 All intensity outputs are upwelling-only (size N = NQuad // 2):
 `mu_arr_pos` is `(N,)`, `u0_ToA` is `(N,)`, `u_ToA_func(φ)` returns `(N,)` or `(N, len(φ))`.
 `tau_grid` is an ndarray of step boundary points from the forward Riccati sweep.
+
+`u0_ToA` and `u_ToA_func` are JAX arrays / JAX-traceable closures — the autodiff chain
+from solver inputs through Fourier reconstruction is unbroken.  `flux_up_ToA` is converted
+to a Python float (not in the diff path).
+
+### Interpolation to arbitrary observation angles (`interpolate`)
+
+`interpolate(u_ToA_func, mu_arr_pos)` returns `u_interp(mu, phi)` — barycentric Lagrange
+interpolation in μ at ToA, enabling evaluation at arbitrary polar angles in (0, 1].
+JAX-traceable: `jax.grad(lambda mu: u_interp(mu, phi))` works end-to-end.
+
+Usage:
+```python
+mu_arr_pos, flux_up, u0, u_ToA_func, tau_grid = pydisort_riccati_jax(...)
+u_interp = interpolate(u_ToA_func, mu_arr_pos)
+intensity = u_interp(0.35, pi/4)          # scalar mu, scalar phi -> scalar
+intensities = u_interp(mu_obs_array, phi) # (M,) mu, scalar phi -> (M,)
+```
 
 ### Deferred features (not yet implemented — do not forget)
 
