@@ -12,11 +12,11 @@ Status tags: **[SETTLED]** decided and in effect · **[INVARIANT]** must never b
 
 The forward solver integrates the **matrix Riccati equation** (invariant imbedding) with
 diffrax's **Kvaerno5** (L-stable ESDIRK, adaptive). **Minimising the number of integration
-steps (τ-points) is a primary design motivation** — but *not* for runtime (per-step ESDIRK
-cost is high, higher than a Magnus step). The motivation is **retrieval-grid viability**: the
-implicit, L-stable solver produces a *minimal, artifact-free, profile-adaptive* set of
+steps (τ-points) is a primary design motivation** — its payoff is **retrieval-grid viability**:
+the implicit, L-stable solver produces a *minimal, artifact-free, profile-adaptive* set of
 τ-points, and that set is the only a-priori-available, problem-derived candidate for the
-retrieval grid. The lineage that led here is recorded so the dead ends are not retried:
+retrieval grid (it is not pursued for runtime). The lineage that led here is recorded so the
+dead ends are not retried:
 
 - **Magnus + Redheffer star product** ("Report I"): unconditionally *stable* — works entirely
   with O(1)-bounded N×N reflection/transmission/source operators, avoiding the coexisting
@@ -48,9 +48,9 @@ The retrieval grid is then a **sensitivity-selected *subset*** of this pool, not
 grid: the same contraction that guarantees the superset (state settles ⇒ all variation
 resolved) also forbids using it wholesale (deep steps — the BoA imbedding boundary layer and
 depth-attenuated deep features — carry little information). This superset/subset relationship,
-and the alternative of decoupling via a smooth low-dim basis (rejected: a basis relocates the
-a-priori assumption into an adiabatic shape or a training distribution, and is static rather
-than profile-adaptive), is the retrieval-grid material in §3 below.
+and the alternative of decoupling via a smooth low-dim basis (not pursued here — a basis carries
+its own a-priori commitment in its shape/training distribution and is static rather than
+profile-adaptive; which route wins is left open), is the retrieval-grid material in §3 below.
 
 **Retained from the rejected work:** the **Redheffer star product / interaction principle** (the
 layer-composition rule underlying the Riccati derivation, and the up/down combination in the BC
@@ -105,12 +105,12 @@ depth-attenuated features (**adjoint**). Worked example: in
 raised the step count 107→186, clustering on the spike *and* keeping the (uninformative) BoA
 cluster. **So: select the retrieval grid as a sensitivity/QRCP-weighted subset of the ODE
 pool.** The alternative — *decoupling* the retrieval grid from the ODE grid via a smooth
-low-dim basis (EOF/adiabatic-shape/NN) — is **rejected**: a basis only *relocates* the
-a-priori assumption (into an adiabatic shape that fails for non-adiabatic clouds, or a training
-distribution with extrapolation risk) and is *static*, whereas the ODE grid is
-problem-derived, profile-adaptive, and re-placeable within the loop. Its residual weakness —
-it inherits the *first-guess* profile's bias — is *correctable* by lagged re-selection (see
-[OUTSTANDING B](./OUTSTANDING.md)), unlike a frozen basis.
+low-dim basis (EOF/adiabatic-shape/NN) — is **not pursued here** (these are largely unexplored
+beyond the adiabatic case): a basis carries its own a-priori commitment in its shape/training
+distribution and is *static*, whereas the ODE grid is problem-derived, profile-adaptive, and
+re-placeable. The ODE-pool route's complementary weakness — it inherits the *first-guess*
+profile's bias — is correctable by lagged re-selection (see [OUTSTANDING B](./OUTSTANDING.md)).
+Which route wins is left open.
 
 **(b) Information is ToA-weighted with finite penetration — conditional on a thick cloud.**
 The retrieved r_e is a vertical-weighting-function-weighted average concentrated toward cloud

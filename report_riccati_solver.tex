@@ -382,37 +382,26 @@ structural guarantee of numerical stability for thick atmospheres.
 
 The transmission operator $\mat{T}(\sigma)$ maps upward intensity
 entering at the bottom of the slab to upward intensity exiting at the
-top.  When the thin layer $\dd\sigma$ is added at the top, light
-transmitted through the existing slab ($\mat{T}$) then passes through
-the thin layer.  To first order, the thin layer modifies the transmitted
-beam by $t = \mat{I} + \mat{\alpha}\dd\sigma$ and allows a single
-back-reflection cycle ($\mat{T} \to$ slab reflects $\mat{R} \to$ thin
-layer reflects $\mat{\beta}\dd\sigma \to$ transmit up):
+top.  When the thin layer $\dd\sigma$ is added at the top, light entering at
+the bottom first transmits up through the existing slab ($\mat{T}$), then
+undergoes one back-reflection cycle between the slab (reflecting via
+$\mat{R}$) and the new thin layer (reflecting via $r = \mat{\beta}\dd\sigma$),
+and finally exits upward through the thin layer
+($t = \mat{I} + \mat{\alpha}\dd\sigma$):
 \begin{align}
   \mat{T}(\sigma + \dd\sigma)
-  &= t\,(\mat{I} + r\,\mat{R})\,\mat{T} + O(\dd\sigma^2) \nonumber \\
+  &= t\,(\mat{I} + \mat{R}\,r)\,\mat{T} + O(\dd\sigma^2) \nonumber \\
   &= (\mat{I} + \mat{\alpha}\dd\sigma)\,
-     (\mat{I} + \mat{\beta}\mat{R}\dd\sigma)\,\mat{T}
+     (\mat{I} + \mat{R}\,\mat{\beta}\dd\sigma)\,\mat{T}
      + O(\dd\sigma^2) \nonumber \\
-  &= \mat{T} + (\mat{\alpha} + \mat{\beta}\mat{R})\,\mat{T}\dd\sigma
+  &= \mat{T} + (\mat{\alpha} + \mat{R}\,\mat{\beta})\,\mat{T}\dd\sigma
      + O(\dd\sigma^2).
 \end{align}
-However, noting that $\mat{T}$ transmits from the bottom \emph{up
-through} the slab, and the thin layer is added at the top, the correct
-composition is:
-\begin{equation}
-  \mat{T}(\sigma + \dd\sigma)
-  = t\,\mat{T} + t\,\mat{R}\,r\,\mat{T} + O(\dd\sigma^2)
-  = \mat{T} + \mat{T}\,(\mat{\alpha} + \mat{\beta}\mat{R})\dd\sigma
-    + O(\dd\sigma^2).
-\end{equation}
-Here the factor ordering reflects that light first enters the slab
-from below (acted on by the old operators) and then exits through the
-new layer at the top.  Taking the limit:
+Taking the limit:
 \begin{equation}\label{eq:companion-T}
   \boxed{
     \frac{\dd\mat{T}}{\dd\sigma}
-    = \mat{T}\,(\mat{\alpha} + \mat{\beta}\mat{R}),
+    = (\mat{\alpha} + \mat{R}\,\mat{\beta})\,\mat{T},
     \qquad \mat{T}(0) = \mat{I}.
   }
 \end{equation}
@@ -504,8 +493,9 @@ yields:
      + \mat{\beta}(\sigma),
   \label{eq:riccati-R-bwd} \\
   \frac{\dd\mat{T}_{\mathrm{down}}}{\dd\sigma}
-  &= \mat{T}_{\mathrm{down}}\,\bigl(\mat{\alpha}(\sigma)
-     + \mat{\beta}(\sigma)\,\mat{R}_{\mathrm{down}}\bigr),
+  &= \bigl(\mat{\alpha}(\sigma)
+     + \mat{R}_{\mathrm{down}}\,\mat{\beta}(\sigma)\bigr)\,
+     \mat{T}_{\mathrm{down}},
   \label{eq:companion-T-bwd} \\
   \frac{\dd\vect{s}_{\mathrm{down}}}{\dd\sigma}
   &= \bigl(\mat{\alpha}(\sigma)
@@ -569,7 +559,7 @@ $\mat{\beta}(\sigma)$ once per call and assembles the three derivatives:
      + \mat{R}\mat{\beta}\mat{R} + \mat{\beta},
   \label{eq:rhs-R} \\
   \frac{\dd\mat{T}}{\dd\sigma}
-  &= \mat{T}\,(\mat{\alpha} + \mat{\beta}\mat{R}),
+  &= (\mat{\alpha} + \mat{R}\mat{\beta})\,\mat{T},
   \label{eq:rhs-T} \\
   \frac{\dd\vect{s}}{\dd\sigma}
   &= (\mat{\alpha} + \mat{R}\mat{\beta})\vect{s}
@@ -755,30 +745,22 @@ layer-composition rule that yields the Riccati increment
 boundary-condition solve (\cref{sec:bc}) --- and the $O(1)$-bounded
 $N\!\times\!N$ operator formulation.
 
-\paragraph{Why step count is the objective --- and what it is \emph{not}.}
-Minimising the number of $\tau$-points is a primary design objective, but
-\emph{not} for run time: a per-step ESDIRK solve (several Newton
-iterations, each an $O(N^3)$ factorisation) costs \emph{more} than a
-Magnus step, so a $60\times$ step reduction is not a $60\times$ speed-up,
-and in the current retrieval loop the dominant cost is in fact JIT
-recompilation, not stepping.  The reason to minimise $\tau$-points is
-\textbf{retrieval-grid viability}: the converged ODE grid is the only
+\paragraph{Step count as a design objective.}
+Beyond simplicity, the minimal step count is itself a primary design
+goal --- not for run time, but because the converged ODE grid is the only
 a-priori-available, problem-derived, profile-adaptive candidate for the
-grid on which $r_e(\tau)$ is retrieved (\cref{sec:retrieval-grid}).
-Because the solver is L-stable, that grid clusters by \emph{genuine}
-variation of the Riccati state --- not stiffness artifacts --- making it
-a trustworthy \emph{superset} of the retrieval-informative depths while
-remaining minimal, which is exactly what conditions the downstream
-sensitivity selection (\cref{sec:retrieval-grid}).
+grid on which $r_e(\tau)$ is retrieved, and a \emph{minimal} such grid is
+what makes it usable for an observable with few degrees of freedom.  This
+motivation, and how the retrieval grid relates to the ODE grid, is
+developed in \cref{sec:retrieval-grid}.
 
 %----------------------------------------------------------------------
 \subsection{Choice of Solver}
 %----------------------------------------------------------------------
 
 The coupled system \eqref{eq:rhs-R}--\eqref{eq:rhs-s} is a stiff ODE:
-the eigenvalues of the coefficient matrix $\mat{A}$ span a wide range
-(for $\texttt{NQuad} = 8$, $|\lambda_{\max}/\lambda_{\min}| \approx
-50$), and the Riccati nonlinearity amplifies this stiffness.  An
+the ballistic/diffusion eigenvalue gap of $\mat{A}$ (\cref{sec:lineage})
+spans a wide range, and the Riccati nonlinearity amplifies it, so an
 explicit method would require impractically small step sizes.
 
 We use the \textbf{Kvaerno5} solver from diffrax~\cite{kidger2022neural},
@@ -1214,8 +1196,9 @@ are:
   \item \textbf{Sensitivity accumulation over many steps.}  The discrete
     adjoint propagates sensitivity information backward through all
     $K$ accepted steps.  If the forward problem has a large sensitivity
-    to parameters at a particular $\tau$-layer (e.g.\ near cloud base
-    where $\omega$ changes rapidly), this sensitivity is amplified
+    to parameters at a particular $\tau$-layer (e.g.\ near cloud top,
+    where the ToA observable is most sensitive; \cref{sec:retrieval-grid}),
+    this sensitivity is amplified
     through the chain rule.  The L-stability of Kvaerno5 provides
     damping of stiff modes in the \emph{forward} direction; Sandu's
     result~\cite{sandu2006} guarantees that the discrete adjoint of an
@@ -1244,6 +1227,16 @@ subsection makes precise how the two grids relate.  The short statement
 is: \textbf{the ODE grid is a trustworthy candidate \emph{pool}, and the
 retrieval grid is a sensitivity-selected \emph{subset} of it} --- neither
 the whole grid, nor a separately prescribed grid.
+
+This is the reason \textbf{minimising the ODE step count
+(\cref{sec:lineage}) is a primary design objective}: with so few
+retrievable degrees of freedom (below) --- the concrete expression of
+the ill-conditioned Jacobian $\mat{K}$ of \cref{sec:retrieval-problem}
+--- the candidate pool must be as tight and well-placed as possible.  The implicit, L-stable solver
+delivers exactly that --- a minimal grid that, by virtue of L-stability,
+clusters on \emph{genuine} variation rather than stiffness artifacts, so
+it is at once minimal and a trustworthy superset of the informative
+depths.
 
 \subsubsection{Information is ToA-weighted with finite penetration}
 
@@ -1423,17 +1416,18 @@ The robust consequences, independent of the exact DoF count, are:
     clouds).
 \end{itemize}
 
-A tempting alternative is to \emph{decouple} the retrieval grid from the
-ODE grid entirely by parameterising $r_e(\tau)$ in a fixed smooth basis
-(EOF/PCA, an adiabatic shape, or a neural decoder), evaluated at whatever
-$\tau$ the solver requests.  We do not favour this: a fixed basis only
-\emph{relocates} the a-priori assumption --- into an adiabatic shape that
-fails for non-adiabatic clouds, or a training distribution with
-extrapolation risk --- and it is \emph{static}, whereas the ODE grid is
-problem-derived and re-placeable within the loop.  The ODE-pool approach
-does inherit the \emph{first-guess} profile's bias in its placement, but
-that bias is correctable by lagged grid re-selection (re-run the forward
-model, re-place the pool), which a frozen basis cannot do.
+An alternative route \emph{decouples} the retrieval grid from the ODE
+grid by parameterising $r_e(\tau)$ in a fixed smooth basis (EOF/PCA, an
+adiabatic shape, or a neural decoder), evaluated at whatever $\tau$ the
+solver requests.  Such bases are largely unexplored beyond the adiabatic
+assumption, and they carry their own a-priori commitments: a basis
+encodes its assumption in the chosen shape or training distribution and
+is fixed rather than profile-adaptive.  Here we instead pursue the
+ODE-pool route, whose complementary weakness is that it inherits the
+\emph{first-guess} profile's bias in where the pool is placed --- a bias
+correctable by lagged grid re-selection (re-run the forward model,
+re-place the pool).  Which route is preferable is an open question; we do
+not settle it here.
 
 %----------------------------------------------------------------------
 \subsection{Profile Parameterisation}\label{sec:parameterisation}
@@ -1491,16 +1485,12 @@ literature:
     retrievals.
 \end{description}
 
-The choice of parameterisation has direct implications for the AD mode,
-as discussed in \cref{sec:ad}: for a Gauss--Newton retrieval with
-$m \approx 10$ observations, forward-mode AD is cheaper when
-$p \lesssim 15$ (small basis, EOF, or NN parameterisation), while
-reverse-mode AD becomes advantageous for $p \gtrsim 20$ (level-by-level
-retrieval).  If the retrieval uses L-BFGS instead of Gauss--Newton,
-only the scalar gradient $\nabla J$ is needed and a single reverse-mode
-pass suffices regardless of $p$---at the cost of losing the averaging
-kernel and degrees-of-freedom diagnostics that require the full
-Jacobian~$\mat{K}$.
+The parameter count $p$ chosen here sets the preferred AD mode via the
+crossover of \cref{sec:ad}: forward-mode for the small-$p$ bases
+(EOF, NN, B-spline), reverse-mode for level-by-level.  An L-BFGS
+retrieval instead needs only the scalar-gradient reverse pass regardless
+of $p$ --- at the cost of the averaging-kernel and degrees-of-freedom
+diagnostics that require the full Jacobian~$\mat{K}$.
 
 %----------------------------------------------------------------------
 \subsection{Remaining Steps}\label{sec:remaining}
