@@ -11,7 +11,13 @@ Theoretical convergence ratio for 10x refinement: 100.
 import numpy as np
 import jax.numpy as jnp
 from math import pi
+import pytest
 from pydisort_riccati_jax import pydisort_riccati_jax
+
+# Convergence-ratio test: kept stringent in float64 (the O(h^2) ratio and the
+# tol=1e-8 reference are meaningful only at float64 precision). Excluded from
+# the default float32 run; see tests/pytest.ini.
+pytestmark = pytest.mark.float64
 from _helpers import (
     multilayer_pydisort_toa_full_phi, assert_convergence_phi, PHI_VALUES,
 )

@@ -4,18 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Run all tests** (from the `tests/` directory; use the `JAX` conda env on Linux):
+The suite is split into **two precision partitions** (see "Test precision partitions" below).
+
+**Default run — float32 production accuracy** (from the `tests/` directory; `JAX` conda env):
 ```bash
 cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest . -v
 ```
+This runs the 47 float32 tests and auto-excludes the float64 partition (via
+`tests/pytest.ini` `addopts = -m "not float64"`).
 
-**Run a single test file:**
+**float64 partition — stringent convergence/precision** (must set the env var):
+```bash
+cd tests && PYDISORT_RICCATI_JAX_X64=1 /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest -m float64 -v
+```
+The 19 float64 tests (convergence-ratio 6/7/9/10 + tight-tolerance standalone
+14a/b/c/e + the finite-difference adjoint check 18a) — run on demand, not every
+time. Takes ~1 hour (50/500-layer references). Finite-difference gradient checks
+belong here because FD roundoff (~eps/h) makes them meaningless in float32.
+
+**Run a single test file / function:**
 ```bash
 cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py -v
-```
-
-**Run a single test function:**
-```bash
 cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py::test_1a -v
 ```
 
@@ -24,9 +33,38 @@ cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python -m pytest 1_test.py
 cd tests && /burg/home/dh3065/miniconda3/envs/JAX/bin/python supplementary/generate_reference.py
 ```
 
-Note: Full test suite takes up to ~1 hour (convergence tests use 50/500 layers).
-Representative subset for quick verification: `10_key_test.py 13_key_test.py 14_key_test.py`
-(adiabatic clouds + adaptive solver + standalone Riccati mechanics; ~10 min).
+Representative quick subset (float32 default): `13_key_test.py 14_key_test.py`
+(adaptive solver + standalone Riccati mechanics; ~5 min).
+
+### Test precision partitions
+
+The solver runs in **float32 by default** (retrieval precision is set by ~10-20%
+measurement noise, not float resolution, and float32 keeps the adaptive step count
+low). float32 machine epsilon is ~1.2e-7, so the adaptive Kvaerno5 controller cannot
+honor a tolerance whose `atol = tol*1e-3` falls at/below it: it shrinks `dt` forever
+and raises `max_steps` (an `EquinoxRuntimeError`). Practical consequences:
+
+- **float32 production `tol` ≈ 1e-3** (`atol = 1e-6`, safely above eps). This reaches
+  ~1e-3 accuracy vs exact DISORT even at τ=64, in ~30 adaptive steps. `tol ≲ 1e-4`
+  is unsafe on thick atmospheres (τ ≳ 20) and `tol ≲ 1e-5` is meaningless in float32.
+- **The crashes are controller failures, not instability** — the Riccati state stays
+  O(1) (no positive exponents). Set `PYDISORT_RICCATI_JAX_X64=1` to integrate in
+  float64, where tight `tol` (1e-8 … 1e-10) is reachable.
+
+Therefore:
+
+| Partition | Marker | dtype | Tests | When |
+|---|---|---|---|---|
+| Default | (none) | float32 | 1–5, 8, 11, 13, 14d/f, 15, 16, 17, 18 (flux-type) (47) | every run |
+| Convergence/precision | `@pytest.mark.float64` | float64 | 6, 7, 9, 10, 14a/b/c/e, 18a (FD adjoint) (19) | on demand |
+
+The float64 partition keeps the original tight tolerances and high convergence ratios
+(`tol=1e-8`, `min_ratio=50`) because an O(h²) ratio is only meaningful when the
+reference is float-exact. The float32 tests use production tolerances
+(`tol=1e-3`, `assert_close_to_reference_phi` default `rel_tol=1e-2`). The float64 opt-in
+is read from `PYDISORT_RICCATI_JAX_X64` by **both** `src/pydisort_riccati_jax.py` and
+`src/_riccati_solver_jax.py` (so it is import-order-independent); `conftest.py` skips
+`float64`-marked tests if x64 is not actually enabled.
 
 ## Architecture
 
@@ -158,9 +196,12 @@ All intensity outputs are upwelling-only (size N = NQuad // 2):
 `mu_arr_pos` is `(N,)`, `u0_ToA` is `(N,)`, `u_ToA_func(φ)` returns `(N,)` or `(N, len(φ))`.
 `tau_grid` is an ndarray of step boundary points from the forward Riccati sweep.
 
-`u0_ToA` and `u_ToA_func` are JAX arrays / JAX-traceable closures — the autodiff chain
-from solver inputs through Fourier reconstruction is unbroken.  `flux_up_ToA` is converted
-to a Python float (not in the diff path).
+`u0_ToA`, `u_ToA_func`, **and `flux_up_ToA`** are JAX arrays / JAX-traceable closures —
+the autodiff chain from solver inputs through Fourier reconstruction is unbroken.
+`flux_up_ToA` is a JAX scalar (do **not** wrap it in `float()` inside the solver: an
+eager `float()` concretizes and breaks `jax.grad` through the whole solve — the
+retrieval Jacobian; call `float(flux_up_ToA)` outside any jax transform if you need a
+Python number).
 
 ### Interpolation to arbitrary observation angles (`interpolate`)
 
@@ -183,4 +224,70 @@ intensities = u_interp(mu_obs_array, phi) # (M,) mu, scalar phi -> (M,)
 - **Isotropic internal source**: only the collimated beam source is handled
 - **Non-ToA depth evaluation**: currently only τ=0 (ToA) is returned
 - **A priori τ-grid utility**: cheap grid from profile, usable with SCIATRAN (see memory)
-- **Discrete adjoint**: diffrax supports `RecursiveCheckpointAdjoint`, `BacksolveAdjoint`, `ImplicitAdjoint`, and `DirectAdjoint` for differentiating through the ODE solve — needed for the r_e(τ) retrieval
+- **Retrieval loop**: the cost function, Gauss–Newton/LM iteration, and r_e(τ) profile
+  parameterisation (report §"Toward Retrieval") are not yet implemented.
+
+### Discrete adjoint — works (verified), NOT a separate feature
+
+Differentiating through the solve is **free reverse-mode AD** via diffrax's default
+`RecursiveCheckpointAdjoint` (a *discrete* adjoint; the report recommends it over the
+hand-derived continuous adjoint of LIDORT/SCIATRAN). No separate adjoint code is needed
+or planned. Verified: `jax.grad` of the **upwelling flux output `flux_up_ToA`** through
+`pydisort_riccati_jax` w.r.t. an optical property agrees with finite differences to
+~2e-10 (`18_adjoint_test.py::test_grad_through_solve_matches_finite_difference`, in the
+**float64 partition** — FD is meaningless in float32, where its own roundoff floor is
+~1e-5).
+Caveats: the reverse pass compiles ~3–4× slower than the forward (amortized under `jit`
+in a retrieval loop); the report flags backward-pass conditioning to monitor, but Sandu
+(2006) guarantees the discrete adjoint of L-stable Kvaerno5 inherits stiff stability.
+**A prerequisite was removing the eager `float(flux_up_ToA)`** which used to concretize
+and break all grad-through-solve.
+
+---
+
+## Differentiable Mie front-end (`miejax_lite`)
+
+The lookup table `r_e(τ) → (ω, phase function)` that this solver was built to
+consume is provided by **`miejax_lite`**, a standalone JAX package living as a
+sibling directory at the workspace root (`../miejax_lite`, not inside this repo).
+It is the differentiable link in the retrieval chain
+`r_e(τ) → Mie → (ω(τ), Leg_coeffs(τ)) → pydisort_riccati_jax → u_ToA`, so that
+retrieval Jacobians come from autodiff.
+
+Install: `pip install -e ../miejax_lite`
+
+### Public API (`from miejax_lite import ...`)
+
+| Function | Returns | Notes |
+|---|---|---|
+| `water_refractive_index(wavelength)` | `(m_real, m_imag)` | Segelstein (1981) water table, `m_imag < 0` |
+| `mie_avg(r_eff, wavelength, v_eff, ...)` | `(omega, g, Q_ext)` | scalar-g (HG) interface |
+| `mie_legendre_precompute(max_nstop, NLeg, n_gl=1024)` | `precomp` dict | call once at setup |
+| `mie_avg_legendre(r_eff, wavelength, v_eff, precomp, ...)` | `(omega, Leg_coeffs, Q_ext)` | **primary** — `Leg_coeffs` (NLeg,) feed `Leg_coeffs_func(τ)` |
+
+All gamma-distribution-averaged (Hansen-Travis r²-weighting) and differentiable
+through `r_eff`, `v_eff`, and `wavelength` (via the size parameter; pass
+`m_real`/`m_imag` explicitly for autodiff w.r.t. wavelength). `Leg_coeffs` are
+*exact* Mie Legendre coefficients (GL projection of the phase function), not the
+HG approximation `g^l`. No `@jax.jit` on public functions — JIT at the caller's
+optimal boundary (e.g. the whole retrieval loop), as with this solver.
+
+### Scope / limitations
+
+- **Water droplets only** (upward `D_n` recurrence; valid wherever
+  `x·κ < 3.9 − 10.8 n + 13.78 n²`). Verified that 0% of VOCALS-REx profiles
+  (r_eff ≤ 17 µm at 0.65/1.64/2.13 µm → x·κ ≤ 0.02) reach the downward branch.
+- Dtype follows `jax_enable_x64` (complex64 by default; float64 when enabled).
+- Fixed `max_nstop=512` (carry-clamped past the Wiscombe cutoff) covers the
+  VOCALS regime with margin. Size parameter `x > 1` (no small-sphere shortcut).
+- **Deferred**: downward / Lentz `D_n` recurrence (strongly absorbing / high
+  index — not needed for liquid water).
+
+### Tests (`../miejax_lite/tests/`)
+
+`test_miejax_lite.py` — fidelity vs miepython (single-particle over the VOCALS
+size range and all retrieval bands, Bohren & Huffman, large/extreme x, exact
+Legendre coefficients) and VOCALS distribution-averaged coverage. Default config
+is float32. `test_gradients.py` — opt-in float64 finite-difference checks of the
+autodiff gradients (`pytest --run-gradients`); finite differences are not
+meaningful in float32. Run: `cd ../miejax_lite && python -m pytest tests/`.

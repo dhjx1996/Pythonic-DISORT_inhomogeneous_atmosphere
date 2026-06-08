@@ -11,7 +11,7 @@ from math import pi
 from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import (
     make_cloud_profile, multilayer_pydisort_toa_full_phi,
-    assert_close_to_reference_phi, PHI_VALUES,
+    get_reference, assert_close_to_reference_phi, PHI_VALUES,
 )
 
 NQuad = 8
@@ -72,10 +72,13 @@ def test_13b():
         mu0, I0, phi0, BDRF_Fourier_modes=BDRF,
     )
 
-    # Adaptive solve (tol=1e-4 needed for u(phi) to clear 5e-3 at all angles)
+    # Adaptive solve. tol=1e-3 is the float32 production setting: at tau=30 a
+    # tighter tol drives atol below float32 epsilon and the step controller
+    # max-steps out (see pydisort_riccati_jax float32 note). 1e-3 reaches
+    # ~1e-3 vs the high-res reference, well within the 1e-2 assertion.
     _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=1e-4,
+        tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
 
@@ -106,14 +109,9 @@ def test_13c():
     n_steps = len(tau_grid) - 1
     print(f"  Riccati steps: {n_steps}")
 
-    # Reference: tight-tolerance Riccati
-    _, _, _, u_ref_func, _ = pydisort_riccati_jax(
-        tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=1e-6,
+    # Reference: pydisort (exact for constant omega).
+    u_ref_func = get_reference(
+        "13c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-
-    # Wrap one-arg u_ref_func to match two-arg convention of assert_close_to_reference_phi
-    assert_close_to_reference_phi(
-        u_ToA_func, lambda tau, phi: u_ref_func(phi), PHI_VALUES, N,
-    )
+    assert_close_to_reference_phi(u_ToA_func, u_ref_func, PHI_VALUES, N)
     assert n_steps < 50, f"constant-omega used {n_steps} steps, expected few"

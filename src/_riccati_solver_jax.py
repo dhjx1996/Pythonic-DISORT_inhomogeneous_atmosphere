@@ -16,8 +16,17 @@ All terms have positive sign — no growing exponentials (satisfies the
 no-positive-exponents invariant).
 """
 
+import os
+import warnings
 import jax
-jax.config.update("jax_enable_x64", True)
+# Float32 by default; opt into float64 via PYDISORT_RICCATI_JAX_X64=1. This MUST
+# match pydisort_riccati_jax.py so the dtype is import-order-independent (this
+# module is imported both directly by tests and indirectly via the public API).
+# See the float32 rationale in pydisort_riccati_jax.py.
+jax.config.update(
+    "jax_enable_x64",
+    os.environ.get("PYDISORT_RICCATI_JAX_X64", "0") == "1",
+)
 
 import jax.numpy as jnp
 import numpy as np
@@ -56,7 +65,7 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
         asso_leg_term_neg : (n_ells, N) — P_l^m(-mu_i)
         asso_leg_term_mu0 : (n_ells,) — P_l^m(-mu0)
     """
-    mu_np = np.asarray(mu_arr_pos, dtype=np.float64)
+    mu_np = np.asarray(mu_arr_pos, dtype=np.float64)  # scipy.special needs float64
     N = len(mu_np)
     ells = np.arange(m, NLeg)
     n_ells = len(ells)
@@ -222,6 +231,58 @@ def _riccati_rhs_jax(R, alpha, beta):
 
 
 # ---------------------------------------------------------------------------
+# Tolerance flooring
+# ---------------------------------------------------------------------------
+
+# Per-dtype floor on the relative tolerance `rtol`. The PIDController error test
+# is ||error / (atol + rtol*|y|)|| ~ 1; if the target is below what the dtype can
+# actually achieve, the estimate can never satisfy it and the controller shrinks
+# dt until it hits max_steps (an EquinoxRuntimeError) — see the float32 note in
+# pydisort_riccati_jax.py.
+#
+# The achievable floor is NOT raw machine epsilon: in float32 (eps ~ 1.2e-7),
+# roundoff is *amplified* by the nonlinear Riccati matrix products (R@beta@R, ...)
+# to an effective accuracy of ~1e-3 on thick atmospheres. Empirically (omega up to
+# ~1, tau up to 64) rtol=1e-3 and 5e-4 converge comfortably while 1e-4 max-steps
+# out; we floor at the production value 1e-3, which is verified safe across all
+# test configurations. In float64 the only limit is raw roundoff, so the floor is
+# a few*eps — low enough that legitimate tight work (e.g. resolving the transmission
+# operator T ~ 1e-13 in thick atmospheres) is never impeded.
+#
+# We keep the established `atol = tol*1e-3` coupling (which makes rtol dominate for
+# the O(1) reflection state, per the SciPy/SUNDIALS convention) and floor atol in
+# step with rtol. A too-tight `tol` therefore *caps accuracy* at the dtype floor
+# instead of crashing.
+_RTOL_FLOOR_F32 = 1e-3
+
+
+def _floored_tolerances(tol):
+    """Return (rtol, atol) for the adaptive controller in the active dtype.
+
+    rtol = max(tol, floor); atol = max(tol*1e-3, floor*1e-3). At the float32
+    production tol=1e-3 the floor does not bind, so behaviour is unchanged. A
+    too-tight `tol` is clamped (a one-time warning is emitted) so the solve
+    returns at the dtype's achievable accuracy instead of raising max_steps.
+    """
+    if jnp.result_type(float) == jnp.float32:
+        floor = _RTOL_FLOOR_F32
+    else:
+        floor = 8.0 * float(np.finfo(np.float64).eps)   # ~1.8e-15, never binds in practice
+    tol = float(tol)
+    if tol < floor:
+        warnings.warn(
+            f"`tol`={tol:g} is below the {jnp.result_type(float).name} accuracy "
+            f"floor {floor:g}; clamping rtol to {floor:g}. Tighter tolerances "
+            f"are unreachable in this dtype (use PYDISORT_RICCATI_JAX_X64=1 for "
+            f"float64).",
+            stacklevel=2,
+        )
+    rtol = max(tol, floor)
+    atol = max(tol * 1e-3, floor * 1e-3)
+    return rtol, atol
+
+
+# ---------------------------------------------------------------------------
 # Kvaerno5 integration (core)
 # ---------------------------------------------------------------------------
 
@@ -280,7 +341,8 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
 
     term = diffrax.ODETerm(vector_field)
     solver = diffrax.Kvaerno5()
-    controller = diffrax.PIDController(rtol=tol, atol=tol * 1e-3)
+    _rtol, _atol = _floored_tolerances(tol)
+    controller = diffrax.PIDController(rtol=_rtol, atol=_atol)
     saveat = diffrax.SaveAt(steps=True)
 
     sol = diffrax.diffeqsolve(

@@ -38,10 +38,12 @@ def test_15a():
         mu0, I0, phi0, BDRF_Fourier_modes=BDRF,
     )
 
-    # Riccati solve (tol=1e-4 needed for u(phi) to clear 5e-3 at all angles)
+    # Riccati solve at the float32 production tol=1e-3. (A tighter tol is clamped
+    # to the 1e-3 accuracy floor on this thick tau=30 cloud — see
+    # 17_atol_floor_test.py — so request it explicitly.)
     _, _, _, u_ToA_func, tau_grid = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=1e-4,
+        tol=1e-3,
         BDRF_Fourier_modes=BDRF,
     )
 

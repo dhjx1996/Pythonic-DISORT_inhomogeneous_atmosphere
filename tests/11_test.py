@@ -52,11 +52,12 @@ def test_11b():
     u_func_ref = get_reference(
         "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
-    # NQuad=16 sums more Fourier modes, so per-mode error accumulates;
-    # tol=5e-4 gives the same 15 steps but tighter per-mode accuracy.
+    # NQuad=16 sums more Fourier modes, so per-mode error accumulates; tol=1e-3
+    # is the float32 production setting (a tighter tol is clamped to the 1e-3
+    # accuracy floor — see 17_atol_floor_test.py).
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
-        tol=5e-4,
+        tol=1e-3,
     )
     assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 

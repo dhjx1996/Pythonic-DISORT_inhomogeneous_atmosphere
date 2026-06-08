@@ -148,8 +148,13 @@ g_l_hg16 = 0.75 ** np.arange(NQuad_16)
 save("11b", 3.0, 0.9, NQuad_16, g_l_hg16, 0.5, 1.0, 0.0)
 
 # 11c: azimuthal validation
-NQuad_8 = 8
-g_l_11c = 0.75 ** np.arange(NQuad_8)
-save("11c", 3.0, 0.8, NQuad_8, g_l_11c, 0.5, 1.0, 0.0)
+g_l_11c = 0.75 ** np.arange(NQuad)
+save("11c", 3.0, 0.8, NQuad, g_l_11c, 0.5, 1.0, 0.0)
+
+print("\n=== Test 13c: Constant omega (adaptive solver) ===")
+# Constant omega -> single-layer pydisort is exact; 13c uses get_reference, so it
+# needs this stored fallback for environments without PythonicDISORT installed.
+g_l_13c = np.zeros(NQuad); g_l_13c[0] = 1.0
+save("13c", 1.0, 0.9, NQuad, g_l_13c, 0.5, 1.0, 0.0)
 
 print("\nDone. All reference files written to:", REF)

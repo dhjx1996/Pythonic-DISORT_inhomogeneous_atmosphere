@@ -9,8 +9,22 @@ using invariant-imbedding Riccati ODE integrated via diffrax Kvaerno5
 See CLAUDE.md for design rationale and deferred features.
 """
 
+import os
 import jax
-jax.config.update("jax_enable_x64", True)
+# Float32 by default: the Riccati ODE stays O(1) and retrieval precision is
+# limited by measurement noise (~10-20%), not floating-point resolution.
+# Float32 also keeps the adaptive step count low (the primary cost target) and
+# is the only viable mode for tight tolerances on thick atmospheres: float32
+# machine epsilon is ~1.2e-7, so any `tol` whose `atol = tol*1e-3` lands at or
+# below that asks the step controller to resolve below roundoff -> it shrinks
+# dt forever and hits max_steps (see the stringent test partition below).
+#
+# Opt into float64 by setting PYDISORT_RICCATI_JAX_X64=1 *before* importing this
+# module. That is used only by the float64 test partition (`pytest -m float64`),
+# which keeps the original tight-tolerance convergence/precision checks where
+# the integrator can legitimately reach ~1e-8 (e.g. reference solutions).
+_USE_X64 = os.environ.get("PYDISORT_RICCATI_JAX_X64", "0") == "1"
+jax.config.update("jax_enable_x64", _USE_X64)
 
 import warnings
 import jax.numpy as jnp
@@ -79,7 +93,8 @@ def pydisort_riccati_jax(
     Returns
     -------
     mu_arr_pos : (N,) ndarray  — positive quadrature cosines (upwelling)
-    flux_up_ToA : float
+    flux_up_ToA : JAX scalar  — upward diffuse flux at ToA (traceable; float() it
+        outside any jax transform if a Python number is needed)
     u0_ToA : (N,) ndarray  — upwelling intensity at ToA (zeroth Fourier mode)
     u_ToA_func : callable  phi -> (N,) or (N, len(phi))
     tau_grid : ndarray  [0, ..., tau_bot]
@@ -316,8 +331,12 @@ def pydisort_riccati_jax(
 
     u0_ToA = u_modes_arr[0]  # (N,) zeroth Fourier mode at tau=0
 
-    # Upward diffuse flux at ToA: 2pi * sum_i w_i mu_i u+(0)_i
-    flux_up_ToA = float(2 * pi * jnp.dot(mu_arr_pos_jax * W_jax, u0_ToA))
+    # Upward diffuse flux at ToA: 2pi * sum_i w_i mu_i u+(0)_i. Kept as a JAX
+    # scalar (NOT float()) so the whole function stays traceable: an eager
+    # float() here concretizes and breaks `jax.grad` through the solve — i.e. the
+    # discrete-adjoint retrieval Jacobian. Callers wanting a Python number can
+    # `float(flux_up_ToA)` outside any jax transform.
+    flux_up_ToA = 2 * pi * jnp.dot(mu_arr_pos_jax * W_jax, u0_ToA)
 
     # Upwelling intensity function at tau=0
     def u_ToA_func(phi):

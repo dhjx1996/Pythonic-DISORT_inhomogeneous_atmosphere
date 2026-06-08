@@ -129,11 +129,16 @@ def pydisort_toa_full_phi(
 # Azimuthal intensity assertion helper
 # ---------------------------------------------------------------------------
 
-def assert_close_to_reference_phi(u_func_ric, u_func_ref, phi_values, N, rel_tol=5e-3):
+def assert_close_to_reference_phi(u_func_ric, u_func_ref, phi_values, N, rel_tol=1e-2):
     """
     Compare Riccati u_ToA_func(phi) vs pydisort u(0, phi) at several azimuthal angles.
 
     Only upwelling intensities (first N elements) are compared.
+
+    Default rel_tol=1e-2 is the float32 production tolerance: the solver runs at
+    tol=1e-3 in float32, whose accuracy floor vs exact pydisort is ~2e-3 over the
+    full test range (thick + conservative + high-BDRF), so 1e-2 gives ~5x margin.
+    The stringent float64 partition uses its own tight comparisons.
     u_func_ric: phi -> (N,) from pydisort_riccati_jax
     u_func_ref: u(tau, phi) from pydisort (called at tau=0)
     N: half the number of quadrature streams (upwelling hemisphere size)
