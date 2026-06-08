@@ -12,17 +12,19 @@ Status tags: **[SETTLED]** decided and in effect · **[INVARIANT]** must never b
 
 The forward solver integrates the **matrix Riccati equation** (invariant imbedding) with
 diffrax's **Kvaerno5** (L-stable ESDIRK, adaptive). **Minimising the number of integration
-steps (τ-points) is the primary optimisation target** — the forward model runs inside the
-retrieval loop, so step count, more than per-step cost, dominates total run time. This driver
-recurs throughout the design; the lineage that led here is recorded so the dead ends are not
-retried:
+steps (τ-points) is a primary design motivation** — but *not* for runtime (per-step ESDIRK
+cost is high, higher than a Magnus step). The motivation is **retrieval-grid viability**: the
+implicit, L-stable solver produces a *minimal, artifact-free, profile-adaptive* set of
+τ-points, and that set is the only a-priori-available, problem-derived candidate for the
+retrieval grid. The lineage that led here is recorded so the dead ends are not retried:
 
 - **Magnus + Redheffer star product** ("Report I"): unconditionally *stable* — works entirely
   with O(1)-bounded N×N reflection/transmission/source operators, avoiding the coexisting
   growing and decaying modes of the 2N×2N propagator. But its **step count is set by the
-  ballistic eigenvalue**: `K ≳ λ_max·τ_bot`, with `λ_max ∼ 1/μ_min ≈ 45` (NQuad=16), even
-  though the observable evolves on the much slower diffusion scale `k_min ≈ 0.02`
-  (τ=50, ω=0.99, g=0.85 → ≈2272 steps).
+  ballistic eigenvalue** (`λ_max ∼ 1/μ_min ≈ 45` at NQuad=16, the single-scattering regime):
+  `K ≳ λ_max·τ_bot`, even though the observable evolves on the much slower **diffusion
+  eigenvalue** (`k_min ≈ √(3(1-ω)(1-ωg))`, the diffusion domain; ≈0.07 at ω=0.99, →0.02 at
+  ω=0.999). τ=50, ω=0.99, g=0.85 → ≈2272 steps.
 - **Three-domain decomposition** ("Report II"): split `[0,τ_bot]` into a non-diffusive top
   (beam active), a diffusion interior (beam negligible), and a non-diffusive near-surface
   layer; solve each independently and couple them with the (associative) star product — the
@@ -36,11 +38,27 @@ retried:
   choose) and gives **far fewer τ-points**: ~35 adaptive steps for a τ=30 cloud (nearly
   NQuad-independent) vs thousands for Magnus. The τ-point reduction is the whole point.
 
-**Retained from the rejected work:** the **Redheffer star product** (now in the BC solver) and
-the **N×N O(1)-bounded operator** formulation.
+**Why the minimal grid matters for retrieval (the candidate-pool argument).** An L-stable
+solver places steps by *genuine* variation of the Riccati state, not by stiffness artifacts.
+This makes the converged grid a **trustworthy *superset*** of the retrieval-informative
+τ-points (it resolves all genuine variation, so it cannot miss an informative feature), while
+keeping that superset *minimal* — which conditions the downstream sensitivity selection well
+(a tight, well-placed pool vs the artifact-clustered thousands a Magnus grid would hand QRCP).
+The retrieval grid is then a **sensitivity-selected *subset*** of this pool, not the whole
+grid: the same contraction that guarantees the superset (state settles ⇒ all variation
+resolved) also forbids using it wholesale (deep steps — the BoA imbedding boundary layer and
+depth-attenuated deep features — carry little information). This superset/subset relationship,
+and the alternative of decoupling via a smooth low-dim basis (rejected: a basis relocates the
+a-priori assumption into an adiabatic shape or a training distribution, and is static rather
+than profile-adaptive), is the retrieval-grid material in §3 below.
 
-*(Distilled from technical_reports/report_star_product_magnus.tex and report_diffusion_domain.tex,
-being removed.)*
+**Retained from the rejected work:** the **Redheffer star product / interaction principle** (the
+layer-composition rule underlying the Riccati derivation, and the up/down combination in the BC
+solve) and the **N×N O(1)-bounded operator** formulation.
+
+*(Distilled into report_riccati_solver.tex §"Solver Lineage" from the former
+technical_reports/report_star_product_magnus.tex and report_diffusion_domain.tex — removed,
+recoverable from git `99fb971`.)*
 
 ---
 
@@ -53,20 +71,46 @@ preserve it.
 
 ---
 
-## 3. Retrieval grid ≠ solver grid; information is ToA-weighted; retrievable DOF is small  [SETTLED — open sub-questions in OUTSTANDING G]
+## 3. Retrieval grid = sensitivity-selected subset of the ODE grid; information is ToA-weighted; retrievable DOF is small  [SETTLED — open sub-questions in OUTSTANDING G]
 
 Three robust statements below. Two earlier claims — an exact **"rank-4 ceiling"** and full
 **profile-independence** — are *deliberately not asserted* (no rigorous basis; measured under
 biasing conditions). They are tracked in [OUTSTANDING G](./OUTSTANDING.md).
 
-**(a) The adaptive ODE grid is not the retrieval grid.** The Kvaerno5 grid is placed for
-*solver accuracy* — it clusters wherever the optics or the Riccati state vary fast: near sharp
-optics features *and* at BoA (a stiff R-transient from the steepest quadrature stream,
-μ_min≈0.02 settling ~50× faster than the shallowest, then *forgotten* by contraction). In
-`adiabatic_cloud_with_drizzle.ipynb`, adding a near-ToA g-spike at τ=1 to a conservative τ=30
-cloud raised the adaptive step count 107→186, clustering steps on the spike *and* keeping the
-BoA cluster — yet the BoA steps carry negligible retrieval information. **Step placement ≠
-information placement.**
+**(a) The ODE grid is a trustworthy candidate *pool*; the retrieval grid is a
+sensitivity-selected *subset* of it — not the whole grid, and not a separate a-priori grid.**
+The Kvaerno5 grid is placed for *solver accuracy*: being L-stable, it clusters by *genuine*
+variation of the Riccati state, not by stiffness artifacts. That makes it a trustworthy
+**superset** of the retrieval-informative τ-points — it resolves all genuine variation, so it
+cannot *miss* an informative feature — while staying *minimal* (this is the retrieval-grid
+payoff of §1's τ-point minimisation: a tight, well-placed pool conditions the selection far
+better than the artifact-clustered thousands a Magnus grid would hand QRCP). The grid is a
+*superset*, **not equal**, because **placement and selection use different criteria**:
+- **Placement (ODE grid)** is by *state* variation. But genuine state variation ≠ optics
+  variation: the state varies for two reasons — (i) real optics features, and (ii) the **BoA
+  imbedding boundary layer**, where R relaxes from its IC toward R_∞ over the bottom stretch
+  (contraction *forgetting the IC*; steepest stream μ_min≈0.02 settles ~50× faster). (ii) is
+  *optics-independent* (occurs even for constant optics) and carries ≈zero information, so the
+  ODE grid is **not an information map** — it is densest exactly where it is least informative
+  (~14 of ~35 steps at BoA).
+- **Selection (retrieval grid)** is by *sensitivity*, which decays monotonically with depth, so
+  a deep point is pruned *regardless of why it was placed*.
+
+This gives a strict nesting **{retrievable from ToA} ⊆ {information} ⊆ {variation}**: *variation*
+= where the *state* changes (ODE grid); *information* = where the *optics* change (a real
+feature exists); *retrievable* = the ToA-visible subset. The two gaps are the two contraction
+faces — variation∖information = the IC boundary layer (**primal**), information∖retrievable =
+depth-attenuated features (**adjoint**). Worked example: in
+`adiabatic_cloud_with_drizzle.ipynb`, a near-ToA g-spike at τ=1 on a conservative τ=30 cloud
+raised the step count 107→186, clustering on the spike *and* keeping the (uninformative) BoA
+cluster. **So: select the retrieval grid as a sensitivity/QRCP-weighted subset of the ODE
+pool.** The alternative — *decoupling* the retrieval grid from the ODE grid via a smooth
+low-dim basis (EOF/adiabatic-shape/NN) — is **rejected**: a basis only *relocates* the
+a-priori assumption (into an adiabatic shape that fails for non-adiabatic clouds, or a training
+distribution with extrapolation risk) and is *static*, whereas the ODE grid is
+problem-derived, profile-adaptive, and re-placeable within the loop. Its residual weakness —
+it inherits the *first-guess* profile's bias — is *correctable* by lagged re-selection (see
+[OUTSTANDING B](./OUTSTANDING.md)), unlike a frozen basis.
 
 **(b) Information is ToA-weighted with finite penetration — conditional on a thick cloud.**
 The retrieved r_e is a vertical-weighting-function-weighted average concentrated toward cloud
@@ -90,9 +134,11 @@ a *few shape parameters*, not a fine level-by-level grid; place what resolution 
 cloud top by *sensitivity*, not by assumed profile curvature (adiabatic curvature is steepest at
 *base* — where the observable is weakest); the deep r_e is prior-dominated, not measured.
 
-*(Distilled from technical_reports/boa_step_clustering_report.tex and the tests/supplementary
-QRCP/Jacobian scripts — removed; see also the retained adiabatic_cloud_with_drizzle.ipynb.
-Detailed tables move to report_riccati_solver.tex during integration.)*
+*(Distilled into report_riccati_solver.tex §"The Retrieval Grid and Its Relation to the ODE
+Grid" from the former technical_reports/boa_step_clustering_report.tex and the tests/supplementary
+QRCP/Jacobian scripts — removed, recoverable from git `99fb971`; see also the retained
+adiabatic_cloud_with_drizzle.ipynb. Detailed tables now in the report; multi-mode analysis
+pointer in OUTSTANDING G.)*
 
 ---
 

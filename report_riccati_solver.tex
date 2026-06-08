@@ -7,7 +7,7 @@
 \usepackage{hyperref}
 \usepackage{cleveref}
 
-% ── Notation macros (consistent with Pythonic-DISORT.ipynb) ──────────────
+% ── Notation macros (consistent with PythonicDISORT; see online docs) ────
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\diag}{\operatorname{diag}}
 \newcommand{\vect}[1]{\bm{#1}}
@@ -699,6 +699,79 @@ where $I^+_i(0)$ are the entries of $\vect{I}^+(0)$ from the $m=0$ mode.
 %======================================================================
 
 %----------------------------------------------------------------------
+\subsection{Solver Lineage and the Step-Count Objective}\label{sec:lineage}
+%----------------------------------------------------------------------
+
+The choice of an implicit, adaptive integrator was reached by elimination,
+and the dead ends are worth recording because they are tempting to retry.
+
+\paragraph{Magnus + Redheffer star product (stable, but step count pinned
+to the ballistic eigenvalue).}
+An earlier solver propagated the discrete-ordinate field with a
+first-order Magnus integrator, accumulating $N\!\times\!N$
+reflection/transmission/source operators through the Redheffer star
+product rather than a $2N\!\times\!2N$ propagator.  This is
+\emph{unconditionally stable} --- it works entirely with $O(1)$-bounded
+slab operators and never forms the coexisting growing and decaying modes
+of the full propagator (the same motivation as the no-positive-exponents
+invariant, \cref{sec:stability}).  Its weakness is the \emph{step count}:
+each Magnus step must resolve the largest eigenvalue of the coefficient
+matrix.  The eigenvalues are the discrete-ordinate fingerprints of the
+two classical radiative-transfer regimes.  The largest, the
+\emph{ballistic eigenvalue} $\lambda_{\max}\approx 1/\mu_{\min}\approx 45$
+(NQuad${}=16$, $\mu_{\min}$ the smallest quadrature abscissa), is the
+single-scattering regime --- the rapid extinction of the grazing stream
+before the field isotropises.  The smallest, the \emph{diffusion
+eigenvalue} $k_{\min}\approx\sqrt{3(1-\omega)(1-\omega g)}$ (the two-stream
+diffusion exponent; $\approx 0.07$ at $\omega=0.99$, falling to
+$\approx 0.02$ at $\omega=0.999$), is the diffusion domain --- the slow
+asymptotic decay $e^{-k_{\min}\tau}$ of the multiply-scattered field deep
+in a thick cloud.  The step count is set by the ballistic eigenvalue,
+$K \gtrsim \lambda_{\max}\,\tbot$, while the \emph{observable} evolves on
+the far slower diffusion scale; the explicit method therefore vastly
+over-resolves the physics.  For $\tbot=50$, $\omega=0.99$, $g=0.85$ this
+is $\approx 2272$ steps.
+
+\paragraph{Three-domain decomposition (discarded: no step saving).}
+The natural fix was to split $[0,\tbot]$ into a non-diffusive top (beam
+active), a diffusion interior (beam negligible), and a non-diffusive
+near-surface layer, solve each independently, and recombine with the
+(associative) star product --- the aim being to step coarsely through the
+interior.  It was \textbf{discarded}: the interior still required fine
+Magnus steps, so the split produced essentially no saving
+($462+914+914 = 2290$ steps vs $2272$ for a single Magnus solve, the
+same wall time) for added bookkeeping.
+
+\paragraph{Resolution: one implicit stiff solver everywhere.}
+Integrating the Riccati system \eqref{eq:rhs-R}--\eqref{eq:rhs-s} with an
+\emph{implicit} (L-stable) method steps at the \emph{diffusion} rate
+across the whole column, with no domain split: $\approx 35$ adaptive
+steps for a $\tbot=30$ cloud (\cref{sec:step-count}), versus thousands
+for Magnus.  It is both simpler (a single solver, no domain boundaries to
+choose) and far cheaper in step count.  Retained from the discarded work
+are the Redheffer star product / interaction principle --- the
+layer-composition rule that yields the Riccati increment
+(\cref{sec:forward}) and the final up/down combination in the
+boundary-condition solve (\cref{sec:bc}) --- and the $O(1)$-bounded
+$N\!\times\!N$ operator formulation.
+
+\paragraph{Why step count is the objective --- and what it is \emph{not}.}
+Minimising the number of $\tau$-points is a primary design objective, but
+\emph{not} for run time: a per-step ESDIRK solve (several Newton
+iterations, each an $O(N^3)$ factorisation) costs \emph{more} than a
+Magnus step, so a $60\times$ step reduction is not a $60\times$ speed-up,
+and in the current retrieval loop the dominant cost is in fact JIT
+recompilation, not stepping.  The reason to minimise $\tau$-points is
+\textbf{retrieval-grid viability}: the converged ODE grid is the only
+a-priori-available, problem-derived, profile-adaptive candidate for the
+grid on which $r_e(\tau)$ is retrieved (\cref{sec:retrieval-grid}).
+Because the solver is L-stable, that grid clusters by \emph{genuine}
+variation of the Riccati state --- not stiffness artifacts --- making it
+a trustworthy \emph{superset} of the retrieval-informative depths while
+remaining minimal, which is exactly what conditions the downstream
+sensitivity selection (\cref{sec:retrieval-grid}).
+
+%----------------------------------------------------------------------
 \subsection{Choice of Solver}
 %----------------------------------------------------------------------
 
@@ -749,9 +822,18 @@ diffrax provides built-in adjoint strategies
 through the entire ODE solve, which is required for the gradient-based
 retrieval discussed in \cref{sec:retrieval}.
 
-Float64 arithmetic (\texttt{jax.config.update("jax\_enable\_x64", True)})
-is mandatory: double precision is needed to resolve transmission
-operators $\mat{T}$ that decay to $O(10^{-13})$ in thick atmospheres.
+The solver runs in \textbf{float32 by default} ($\texttt{tol} \approx
+10^{-3}$), which keeps the adaptive step count low and is more than
+adequate for retrieval, where accuracy is set by $\sim$10--20\%
+measurement noise rather than float resolution.  Float64
+(\texttt{jax.config.update("jax\_enable\_x64", True)}, opt-in via the
+environment flag \texttt{PYDISORT\_RICCATI\_JAX\_X64=1}) is reserved for
+tight-tolerance work---resolving transmission operators $\mat{T}$ that
+decay to $O(10^{-13})$ in thick atmospheres, and finite-difference
+gradient checks.  In float64, tolerances of $10^{-8}$--$10^{-10}$ are
+reachable; in float32, driving \texttt{tol} below $\sim$$10^{-4}$ on
+thick atmospheres makes the PIDController shrink the step indefinitely
+(a controller failure, not an instability).
 
 %----------------------------------------------------------------------
 \subsection{Stability Considerations}\label{sec:stability}
@@ -779,7 +861,7 @@ for constant coefficients) is ill-conditioned when $\texttt{NQuad} = 4$
 10$.  For $\texttt{NQuad} \geq 6$, $\|\mat{R}_{\mathrm{stab}}\| \approx
 0.35$ and the solver converges reliably.
 
-\subsubsection{Step count behaviour}
+\subsubsection{Step count behaviour}\label{sec:step-count}
 
 The adaptive Kvaerno5 solver achieves approximately \textbf{35 forward
 steps} on the $\tau = 30$ cloud benchmark (adiabatic liquid water cloud,
@@ -1147,6 +1229,211 @@ retrieval, is to compute $\nabla_{\!\vect{x}} J$ via
 synthetic $r_e(\tau)$ profile and verify agreement with finite-difference
 gradients.  This would confirm both the correctness of the AD pipeline
 and the absence of numerical pathologies in the backward pass.
+
+%----------------------------------------------------------------------
+\subsection{The Retrieval Grid and Its Relation to the ODE Grid}\label{sec:retrieval-grid}
+%----------------------------------------------------------------------
+
+A retrieval must decide \emph{at which optical depths} $r_e$ is treated
+as a free unknown --- the \emph{retrieval grid}.  The ideal grid places
+degrees of freedom where the observable is sensitive, but that is
+\emph{a posteriori} information, unavailable before the retrieval is run.
+The only a-priori-available, problem-derived, profile-adaptive candidate
+is the converged \emph{ODE grid} (\cref{sec:step-count}).  This
+subsection makes precise how the two grids relate.  The short statement
+is: \textbf{the ODE grid is a trustworthy candidate \emph{pool}, and the
+retrieval grid is a sensitivity-selected \emph{subset} of it} --- neither
+the whole grid, nor a separately prescribed grid.
+
+\subsubsection{Information is ToA-weighted with finite penetration}
+
+Reverse-mode AD through the full solve (\texttt{jax.jacrev} of the ToA
+field with respect to piecewise-linear perturbations of $\omega(\tau)$,
+$g(\tau)$ on a uniform $K=61$-node grid, $m=0$) gives the column
+$\ell_2$-sensitivity $\lVert \partial u^+_0(\tau{=}0)/\partial
+p(\tau_j)\rVert_2$ across the $N=8$ streams.  It decays
+\emph{monotonically and steeply} with depth (adiabatic cloud,
+$\omega\!\sim\!0.85$--$0.96$, drizzle feature at $\tau{=}15$,
+$\tbot{=}30$):
+
+\begin{center}
+\begin{tabular}{l c c}
+\toprule
+Region & $\lVert\partial u^+_0/\partial\omega\rVert_2$
+       & $\lVert\partial u^+_0/\partial g\rVert_2$\\
+\midrule
+ToA ($\tau<5$)               & $5.1\times10^{-2}$ & $5.3\times10^{-2}$\\
+Mid ($5\!\leq\!\tau\!<\!13$)  & $8.4\times10^{-4}$ & $6.2\times10^{-4}$\\
+Feature ($13\!\leq\!\tau\!<\!17$) & $2.1\times10^{-5}$ & $1.6\times10^{-5}$\\
+Deep ($17\!\leq\!\tau\!<\!25$)    & $2.5\times10^{-6}$ & $1.0\times10^{-6}$\\
+BoA ($\tau\geq 25$)          & $1.5\times10^{-7}$ & $7.4\times10^{-8}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The ToA-to-BoA ratio is ${\sim}10^{-6}$: a perturbation
+$\delta\omega=0.01$ at BoA shifts $u^+_0(\mathrm{ToA})$ by
+${\sim}2\times10^{-8}$ relative to $|u^+_0|\approx0.05$ --- far below any
+realistic measurement noise.  (At depth the signal $J\!\cdot\!\varepsilon
+\sim 10^{-8}$ also falls below the solver noise floor, so finite
+differences cannot even validate the AD Jacobian there --- itself a
+confirmation of the insensitivity.)  The decay is stream-dependent:
+the steepest quadrature stream ($\mu_1\!\approx\!0.02$) is attenuated
+ToA$\to$BoA by ${\sim}4\times10^{-9}$ and the shallowest
+($\mu_8\!\approx\!0.98$) by ${\sim}4\times10^{-7}$, since steeper streams
+traverse more optical path ($\propto\tau/\mu$) and scatter more on the
+way up.  This is the \emph{adjoint} face of the contraction property of
+\cref{sec:stability}.  The qualifier ``finite penetration'' matters: for
+\emph{thin} clouds the whole column is in view and the deep region is not
+prior-dominated; the steep decay above is a thick-cloud statement.
+
+\subsubsection{Superset, not equality: why the whole grid cannot be used}
+
+The two grids are governed by \emph{different criteria}, and that is why
+they differ.  A $\tau$-point is \emph{placed} on the ODE grid because the
+Riccati \emph{state} $(\mat{R},\mat{T},\vect{s})$ varies fast there (the
+error controller watches the state).  A $\tau$-point is \emph{selected}
+onto the retrieval grid because the observable is \emph{sensitive to the
+optics} there (QRCP watches $\partial u_\mathrm{ToA}/\partial$optics).
+
+\paragraph{Selection (pruning).}  This obeys one rule: sensitivity decays
+monotonically with depth (the adjoint face of contraction; the table
+above).  So a deep point is unlikely to survive QRCP \emph{regardless of
+why it was placed}.
+
+\paragraph{Placement (supply).}  Because the integrator is L-stable, the
+grid clusters by \emph{genuine} state variation, not stiffness artifacts,
+so it resolves every genuine feature and is a trustworthy \emph{superset}
+of the informative depths --- it cannot miss a feature the solver stepped
+on.  But ``genuine state variation'' is \emph{not} the same as ``optics
+variation'' or ``information'': the state varies for two reasons, and
+only one is retrievable.
+\begin{enumerate}[nosep]
+  \item \textbf{Optics features} --- $\omega(\tau)$, $g(\tau)$ changing
+    with depth.  Retrievable (if shallow enough to be visible).
+  \item \textbf{The BoA imbedding boundary layer} --- in the forward
+    sweep $\mat{R}$ relaxes from its initial condition toward
+    $\mat{R}_\infty$ over the bottom stretch (contraction \emph{forgetting
+    the IC}; the steepest stream settles ${\sim}50\times$ faster than the
+    shallowest), so the controller clusters steps there \emph{even for
+    perfectly constant optics}.  This is genuine motion of the state but
+    carries no optics content and no retrieval information.
+\end{enumerate}
+
+So the ODE grid is \emph{not an information map}: part of what it resolves
+(the IC boundary layer) is informationally empty.  This is the same
+contraction property seen from both sides --- its \emph{primal} face
+(forgetting the IC) over-resolves BoA on the supply side, while its
+\emph{adjoint} face (attenuating upward perturbations) drives the
+depth-decay of sensitivity on the selection side.  The boundary layer is
+the worst case: the grid is \emph{densest exactly where it is least
+informative}, which is precisely why the retrieval grid must be a
+sensitivity-selected subset and can never reuse the ODE grid wholesale.
+
+\paragraph{The variation\,$\supseteq$\,information\,$\supseteq$\,retrievable
+hierarchy.}  The three sets at play are strictly nested:
+\begin{equation}\label{eq:hierarchy}
+  \underbrace{\bigl\{\text{retrievable from ToA radiance}\bigr\}}_{\text{retrieval grid}}
+  \;\subseteq\;
+  \bigl\{\text{information}\bigr\}
+  \;\subseteq\;
+  \underbrace{\bigl\{\text{variation}\bigr\}}_{\text{ODE grid}} .
+\end{equation}
+\emph{Variation} is where the Riccati \emph{state} changes --- what the
+ODE grid resolves.  \emph{Information} is where the \emph{optics}
+genuinely change, i.e.\ where a real profile feature exists to be known.
+\emph{Retrievable} is the subset of those features the ToA observable is
+actually sensitive to.  The two inclusions are exactly the two faces of
+contraction:
+\begin{itemize}[nosep]
+  \item \textbf{variation $\setminus$ information} = the BoA imbedding
+    boundary layer --- state motion with \emph{no} optics cause (the
+    \emph{primal}-contraction gap, $\mat{R}$ forgetting its IC);
+  \item \textbf{information $\setminus$ retrievable} = deep optics
+    features that genuinely exist but are attenuated to invisibility at
+    ToA (the \emph{adjoint}-contraction gap).
+\end{itemize}
+The ODE grid resolves the \emph{outer} set; the retrieval must recover
+the \emph{inner} one.  Equating them --- using the ODE grid as the
+retrieval grid --- conflates all three levels and is the error the
+sensitivity selection removes.
+
+The mismatch is quantified directly on a conservative $\tbot=30$ cloud,
+with and without a near-ToA $g$-spike:
+
+\begin{center}
+\begin{tabular}{l r r}
+\toprule
+ & Smooth & With spike\\
+\midrule
+Solver steps (total)             & 35   & 54\\
+Solver steps at BoA ($\tau>25$)  & 14   & 14\\
+\quad informative DoF there      & 1    & 1\\[3pt]
+Solver steps near ToA ($\tau<5$) & 5    & 4\\
+\quad informative DoF there      & 4--6 & 4--6\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Near BoA the solver spends ${\sim}14$ steps where the data constrain
+${\sim}1$ quantity (a $14\times$ over-resolution of an invisible
+transient); near ToA it spends $4$--$5$ steps where several independent
+quantities exist (marginal).  \textbf{So the retrieval grid must be a
+sensitivity-weighted \emph{subset} of the ODE pool, not the pool
+itself.}  Greedy column-pivoted QR (QRCP) on the ToA Jacobian, forced to
+anchor at BoA, confirms it: all $N=8$ selected depths fall in
+$\tau\in[0,3.5]$, none from $\tau>3.5$, and every column at $\tau\geq5$
+has cosine similarity $\geq0.9999$ with the BoA column.
+
+\subsubsection{What is \emph{not} claimed: rank and profile-independence}
+
+The supplementary analyses additionally measured (i) an angular
+\emph{rank} of the ToA Jacobian of ${\approx}4$ (1\% singular-value
+threshold) to $6$ (0.1\%), with the mid/BoA blocks collapsing to rank~1;
+and (ii) approximate \emph{profile-independence} of this structure under
+a Gaussian-spike position sweep.  We record these as observations but
+\textbf{deliberately do not assert them as established}, for three
+reasons.  First, the rank is threshold-dependent and bounded above only
+by the stream count ($N=8$ at NQuad${}=16$); there is no symmetry or
+analytic argument forcing ``4'', so it should be read as ``a handful,''
+not a derived ceiling.  Second, the profile-independence sweep was run on
+a near-conservative atmosphere, a biasing condition; in the absorbing
+case the frozen mode ratios shift with the absorption profile
+($|c_2/c_1|\approx0.30$ vs $0.11$) and the angular collapse moves deeper
+($\tau\approx13$ vs $\approx5$).  Third, the claim that the structure is
+profile-independent sits uneasily with the companion finding that
+near-ToA features \emph{are} visible (a $\tau{=}1$ spike is captured and
+drives the grid); detectability clearly depends on feature depth.  These
+two questions --- a rigorous DoF bound, and the conditions for
+profile-independence --- are left open.
+
+\subsubsection{Consequences for the retrieval grid}
+
+The robust consequences, independent of the exact DoF count, are:
+\begin{itemize}[nosep]
+  \item Build the retrieval grid as a \textbf{sensitivity/QRCP-selected
+    subset} of the (minimal, L-stable) ODE pool; the minimality of the
+    pool is what conditions this selection well.
+  \item Parameterise $r_e(\tau)$ with a \emph{few shape parameters}
+    (\cref{sec:parameterisation}), not a fine level-by-level grid, and
+    place what resolution exists near cloud top \emph{by sensitivity} ---
+    not by assumed profile curvature (adiabatic curvature is steepest at
+    the \emph{base}, where the observable is weakest).
+  \item The deep $r_e$ is prior-dominated, not measured (for thick
+    clouds).
+\end{itemize}
+
+A tempting alternative is to \emph{decouple} the retrieval grid from the
+ODE grid entirely by parameterising $r_e(\tau)$ in a fixed smooth basis
+(EOF/PCA, an adiabatic shape, or a neural decoder), evaluated at whatever
+$\tau$ the solver requests.  We do not favour this: a fixed basis only
+\emph{relocates} the a-priori assumption --- into an adiabatic shape that
+fails for non-adiabatic clouds, or a training distribution with
+extrapolation risk --- and it is \emph{static}, whereas the ODE grid is
+problem-derived and re-placeable within the loop.  The ODE-pool approach
+does inherit the \emph{first-guess} profile's bias in its placement, but
+that bias is correctable by lagged grid re-selection (re-run the forward
+model, re-place the pool), which a frozen basis cannot do.
 
 %----------------------------------------------------------------------
 \subsection{Profile Parameterisation}\label{sec:parameterisation}

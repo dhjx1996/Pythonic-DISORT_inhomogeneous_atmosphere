@@ -130,3 +130,9 @@ be relied on until re-examined:
 thicknesses and solar/viewing geometries, using the combined r_e channel
 (`J_ω·dω/dr_e + J_g·dg/dr_e`) and stacked bands. Also verify the Platnick (2000) and CPV (2012)
 specifics before they are cited in the report.
+
+*Starting point:* the prior multi-mode / full-radiance rank study (three tiers — baseline u₀,
+full-u with all 16 Fourier modes = 128 rows, and NQuad=32; ToA rank stayed 4 in all, with
+per-mode BoA decay ‖J^{m=1}‖≈9e-12, ‖J^{m=2}‖≈1e-16) lives in the removed
+`technical_reports/boa_step_clustering_report.tex` — recoverable from git `99fb971`. **Treat its
+conclusions as contaminated** (built on the un-delta-M'd m≥1 modes); re-derive, don't cite.
