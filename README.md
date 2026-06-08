@@ -1,111 +1,59 @@
-[![Run PyTests](https://github.com/LDEO-CREW/Pythonic-DISORT/actions/workflows/continuous_integration.yml/badge.svg)](https://github.com/LDEO-CREW/Pythonic-DISORT/actions/workflows/continuous_integration.yml)
-[![DOI](https://joss.theoj.org/papers/10.21105/joss.06442/status.svg)](https://doi.org/10.21105/joss.06442)
+# pydisort_riccati_jax — differentiable RT solver for inhomogeneous atmospheres
 
-# Introduction
-The PythonicDISORT package is a Discrete Ordinates Solver for the (1D) Radiative Transfer Equation 
-in a plane-parallel, horizontally homogeneous atmosphere.
-It is coded entirely in Python 3 and is a reimplementation instead of a wrapper.
-While PythonicDISORT has been optimized for speed, it will naturally be slower than similar FORTRAN algorithms.
-On the other hand, PythonicDISORT should be easier to install, use, and modify than FORTRAN-based Discrete Ordinates Solvers.
+A JAX, fully differentiable forward solver for the 1-D radiative transfer equation in a
+plane-parallel atmosphere with **continuously τ-varying** single-scattering albedo ω(τ) and
+phase function gₗ(τ). It returns the upwelling radiance field at the top of atmosphere
+u⁺(τ=0, μ, φ) and is built to sit inside an iterative retrieval of the cloud effective-radius
+profile rₑ(τ).
 
-PythonicDISORT is based on Stamnes' FORTRAN DISORT (see References, in particular [2, 3, 8]) and has its main features: multi-layer solver, 
-delta-_M_ scaling, Nakajima-Tanaka (NT) corrections, only flux option, direct beam source, isotropic internal source (blackbody emission), 
-Dirichlet boundary conditions (diffuse flux boundary sources), Bi-Directional Reflectance Function (BDRF) for surface reflection,
-and interpolation with respect to polar angle.
-In addition, we added a subroutine to compute actinic fluxes to satisfy a user request, and integration with respect to optical depth was also added.
-Further feature requests as well as feedback are welcome.
+The solver integrates the **invariant-imbedding matrix Riccati equation** with diffrax's
+adaptive **Kvaerno5** (L-stable ESDIRK), so the step count tracks the slow *diffusion* scale
+rather than the fast ballistic one (~35 adaptive steps for a τ=30 cloud). Differentiating the
+forward model is free reverse-mode autodiff — no hand-derived adjoint.
 
-You may contact me, Dion, through dh3065@columbia.edu.
+> This project began as a fork of **PythonicDISORT** but is now its own solver. PythonicDISORT
+> is used only as an external dependency (for `pydisort()` references and `subroutines`); its
+> current home is https://github.com/LDEO-CREW/Pythonic-DISORT.
 
-The **GitHub repository** is https://github.com/LDEO-CREW/Pythonic-DISORT.
+## The retrieval chain
 
-Accompanying Journal of Open Source Software paper: https://joss.theoj.org/papers/10.21105/joss.06442. **Please cite this paper if you use PythonicDISORT**.
+```
+rₑ(τ)  ──miejax_lite──▶  (ω(τ), gₗ(τ))  ──pydisort_riccati_jax──▶  u⁺(τ=0, μ, φ)
+   (Mie, differentiable)        (this solver)        (retrieval observable at ToA)
+```
 
-# Documentation
-https://pythonic-disort.readthedocs.io/en/latest/
+`miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics.
 
-Also see the accompanying Jupyter Notebook `Pythonic-DISORT.ipynb` in the `docs` directory
-of our GitHub repository.
-This Jupyter Notebook provides comprehensive documentation, suggested inputs, explanations, 
-mathematical derivations and verification tests.
-It is highly recommended that new users read the non-optional parts of sections 1 and 2.
+## Layout
 
-## PyTest and examples of how to use PythonicDISORT
+| Path | What |
+|---|---|
+| `src/` | the solver — 3 modules (`pydisort_riccati_jax.py`, `_riccati_solver_jax.py`, `_solve_bc_riccati_jax.py`) |
+| `tests/` | PyTest suite (float32 default + a `float64` opt-in partition) |
+| `docs/riccati_solver.md`, `*.ipynb` | maintainer guide + intro / VOCALS-retrieval notebooks |
+| `docs/DESIGN_DECISIONS.md` | **settled** design decisions and their rationale |
+| `docs/OUTSTANDING.md` | **open** problems and decisions (read this before assuming a feature exists) |
+| `report_riccati_solver.tex` | the formal report (math + design justification) |
 
-Not only are there verification tests in `Pythonic-DISORT.ipynb`, 
-most of the test problems in Stamnes' `disotest.f90` (download DISORT 4.0.99 from http://www.rtatmocn.com/disort/) have also been recreated and enhanced.
-In these tests, the solutions from PythonicDISORT are compared against solutions 
-from a F2PY-wrapped Stamnes' DISORT (version 4.0.99; wrapper inspired by https://github.com/kconnour/pyRT_DISORT). With PyTest installed, execute the console command `pytest` 
-in the `pydisotest` directory to run these tests. The `pydisotest` directory also contains Jupyter Notebooks to show the implementation of each test.
-These notebooks double up as examples of how to use PythonicDISORT. The tests which have been implemented are:
+## Install & test
 
-* Test Problem 1: Isotropic Scattering
-* Test Problem 2: Rayleigh Scattering, Beam Source
-* Test Problem 3: Henyey-Greenstein Scattering
-* Test Problem 4: Haze-L Scattering, Beam Source
-* Test Problem 5: Cloud C.1 Scattering, Beam Source
-* Test Problem 6: No Scattering, Increasingly Complex Sources (relevant for modeling longwave radiation)
-* Test Problem 7: Absorption + Scattering + All Possible Sources, Lambertian and Hapke Surface Reflectivities (one layer)
-* Test Problem 8: Absorbing / Isotropic-Scattering Medium (multiple layers)
-* Test Problem 9: General Emitting / Absorbing / Scattering Medium (multiple layers)
-* Test Problem 11: Single-Layer vs. Multiple Layers (no corresponding Jupyter Notebook)
-* Test Problem I: Antiderivative / integration functionality (no corresponding Jupyter Notebook)
+Requires Python ≥ 3.11 with `numpy`, `scipy`, `jax`, `diffrax`, plus **PythonicDISORT** (for
+test references). Optionally `pip install -e .` to expose the `src/` modules; the test suite
+also adds them to `sys.path` via `tests/conftest.py`.
 
-# Installation
+```bash
+# float32 production suite (default)
+cd tests && python -m pytest . -v
 
-* From PyPI: `pip install PythonicDISORT`
-* From Conda-Forge: `conda install -c conda-forge pythonicdisort` or `mamba install -c conda-forge pythonicdisort`
-* By cloning repository: `pip install .` in the `Pythonic-DISORT` directory; `pip install -r all_optional_dependencies.txt` to install all optional dependencies (see *Requirements to run PythonicDISORT*)
+# float64 partition (tight tolerances / FD gradient checks; slow)
+cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
+```
 
-## Requirements to run PythonicDISORT
-* Python 3.8+
-* `numpy >= 1.8.0`
-* `scipy >= 1.8.0`
-* (OPTIONAL) `autograd >= 1.5` (`autograd` can be used to compute gradients of the output functions)
-* (OPTIONAL) `pytest >= 6.2.5` (Required to use the command `pytest`, see *PyTest and examples of how to use PythonicDISORT*)
+## Status
 
-## (OPTIONAL) Additional requirements to run the Jupyter Notebook
-* `jupyter > 1.0.0`
-* `notebook > 6.5.2`
-* `matplotlib >= 3.6.0`
+Forward solver works and is differentiable end-to-end. The retrieval loop is **not yet built**,
+and delta-M / Nakajima–Tanaka corrections are **not yet applied** (radiances for strongly
+forward-peaked phase functions are affected — see `docs/OUTSTANDING.md`). Contact: Dion Ho,
+dh3065@columbia.edu.
 
-In addition, a F2PY-wrapped Stamnes' DISORT or equivalent (https://github.com/kconnour/pyRT_DISORT may work) 
-is required to properly run the last section (section 6).
-
-## Compatibility
-
-The PythonicDISORT package should be system agnostic given its minimal dependencies and pure Python code.
-Everything in the repository was built and tested on Windows 11.
-
-# Acknowledgements
-
-I acknowledge funding from NSF through the Learning the Earth with Artificial intelligence and Physics (LEAP) 
-Science and Technology Center (STC) (Award #2019625) under which this package was initially created.
-
-# References
-1) S. Chandrasekhar. 1960. *Radiative Transfer.*
-
-2) Knut Stamnes and S-Chee Tsay and Warren Wiscombe and Kolf Jayaweera. 1988. *Numerically stable algorithm for discrete-ordinate-method radiative transfer in multiple scattering and emitting layered media.* http://opg.optica.org/ao/abstract.cfm?URI=ao-27-12-2502.
-
-3) Stamnes, S.. 1999. *LLLab disort website.* http://www.rtatmocn.com/disort/.
-
-4) Knut Stamnes and Paul Conklin. 1984. *A new multi-layer discrete ordinate approach to radiative transfer in vertically inhomogeneous atmospheres.* https://www.sciencedirect.com/science/article/pii/0022407384900311.
-
-5) W. J. Wiscombe. 1977. *The Delta–M Method: Rapid Yet Accurate Radiative Flux Calculations for Strongly Asymmetric Phase Functions.* https://journals.ametsoc.org/view/journals/atsc/34/9/1520-0469_1977_034_1408_tdmrya_2_0_co_2.xml.
-
-6) J. H. Joseph and W. J. Wiscombe and J. A. Weinman. 1976. *The Delta-Eddington Approximation for Radiative Flux Transfer.* https://journals.ametsoc.org/view/journals/atsc/33/12/1520-0469_1976_033_2452_tdeafr_2_0_co_2.xml.
-
-7) Sykes, J. B.. 1951. *Approximate Integration of the Equation of Transfer.* https://doi.org/10.1093/mnras/111.4.377.
-
-8) Stamnes, Knut and Tsay, Si-Chee and Wiscombe, Warren and Laszlo, Istvan and Einaudi, Franco. 2000. *General Purpose Fortran Program for Discrete-Ordinate-Method Radiative Transfer in Scattering and Emitting Layered Media: An Update of DISORT.*
-
-9) Z. Lin and S. Stamnes and Z. Jin and I. Laszlo and S.-C. Tsay and W.J. Wiscombe and K. Stamnes. 2015. *Improved discrete ordinate solutions in the presence of an anisotropically reflecting lower boundary: Upgrades of the DISORT computational tool.* https://www.sciencedirect.com/science/article/pii/S0022407315000679.
-
-10) Trefethen, L. N.. 1996. *Finite difference and spectral methods for ordinary and partial differential equations.* https://people.maths.ox.ac.uk/trefethen/pdetext.html.
-
-11) Knut Stamnes. 1982. *On the computation of angular distributions of radiation in planetary atmospheres.* https://www.sciencedirect.com/science/article/pii/0022407382900966.
-
-12) T. Nakajima and M. Tanaka. 1988. *Algorithms for radiative intensity calculations in moderately thick atmospheres using a truncation approximation.* https://www.sciencedirect.com/science/article/pii/0022407388900313.
-
-13) Connour, Kyle and Wolff, Michael. 2020. *pyRT_DISORT: A pre-processing front-end to help make DISORT simulations easier in Python.* https://github.com/kconnour/pyRT_DISORT.
-
+License: MIT (see `LICENSE.md`).

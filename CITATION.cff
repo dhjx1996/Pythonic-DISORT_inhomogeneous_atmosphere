@@ -1,12 +1,6 @@
-# This CITATION.cff file was generated with cffinit.
-# Visit https://bit.ly/cffinit to generate yours today!
-
 cff-version: 1.2.0
-title: PythonicDISORT
-message: >-
-  If you use this software, please cite it using the
-  metadata from this file. Please also cite the JOSS paper:
-  https://doi.org/10.21105/joss.06442
+title: pydisort_riccati_jax
+message: If you use this software, please cite it using the metadata from this file.
 type: software
 authors:
   - given-names: Dion J. X.
@@ -14,19 +8,21 @@ authors:
     email: dh3065@columbia.edu
     affiliation: Columbia University, Department of Applied Physics and Applied Mathematics
     orcid: 'https://orcid.org/0009-0000-5829-5081'
-repository-code: 'https://github.com/LDEO-CREW/Pythonic-DISORT'
+repository-code: 'https://github.com/dhjx1996/Pythonic-DISORT_inhomogeneous_atmosphere'
 abstract: >-
-  PythonicDISORT is a Discrete Ordinates Solver for the (1D) Radiative Transfer
-  Equation in a single or multi-layer plane-parallel atmosphere. 
-  It is coded entirely in Python 3 and is based on Stamnes'
-  FORTRAN DISORT (see references in the Jupyter Notebook)
-  and has its main features.
+  A JAX, fully differentiable forward solver for the 1-D radiative transfer equation in a
+  plane-parallel atmosphere with continuously optical-depth-varying single-scattering albedo
+  and phase function. It integrates the invariant-imbedding matrix Riccati equation with an
+  adaptive L-stable (Kvaerno5) method and returns the differentiable top-of-atmosphere
+  upwelling radiance field, for use in retrieving cloud effective-radius profiles. Uses
+  PythonicDISORT (https://github.com/LDEO-CREW/Pythonic-DISORT) as an external reference.
 keywords:
   - Python
+  - JAX
   - Radiative Transfer
   - Discrete Ordinates Method
+  - Invariant Imbedding
+  - Riccati Equation
+  - Cloud Remote Sensing
   - Atmospheric Science
-  - Climate Science
-  - DISORT
 license: MIT
-date-released: 2023-05-30

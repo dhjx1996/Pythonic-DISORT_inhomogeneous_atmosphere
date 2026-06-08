@@ -199,7 +199,7 @@ def pydisort_riccati_jax(
 
     ######################################################################
     # Generation of "double-Gauss" quadrature weights and points        #
-    # (cf. section 3.4 of the Comprehensive Documentation)              #
+    # (cf. section 3.4 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)              #
     ######################################################################
 
     mu_arr_pos, W = subroutines.Gauss_Legendre_quad(N)
@@ -268,7 +268,7 @@ def pydisort_riccati_jax(
         leg_data_m = _precompute_legendre(m, NLeg, mu_arr_pos_jax, mu0)
 
         # Build alpha(tau), beta(tau) for the Riccati ODE
-        # (cf. section 3.4.2 of the Comprehensive Documentation)
+        # (cf. section 3.4.2 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)
         # ----------------------------------------------------------
         alpha_m_func, beta_m_func = _make_alpha_beta_funcs_jax(
             omega_func, Leg_coeffs_func, m, leg_data_m,
@@ -276,7 +276,7 @@ def pydisort_riccati_jax(
         )
 
         # Beam-source q functions
-        # (cf. section 3.6.1 of the Comprehensive Documentation)
+        # (cf. section 3.6.1 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)
         # ----------------------------------------------------------
         if there_is_beam_source:
             q_up_m, q_down_m = _make_q_funcs_jax(

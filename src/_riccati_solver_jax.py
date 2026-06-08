@@ -170,7 +170,7 @@ def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
 
     Computes the beam-source vectors Q^+(tau) and Q^-(tau), scaled by 1/mu_i.
     (cf. _solve_for_gen_and_part_sols: X_pos, X_neg computation, and
-     section 3.6.1 of the Comprehensive Documentation)
+     section 3.6.1 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)
 
     Parameters
     ----------

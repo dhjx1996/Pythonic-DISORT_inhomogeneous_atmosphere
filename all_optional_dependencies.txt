@@ -1,9 +1,0 @@
-# All optional dependencies for the Pythonic DISORT project
-# Install through "pip install -r all_optional_dependencies.txt"
-
-PythonicDISORT
-pytest
-autograd
-jupyter
-notebook
-matplotlib
