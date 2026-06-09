@@ -23,11 +23,14 @@ Partitioning:
   - The cheap `flux_up_ToA` type guard stays in the default float32 run.
 """
 import numpy as np
+from math import pi
 import jax
 import jax.numpy as jnp
 import pytest
 
-from pydisort_riccati_jax import pydisort_riccati_jax
+from pydisort_riccati_jax import (
+    pydisort_riccati_jax, riccati_setup, riccati_solve,
+)
 
 NQuad = 6          # >= 6 (ARE ill-conditioned at NQuad=4)
 NLeg = NQuad
@@ -50,19 +53,33 @@ def _flux_up_ToA(omega, tol=1e-3):
 
 @pytest.mark.float64
 def test_grad_through_solve_matches_finite_difference():
-    """jax.grad of the upwelling flux through pydisort_riccati_jax agrees with
-    central finite differences w.r.t. omega — confirms the discrete-adjoint AD
-    pipeline and that the flux_up_ToA output is traceable. Float64 only: FD
+    """jax.grad of the upwelling flux agrees with central finite differences
+    w.r.t. omega — confirms the discrete-adjoint AD pipeline. Float64 only: FD
     roundoff (~eps/h) makes this meaningless in float32; in float64 we can demand
-    tight agreement."""
+    tight agreement.
+
+    Routed through the jit-able composable seam (``riccati_setup`` +
+    ``riccati_solve``, the §C resolution) and **jitted**, so the forward compiles
+    once and is reused across the gradient and both FD perturbations — instead of
+    re-tracing the (non-jit-able) one-shot entry three times. The flux observable
+    is identical to the legacy entry's (verified bit-for-bit by 21b)."""
     assert jax.config.jax_enable_x64, "FD gradient check requires float64"
     om0 = 0.8
-    # Resolve F tightly (tol=1e-8) so the adaptive grid is stable and F is smooth
-    # in omega; then FD reaches its true float64 floor (~1e-10) and adjoint-vs-FD
-    # agreement is a genuine accuracy check, not noise.
-    f = lambda om: _flux_up_ToA(om, tol=1e-8)
 
-    g_ad = float(jax.grad(f)(om0))                 # would raise if float() bug present
+    # Setup once; tol=1e-8 so the adaptive grid is stable and F is smooth in
+    # omega -> FD reaches its float64 floor (~1e-10) and adjoint-vs-FD is a
+    # genuine accuracy check, not noise.
+    setup = riccati_setup(NQuad, I0, phi0, tol=1e-8, tol_azim=0.0)
+
+    def flux_of_omega(omega):
+        res = riccati_solve(setup, lambda tau: omega, lambda tau: _g_iso,
+                            tau_bot, mu0)
+        return 2 * pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, res.u_modes[0])
+
+    f = jax.jit(flux_of_omega)                 # compile once, reuse for FD
+    grad_f = jax.jit(jax.grad(flux_of_omega))  # compile once (reverse adjoint)
+
+    g_ad = float(grad_f(om0))
     assert np.isfinite(g_ad), f"adjoint gradient (d flux_up / d omega) not finite: {g_ad}"
 
     h = 1e-6                                        # near-optimal for float64 central FD

@@ -18,6 +18,7 @@ no-positive-exponents invariant).
 
 import os
 import warnings
+from typing import NamedTuple
 import jax
 # Float32 by default; opt into float64 via PYDISORT_RICCATI_JAX_X64=1. This MUST
 # match pydisort_riccati_jax.py so the dtype is import-order-independent (this
@@ -40,11 +41,15 @@ import diffrax
 #  fac_asso_leg_term_posT, scalar_fac_asso_leg_term_mu0)
 # ---------------------------------------------------------------------------
 
-def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
-    """Pre-compute Legendre polynomial products at quadrature points.
+def _precompute_legendre(m, NLeg, mu_arr_pos):
+    """Pre-compute Legendre polynomial products at the quadrature points.
 
-    Uses scipy.special at setup time (not JAX-traceable). Returns JAX arrays
-    for use in the ODE vector field via einsum contractions.
+    Uses scipy.special at *setup* time (not JAX-traceable). Everything here is a
+    function of (m, NLeg, mu_arr_pos) only — all **mu0-independent** — so it is
+    built once per Fourier mode in :func:`riccati_setup` and reused across solves
+    (and across traced mu0 values). The mu0-dependent term ``P_l^m(-mu0)`` is
+    computed separately, inside the traceable solve, by
+    :func:`_assoc_legendre_neg_mu0_jax` (so mu0 can be a JAX tracer).
 
     Parameters
     ----------
@@ -54,16 +59,14 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
         Number of Legendre terms.
     mu_arr_pos : (N,) array
         Positive quadrature cosines.
-    mu0 : float
-        Cosine of the beam zenith angle.
 
     Returns
     -------
     dict with JAX arrays:
         poch              : (n_ells,) — (l-m)!/(l+m)! via Pochhammer
+        weighted_poch     : (n_ells,) — (2l+1) * (l-m)!/(l+m)!
         asso_leg_term_pos : (n_ells, N) — P_l^m(+mu_i)
         asso_leg_term_neg : (n_ells, N) — P_l^m(-mu_i)
-        asso_leg_term_mu0 : (n_ells,) — P_l^m(-mu0)
     """
     mu_np = np.asarray(mu_arr_pos, dtype=np.float64)  # scipy.special needs float64
     N = len(mu_np)
@@ -73,9 +76,9 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
     if n_ells == 0:
         return {
             'poch': jnp.zeros(0),
+            'weighted_poch': jnp.zeros(0),
             'asso_leg_term_pos': jnp.zeros((0, N)),
             'asso_leg_term_neg': jnp.zeros((0, N)),
-            'asso_leg_term_mu0': jnp.zeros(0),
         }
 
     poch = sp.poch(ells + m + 1, -2.0 * m)
@@ -87,17 +90,73 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
         asso_leg_term_pos[idx] = sp.lpmv(m, l_val, mu_np)
         asso_leg_term_neg[idx] = sp.lpmv(m, l_val, -mu_np)
 
-    asso_leg_term_mu0 = np.array([
-        sp.lpmv(m, int(l_val), -float(mu0)) for l_val in ells
-    ])
-
     return {
         'poch': jnp.array(poch),
         'weighted_poch': jnp.array(weighted_poch),
         'asso_leg_term_pos': jnp.array(asso_leg_term_pos),
         'asso_leg_term_neg': jnp.array(asso_leg_term_neg),
-        'asso_leg_term_mu0': jnp.array(asso_leg_term_mu0),
     }
+
+
+def _assoc_legendre_neg_mu0_jax(m, NLeg, mu0):
+    """Associated Legendre values ``P_l^m(-mu0)`` for l = m, m+1, ..., NLeg-1.
+
+    JAX-traceable / differentiable in ``mu0`` — the drop-in, tracer-safe
+    replacement for the scipy ``sp.lpmv(m, l, -mu0)`` term that used to be baked
+    into :func:`_precompute_legendre`. This is what lets ``mu0`` be a traced
+    input to the solve (so a swath of solar geometries can reuse one compiled
+    forward; see docs/DESIGN_DECISIONS.md §7).
+
+    Method — the standard **fixed-m upward-in-l** recurrence (the numerically
+    stable direction; no cancellation), with the Condon–Shortley phase so the
+    result matches ``scipy.special.lpmv`` bit-for-method:
+
+        P_m^m(x)   = (-1)^m (2m-1)!! (1 - x^2)^{m/2}
+        P_{m+1}^m  = x (2m+1) P_m^m
+        (l-m) P_l^m = (2l-1) x P_{l-1}^m - (l+m-1) P_{l-2}^m,    l > m+1
+
+    evaluated at ``x = -mu0``. ``m`` and ``NLeg`` are static (Python ints), so the
+    recurrence is unrolled at trace time; only ``mu0`` flows through as a tracer.
+
+    Parameters
+    ----------
+    m : int
+        Azimuthal Fourier mode index (>= 0).
+    NLeg : int
+        Number of Legendre terms (the values returned span l in [m, NLeg)).
+    mu0 : float or JAX scalar
+        Cosine of the beam zenith angle, in (0, 1].
+
+    Returns
+    -------
+    (NLeg - m,) JAX array of ``P_l^m(-mu0)`` for l = m .. NLeg-1.
+    """
+    n_ells = NLeg - m
+    if n_ells <= 0:
+        return jnp.zeros(0, dtype=jnp.result_type(float))
+
+    x = -jnp.asarray(mu0, dtype=jnp.result_type(float))
+
+    # (2m-1)!! = 1*3*5*...*(2m-1), and (-1)^m  — both static.
+    double_factorial = 1.0
+    for k in range(1, 2 * m, 2):
+        double_factorial *= k
+    sign = -1.0 if (m % 2) else 1.0
+
+    # P_m^m(x) = (-1)^m (2m-1)!! (1-x^2)^{m/2}  (= 1 for m=0; (1-x^2)^0 is safe).
+    Pmm = sign * double_factorial * (1.0 - x * x) ** (0.5 * m)
+    vals = [Pmm]
+    if n_ells == 1:
+        return jnp.stack(vals)
+
+    Pm1m = x * (2 * m + 1) * Pmm                       # P_{m+1}^m
+    vals.append(Pm1m)
+    P_lm2, P_lm1 = Pmm, Pm1m
+    for l in range(m + 2, NLeg):
+        P_l = ((2 * l - 1) * x * P_lm1 - (l + m - 1) * P_lm2) / (l - m)
+        vals.append(P_l)
+        P_lm2, P_lm1 = P_lm1, P_l
+    return jnp.stack(vals)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +165,8 @@ def _precompute_legendre(m, NLeg, mu_arr_pos, mu0):
 # ---------------------------------------------------------------------------
 
 def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
-                                mu_arr_pos, W, M_inv, N):
+                                mu_arr_pos, W, M_inv, N,
+                                NLeg=None, delta_M=False):
     """Build JAX-traceable alpha(tau) and beta(tau) for the Riccati ODE.
 
     In pydisort, alpha and beta are constant per layer and computed inline.
@@ -118,16 +178,29 @@ def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
     omega is applied separately so that omega(tau) and the phase function
     can vary independently (cf. Remark in report section 1.2).
 
+    Delta-M scaling (``delta_M=True``), physical-tau form (see
+    docs/DESIGN_DECISIONS.md): the truncation fraction f(tau) = g_{NLeg}(tau)
+    is the first dropped Legendre moment.  The phase-function moments used in
+    the D^m kernel become the *effective* moments c_l = g_l - f, and the
+    identity term -I in alpha is replaced by -scale_tau * I with
+    scale_tau(tau) = 1 - omega(tau) * f(tau).  This is the delta-M solution
+    obtained without reparametrizing the integration variable (we keep
+    integrating in physical tau; the dtau*/dtau = scale_tau Jacobian collapses
+    onto these two substitutions).  f=0 reproduces the un-scaled kernel exactly.
+
     Parameters
     ----------
     omega_func    : tau -> scalar
-    Leg_coeffs_func : tau -> (NLeg,) array of Legendre coefficients
+    Leg_coeffs_func : tau -> (NLeg_all,) array of Legendre coefficients
     m             : int, Fourier mode index
     leg_data      : dict from _precompute_legendre
     mu_arr_pos    : (N,) JAX array
     W             : (N,) JAX array, quadrature weights
     M_inv         : (N,) JAX array, 1/mu_arr_pos
     N             : int, half-stream count
+    NLeg          : int, number of Legendre terms used in the solve (so that
+                    f = Leg_coeffs[NLeg] is the first dropped moment)
+    delta_M       : bool, enable delta-M scaling
 
     Returns
     -------
@@ -138,52 +211,79 @@ def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
     asso_leg_term_neg = leg_data['asso_leg_term_neg']
     I_N = jnp.eye(N)
 
+    def _effective_moments(tau, omega):
+        """Return (c[m:], scale_tau): delta-M effective moments and depth scale.
+
+        f=0 path (delta_M=False) returns the un-scaled moments g_l[m:] and
+        scale_tau=1, reproducing the original kernel bit-for-bit.
+        """
+        Leg_coeffs = Leg_coeffs_func(tau)
+        if delta_M:
+            f = Leg_coeffs[NLeg]
+        else:
+            f = 0.0
+        c = Leg_coeffs[:NLeg] - f          # effective moments c_l = g_l - f
+        scale_tau = 1.0 - omega * f         # = 1 when f = 0
+        return weighted_poch * c[m:], scale_tau
+
     def alpha_func(tau):
         omega = omega_func(tau)
-        Leg_coeffs = Leg_coeffs_func(tau)
-        # weighted_Leg_coeffs = (2l+1) * poch * g_l  (cf. pydisort: omega_times_Leg_coeffs)
-        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        weighted_Leg_coeffs, scale_tau = _effective_moments(tau, omega)
         # D_pos = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(mu_j)
         D_pos = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
                                   asso_leg_term_pos, asso_leg_term_pos)
-        # alpha = M_inv * (omega * D_pos * W - I)
+        # alpha = M_inv * (omega * D_pos * W - scale_tau * I)
         # (cf. _solve_for_gen_and_part_sols: alpha = M_inv[:, None] * DW)
-        return M_inv[:, None] * (omega * D_pos * W[None, :] - I_N)
+        return M_inv[:, None] * (omega * D_pos * W[None, :] - scale_tau * I_N)
 
     def beta_func(tau):
         omega = omega_func(tau)
-        Leg_coeffs = Leg_coeffs_func(tau)
-        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        weighted_Leg_coeffs, _ = _effective_moments(tau, omega)
         # D_neg = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(-mu_j)
         D_neg = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
                                   asso_leg_term_pos, asso_leg_term_neg)
-        # beta = M_inv * omega * D_neg * W
+        # beta = M_inv * omega * D_neg * W  (no identity term -> no scale_tau)
         # (cf. _solve_for_gen_and_part_sols: beta = M_inv[:, None] * D_neg * W[None, :])
         return M_inv[:, None] * (omega * D_neg * W[None, :])
 
     return alpha_func, beta_func
 
 
-def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
-                       mu_arr_pos, M_inv, mu0, I0_div_4pi, m_equals_0, N):
+def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data, asso_leg_term_mu0,
+                       mu_arr_pos, M_inv, mu0, I0_div_4pi, m_equals_0, N,
+                       NLeg=None, delta_M=False, tau_star_eval=None):
     """Build JAX-traceable beam-source q functions.
 
     Computes the beam-source vectors Q^+(tau) and Q^-(tau), scaled by 1/mu_i.
     (cf. _solve_for_gen_and_part_sols: X_pos, X_neg computation, and
      section 3.6.1 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)
 
+    Delta-M scaling (``delta_M=True``): the phase-function moments become the
+    effective moments c_l = g_l - f (f = g_{NLeg}), and the beam attenuation
+    exp(-tau/mu0) is replaced by exp(-tau*(tau)/mu0) where tau*(tau) is the
+    scaled cumulative optical depth (``tau_star_eval``).  f=0 and the identity
+    tau_star_eval reproduce the original source bit-for-bit.
+
     Parameters
     ----------
     omega_func      : tau -> scalar
-    Leg_coeffs_func : tau -> (NLeg,) array of Legendre coefficients
+    Leg_coeffs_func : tau -> (NLeg_all,) array of Legendre coefficients
     m               : int, Fourier mode index
-    leg_data        : dict from _precompute_legendre
+    leg_data        : dict from _precompute_legendre (mu0-independent tensors)
+    asso_leg_term_mu0 : (NLeg-m,) JAX array, P_l^m(-mu0) for l in [m, NLeg).
+                      Supplied by :func:`_assoc_legendre_neg_mu0_jax` (traceable
+                      in mu0) rather than read from ``leg_data``, so mu0 can be a
+                      traced solve input.
     mu_arr_pos      : (N,) JAX array
     M_inv           : (N,) JAX array
-    mu0             : float, beam cosine
+    mu0             : float or JAX scalar, beam cosine
     I0_div_4pi      : float, I0 / (4 pi) after rescaling
     m_equals_0      : bool
     N               : int
+    NLeg            : int, number of Legendre terms used in the solve
+    delta_M         : bool, enable delta-M effective moments
+    tau_star_eval   : callable tau -> scaled cumulative depth tau*(tau);
+                      defaults to the identity (tau* = tau) for the un-scaled case.
 
     Returns
     -------
@@ -192,33 +292,236 @@ def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
     weighted_poch = leg_data['weighted_poch']
     asso_leg_term_pos = leg_data['asso_leg_term_pos']
     asso_leg_term_neg = leg_data['asso_leg_term_neg']
-    asso_leg_term_mu0 = leg_data['asso_leg_term_mu0']
+
+    if tau_star_eval is None:
+        tau_star_eval = lambda tau: tau
 
     # scalar_fac = I0_div_4pi * (2 - delta_m0)
     # (cf. _solve_for_gen_and_part_sols: scalar_fac_asso_leg_term_mu0,
     #  but the per-ell poch and mu0 terms are in the pre-computed tensors)
     scalar_fac = I0_div_4pi * (2 - int(m_equals_0))
 
+    def _weighted_eff_moments(tau):
+        """weighted_poch * c[m:] with c_l = g_l - f (f=0 if not delta_M)."""
+        Leg_coeffs = Leg_coeffs_func(tau)
+        f = Leg_coeffs[NLeg] if delta_M else 0.0
+        c = Leg_coeffs[:NLeg] - f
+        return weighted_poch * c[m:]
+
     def q_up_func(tau):
         omega = omega_func(tau)
-        Leg_coeffs = Leg_coeffs_func(tau)
         # X_pos: beam source for upward direction (cf. X_pos = X_temp @ asso_leg_term_pos)
         # Note: no factor of 1/2 here, unlike D^m (see eq. Qm in report)
-        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        weighted_Leg_coeffs = _weighted_eff_moments(tau)
         X_pos = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
                            asso_leg_term_pos, asso_leg_term_mu0)
-        return M_inv * scalar_fac * omega * jnp.exp(-tau / mu0) * X_pos
+        return (M_inv * scalar_fac * omega
+                * jnp.exp(-tau_star_eval(tau) / mu0) * X_pos)
 
     def q_down_func(tau):
         omega = omega_func(tau)
-        Leg_coeffs = Leg_coeffs_func(tau)
         # X_neg: beam source for downward direction (cf. X_neg = X_temp @ asso_leg_term_neg)
-        weighted_Leg_coeffs = weighted_poch * Leg_coeffs[m:]
+        weighted_Leg_coeffs = _weighted_eff_moments(tau)
         X_neg = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
                            asso_leg_term_neg, asso_leg_term_mu0)
-        return M_inv * scalar_fac * omega * jnp.exp(-tau / mu0) * X_neg
+        return (M_inv * scalar_fac * omega
+                * jnp.exp(-tau_star_eval(tau) / mu0) * X_neg)
 
     return q_up_func, q_down_func
+
+
+# ---------------------------------------------------------------------------
+# Delta-M / Nakajima-Tanaka (TMS) support
+# ---------------------------------------------------------------------------
+
+def _compute_tau_star(omega_func, f_of_tau, tau_bot, n_grid=1025):
+    """Scaled cumulative optical depth tau*(tau) = int_0^tau (1 - omega f) dtau'.
+
+    The only place delta-M needs a *cumulative* (non-pointwise) quantity: the
+    beam attenuation exp(-tau*/mu0).  It is azimuth-mode independent, so it is
+    built once before the Fourier loop.  Implementation: sample the smooth
+    integrand 1 - omega(tau) f(tau) on a fixed grid, cumulative-trapezoid, and
+    linearly interpolate -- fully JAX-traceable/differentiable, no nested ODE
+    solve, and (only ever exp(-tau*/.)) preserves the NO-POSITIVE-EXPONENTS
+    invariant since tau* >= 0.
+
+    Parameters
+    ----------
+    omega_func : tau -> scalar single-scattering albedo
+    f_of_tau   : tau -> scalar truncation fraction f = g_{NLeg}(tau)
+    tau_bot    : float, bottom optical depth
+    n_grid     : int, number of fixed sample points (smooth integrand -> coarse OK)
+
+    Returns
+    -------
+    tau_star_eval : callable tau -> tau*(tau)  (JAX-traceable)
+    tau_star_bot  : JAX scalar, tau*(tau_bot)
+    """
+    # tau_bot may be a JAX tracer (jit/grad path): jnp.linspace accepts a traced
+    # `stop` with a static `num`, so no float() concretisation here.
+    tau_nodes = jnp.linspace(0.0, tau_bot, n_grid)
+    omega_nodes = jax.vmap(omega_func)(tau_nodes)
+    f_nodes = jax.vmap(f_of_tau)(tau_nodes)
+    scale_tau_nodes = 1.0 - omega_nodes * f_nodes          # integrand
+    dx = tau_nodes[1] - tau_nodes[0]
+    seg = 0.5 * (scale_tau_nodes[1:] + scale_tau_nodes[:-1]) * dx
+    tau_star_nodes = jnp.concatenate([jnp.zeros(1), jnp.cumsum(seg)])
+    tau_star_bot = tau_star_nodes[-1]
+
+    def tau_star_eval(tau):
+        return jnp.interp(tau, tau_nodes, tau_star_nodes)
+
+    return tau_star_eval, tau_star_bot
+
+
+def _legendre_weighted_sum_jax(x, weighted_coeffs):
+    """Sum_l weighted_coeffs[l] * P_l(x) via the Bonnet recurrence (lax.scan).
+
+    P_l are ordinary Legendre polynomials; ``weighted_coeffs[l]`` already
+    includes any (2l+1) and coefficient factors.  Accumulates on the fly so no
+    (L, ...) stack of polynomials is materialised.  JAX-traceable and
+    differentiable; the term count L = len(weighted_coeffs) is static.
+
+    Parameters
+    ----------
+    x               : JAX array of arbitrary shape (evaluation points, e.g. cos Theta)
+    weighted_coeffs : (L,) JAX array
+
+    Returns
+    -------
+    JAX array, same shape as x.
+    """
+    L = weighted_coeffs.shape[0]
+    P0 = jnp.ones_like(x)
+    acc = weighted_coeffs[0] * P0
+    if L == 1:
+        return acc
+    P1 = x * jnp.ones_like(x)
+    acc = acc + weighted_coeffs[1] * P1
+    if L == 2:
+        return acc
+
+    ks = jnp.arange(2, L)
+
+    def body(carry, inp):
+        P_pp, P_p, acc = carry          # P_{k-2}, P_{k-1}, accumulator
+        k, ck = inp
+        k_f = k.astype(x.dtype)
+        # Bonnet: k P_k = (2k-1) x P_{k-1} - (k-1) P_{k-2}
+        P_k = ((2.0 * k_f - 1.0) * x * P_p - (k_f - 1.0) * P_pp) / k_f
+        return (P_p, P_k, acc + ck * P_k), None
+
+    (_, _, acc), _ = jax.lax.scan(body, (P0, P1, acc), (ks, weighted_coeffs[2:]))
+    return acc
+
+
+class _TMSData(NamedTuple):
+    """Precomputed Nakajima-Tanaka TMS state (a JAX pytree of arrays).
+
+    All fields are traceable, so this rides inside a ``jit``-ed solve and is the
+    ``tms_data`` carried by ``SolveResult``; :func:`_apply_tms` evaluates the
+    correction at requested ``(mu_out, phi)``.  ``phi0`` and ``I0_div_4pi`` are
+    concrete scalars (constant-folded under jit); ``mu0`` may be a tracer.
+    """
+    weighted_b_k: jnp.ndarray   # (Q, NLeg_all) missing-forward-peak coefficients
+    fac_k: jnp.ndarray          # (Q,) t_weights * omega_k
+    tstar_k: jnp.ndarray        # (Q,) scaled cumulative depth at the nodes
+    mu0: jnp.ndarray            # beam cosine
+    sqrt_1m_mu0sq: jnp.ndarray  # sqrt(1 - mu0^2)
+    phi0: float
+    I0_div_4pi: float
+
+
+def _precompute_tms(omega_func, Leg_coeffs_func, tau_star_eval, tau_bot,
+                    mu0, phi0, I0_div_4pi, NLeg, NLeg_all, quad_order=128):
+    """Precompute the Nakajima-Tanaka TMS single-scattering correction state.
+
+    Returns a :class:`_TMSData` pytree (traceable; ``jit``-able and a valid
+    ``SolveResult`` field).  Pair with :func:`_apply_tms`.  The correction itself
+    is the additive upwelling radiance
+
+        Du+_i(phi) = (I0/(4 pi mu_i)) * int_0^{tau_bot}
+                     omega(tau) * [p_full - (1-f) p_trunc](cos Theta_i(phi))
+                     * exp(-tau*(tau) * (1/mu0 + 1/mu_i)) dtau
+
+    derived (see docs/DESIGN_DECISIONS.md) by mapping PythonicDISORT's per-layer
+    TMS coefficient to continuous, physical-tau form.  The angular bracket
+    collapses to the *missing forward-peak detail*
+
+        p_full - (1-f) p_trunc = sum_{l<NLeg} (2l+1) f P_l(cosTheta)
+                               + sum_{l>=NLeg} (2l+1) g_l P_l(cosTheta),
+
+    i.e. effective coefficients b_l = f for l < NLeg and b_l = g_l for
+    l >= NLeg.  ``I0_div_4pi`` must be the *un-rescaled* I0/(4 pi) (the correction
+    is added to un-rescaled output).  ``tau_bot`` and ``mu0`` may be tracers.
+
+    A fixed Gauss-Legendre tau-quadrature of order ``quad_order`` integrates the
+    smooth integrand (angular sharpness lives in cos Theta, evaluated exactly in
+    :func:`_apply_tms`).  Node optics are evaluated once here and reused across
+    all ``(mu_out, phi)``.
+    """
+    # Fixed GL abscissae/weights on [-1, 1] (static; numpy). tau_bot may be a
+    # tracer, so the affine map onto [0, tau_bot] is done with jnp.
+    x_gl, w_gl = np.polynomial.legendre.leggauss(int(quad_order))
+    x_gl = jnp.asarray(x_gl)
+    w_gl = jnp.asarray(w_gl)
+    t_nodes = 0.5 * tau_bot * (x_gl + 1.0)                   # (Q,)
+    t_weights = 0.5 * tau_bot * w_gl                         # (Q,)
+
+    omega_k = jax.vmap(omega_func)(t_nodes)                  # (Q,)
+    Leg_k = jax.vmap(Leg_coeffs_func)(t_nodes)               # (Q, NLeg_all)
+    tstar_k = jax.vmap(tau_star_eval)(t_nodes)               # (Q,)
+
+    f_k = Leg_k[:, NLeg]                                     # (Q,)
+    ell = jnp.arange(NLeg_all)
+    low = ell < NLeg
+    # b_l = f for l < NLeg, else g_l  -> the missing forward-peak coefficients
+    b_k = jnp.where(low[None, :], f_k[:, None], Leg_k)       # (Q, NLeg_all)
+    weighted_b_k = (2.0 * ell + 1.0)[None, :] * b_k          # (Q, NLeg_all)
+    fac_k = t_weights * omega_k                              # (Q,)
+
+    mu0 = jnp.asarray(mu0, dtype=jnp.result_type(float))
+    sqrt_1m_mu0sq = jnp.sqrt(jnp.maximum(1.0 - mu0 ** 2, 0.0))
+
+    return _TMSData(
+        weighted_b_k=weighted_b_k, fac_k=fac_k, tstar_k=tstar_k,
+        mu0=mu0, sqrt_1m_mu0sq=sqrt_1m_mu0sq,
+        phi0=phi0, I0_div_4pi=I0_div_4pi,
+    )
+
+
+def _apply_tms(tms_data, mu_out, phi):
+    """Evaluate the TMS upwelling-radiance correction at ``(mu_out, phi)``.
+
+    Parameters
+    ----------
+    tms_data : _TMSData from :func:`_precompute_tms`.
+    mu_out   : scalar or (M,) positive cosines.
+    phi      : scalar or (P,) azimuthal angles.
+
+    Returns
+    -------
+    (M, P) JAX array — the additive correction Du+(mu_out, phi).
+    """
+    dtype = jnp.result_type(float)
+    mu_out = jnp.atleast_1d(jnp.asarray(mu_out, dtype=dtype))            # (M,)
+    phi = jnp.atleast_1d(jnp.asarray(phi, dtype=dtype))                  # (P,)
+    mu0 = tms_data.mu0
+    # cos Theta between (-mu0, phi0) incident and (+mu_out, phi) outgoing
+    nu = (mu_out[:, None] * (-mu0)
+          + jnp.sqrt(jnp.maximum(1.0 - mu_out[:, None] ** 2, 0.0))
+          * tms_data.sqrt_1m_mu0sq
+          * jnp.cos(tms_data.phi0 - phi)[None, :])                       # (M, P)
+    # bracket(tau_k, cosTheta) for every quadrature node
+    brackets = jax.vmap(
+        lambda wc: _legendre_weighted_sum_jax(nu, wc)
+    )(tms_data.weighted_b_k)                                             # (Q, M, P)
+    attn = jnp.exp(
+        -tms_data.tstar_k[:, None] * (1.0 / mu0 + 1.0 / mu_out)[None, :]
+    )                                                                    # (Q, M)
+    contrib = tms_data.fac_k[:, None, None] * attn[:, :, None] * brackets  # (Q,M,P)
+    integral = contrib.sum(axis=0)                                       # (M, P)
+    return (tms_data.I0_div_4pi / mu_out)[:, None] * integral            # (M, P)
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +590,8 @@ def _floored_tolerances(tol):
 # ---------------------------------------------------------------------------
 
 def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
-                        q1_func=None, q2_func=None, max_steps=4096):
+                        q1_func=None, q2_func=None, max_steps=4096,
+                        save_grid=True, adjoint=None):
     """Adaptive Kvaerno5 (L-stable ESDIRK, order 5) integration.
 
     Integrates the coupled Riccati system from sigma=0 to sigma=sigma_end.
@@ -297,17 +601,34 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
     Parameters
     ----------
     alpha_func, beta_func : sigma -> (N, N) JAX arrays
-    sigma_end : float > 0
+    sigma_end : float > 0 (may be a JAX tracer when ``save_grid=False``)
     N         : int
     tol       : float > 0
     q1_func, q2_func : sigma -> (N,) JAX arrays, or None
     max_steps : int
+    save_grid : bool
+        If True (default), save every adaptive step (``SaveAt(steps=True)``) and
+        return the realised σ-grid — this needs a host-side ``np.asarray(sol.ts)``
+        sync, so it is **not** ``jit``-able. If False, save only the final state
+        (``SaveAt(t1=True)``): no host sync, ``sigma_end`` may be traced, and the
+        whole integration is ``jit``/``grad``-able. ``sigma_grid`` is then None.
+        Only the ToA observable needs the final state, so the jit/retrieval path
+        uses ``save_grid=False``; the offline σ-grid (retrieval-grid candidate
+        pool, docs/DESIGN_DECISIONS.md §3) is recovered with ``save_grid=True``.
+    adjoint : diffrax.AbstractAdjoint or None
+        Differentiation strategy passed to ``diffeqsolve``. ``None`` (default)
+        uses diffrax's default ``RecursiveCheckpointAdjoint`` — reverse-mode
+        (``jax.grad``), the verified discrete adjoint (docs/DESIGN_DECISIONS.md
+        §5). For forward-mode AD (``jax.jacfwd``/``jvp``, preferred for
+        small-DOF retrieval) pass ``diffrax.ForwardMode()``; the default's
+        ``custom_vjp`` cannot be forward-differentiated.
 
     Returns
     -------
     R, T : (N, N) JAX arrays at sigma_end
     s    : (N,) JAX array (zeros if no beam source)
-    sigma_grid : 1-D numpy array [0, sigma_1, ..., sigma_end]
+    sigma_grid : 1-D numpy array [0, sigma_1, ..., sigma_end], or None if
+                 ``save_grid=False``.
     """
     has_source = q1_func is not None
 
@@ -343,7 +664,27 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
     solver = diffrax.Kvaerno5()
     _rtol, _atol = _floored_tolerances(tol)
     controller = diffrax.PIDController(rtol=_rtol, atol=_atol)
-    saveat = diffrax.SaveAt(steps=True)
+    # Only pass `adjoint` when explicitly requested, so the default path is
+    # exactly diffrax's default (RecursiveCheckpointAdjoint) — unchanged.
+    adjoint_kw = {} if adjoint is None else {'adjoint': adjoint}
+
+    if not save_grid:
+        # jit/grad path: only the final state is needed (ToA observable). No
+        # host sync, sigma_end may be a tracer -> fully jit-able.
+        sol = diffrax.diffeqsolve(
+            term, solver,
+            t0=0.0, t1=sigma_end,
+            dt0=None,
+            y0=y0,
+            stepsize_controller=controller,
+            saveat=diffrax.SaveAt(t1=True),
+            max_steps=max_steps,
+            **adjoint_kw,
+        )
+        R = sol.ys['R'][-1]
+        T = sol.ys['T'][-1]
+        s = sol.ys['s'][-1]
+        return R, T, s, None
 
     sol = diffrax.diffeqsolve(
         term, solver,
@@ -351,8 +692,9 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
         dt0=None,
         y0=y0,
         stepsize_controller=controller,
-        saveat=saveat,
+        saveat=diffrax.SaveAt(steps=True),
         max_steps=max_steps,
+        **adjoint_kw,
     )
 
     # Extract valid time points (unused slots are padded with inf)
@@ -380,7 +722,8 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
 # ---------------------------------------------------------------------------
 
 def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
-                          q_up_func=None, q_down_func=None, max_steps=4096):
+                          q_up_func=None, q_down_func=None, max_steps=4096,
+                          save_grid=True, adjoint=None):
     """Forward Riccati: build slab from bottom (tau_bot) upward to top (0).
 
     Integration variable sigma in [0, tau_bot].
@@ -388,9 +731,12 @@ def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
     Source mapping: q1(sigma) = q_down(tau_bot - sigma),
                     q2(sigma) = q_up(tau_bot - sigma).
 
-    Returns (R_up, T_up, s_up, tau_grid).
+    ``tau_bot`` may be a JAX tracer when ``save_grid=False`` (jit/grad path).
+
+    Returns (R_up, T_up, s_up, tau_grid); ``tau_grid`` is None if
+    ``save_grid=False``.
     """
-    tb = float(tau_bot)
+    tb = tau_bot
     has_source = q_up_func is not None
 
     if has_source:
@@ -405,22 +751,28 @@ def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
         tb, N, tol,
         q1_func=q1, q2_func=q2,
         max_steps=max_steps,
+        save_grid=save_grid,
+        adjoint=adjoint,
     )
-    tau_grid = tb - sigma_grid[::-1]
+    tau_grid = None if sigma_grid is None else tb - sigma_grid[::-1]
     return R, T, s, tau_grid
 
 
 def _riccati_backward_jax(alpha_func, beta_func, tau_bot, N, tol,
-                           q_up_func=None, q_down_func=None, max_steps=4096):
+                           q_up_func=None, q_down_func=None, max_steps=4096,
+                           save_grid=True, adjoint=None):
     """Backward Riccati: build slab from top (0) downward to bottom (tau_bot).
 
     Integration variable sigma in [0, tau_bot].
     Coefficient evaluation: alpha(sigma), beta(sigma).
     Source mapping: q1(sigma) = q_up(sigma), q2(sigma) = q_down(sigma).
 
-    Returns (R_down, T_down, s_down, tau_grid).
+    ``tau_bot`` may be a JAX tracer when ``save_grid=False`` (jit/grad path).
+
+    Returns (R_down, T_down, s_down, tau_grid); ``tau_grid`` is None if
+    ``save_grid=False``.
     """
-    tb = float(tau_bot)
+    tb = tau_bot
     has_source = q_up_func is not None
 
     if has_source:
@@ -434,5 +786,7 @@ def _riccati_backward_jax(alpha_func, beta_func, tau_bot, N, tol,
         tb, N, tol,
         q1_func=q1, q2_func=q2,
         max_steps=max_steps,
+        save_grid=save_grid,
+        adjoint=adjoint,
     )
     return R, T, s, sigma_grid

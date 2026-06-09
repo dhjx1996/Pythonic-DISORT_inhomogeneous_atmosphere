@@ -194,16 +194,18 @@ and the phase function to vary independently.
 \subsection{Differences from PythonicDISORT}\label{sec:differences}
 %----------------------------------------------------------------------
 
-The following features of PythonicDISORT~\cite{HP2024doc} are
-\emph{not} implemented in the current Riccati solver.
+\textbf{Delta-$M$ scaling and the Nakajima--Tanaka TMS correction are
+implemented} as opt-in features (\cref{sec:deltaM}); the
+\emph{intensity multiple-scattering} (IMS) correction is omitted.  This is
+appropriate for a ToA-upwelling observable: in DISORT itself the IMS correction
+applies to \emph{downward intensities only by construction}~\cite{STWLE2000}, so
+there is no standard upward IMS to apply, and the retrieval-grade codes
+LIDORT/VLIDORT likewise omit it (exact single scatter + streams, plus a separate
+second-order-of-scattering model).  The remaining features of
+PythonicDISORT~\cite{HP2024doc} below are either structural differences or not
+yet implemented.
 
 \begin{enumerate}[label=(\roman*)]
-  \item \textbf{Delta-$M$ scaling} (Section~3.3 of~\cite{HP2024doc}):
-    The truncation of the forward-scattering peak is not applied.
-    The full phase function is used directly.
-
-  \item \textbf{Nakajima--Tanaka (NT) corrections}: Not applied.
-
   \item \textbf{Eigendecomposition}: PythonicDISORT diagonalises the
     constant coefficient matrix $\mat{A}$ in each homogeneous layer
     (Section~3.5) and constructs the general solution analytically
@@ -232,6 +234,90 @@ The following features of PythonicDISORT~\cite{HP2024doc} are
 
 The boundary-condition formulation (\cref{sec:bc}) and the quadrature /
 Fourier setup are shared with PythonicDISORT.
+
+%----------------------------------------------------------------------
+\subsection{Delta-$M$ scaling and the TMS correction}\label{sec:deltaM}
+%----------------------------------------------------------------------
+
+For a forward-peaked cloud phase function ($g_1\!\approx\!0.85$), truncating the
+Legendre expansion at $N_{\mathrm{Leg}}$ moments makes the higher azimuthal
+Fourier modes ring and the reconstructed ToA radiance go \emph{negative}, even
+though the angle-integrated flux and the $m=0$ mode stay positive.  The standard
+remedies---delta-$M$ scaling~\cite{Wiscombe1977} and the Nakajima--Tanaka TMS
+single-scattering correction---are provided as opt-in features
+(\texttt{delta\_M\_scaling}, \texttt{NT\_cor}; both default off, so the un-scaled
+numerics and tests are unchanged).
+
+\paragraph{Physical-$\tau$ delta-$M$.}
+Let $f(\tau)=g_{N_{\mathrm{Leg}}}(\tau)$ be the truncation fraction (the first
+dropped moment; derived internally, never a separate input).  Rather than
+reparametrise to the scaled depth, we keep integrating in \emph{physical} $\tau$
+and absorb the Jacobian $\mathrm{d}\tau^\ast/\mathrm{d}\tau=s(\tau)$, with
+$s(\tau)=1-\omega(\tau)f(\tau)$, into the coefficients.  Writing the
+\emph{effective moments} $c_\ell=g_\ell-f$, the only changes to the
+operators~\eqref{eq:alpha-beta}--\eqref{eq:Qm} are
+\begin{align}
+  \mat{\alpha}_{\mathrm{d}M} &= \mat{M}^{-1}\!\big(\omega\,\mat{D}^{+}[c]\,\mat{W}
+      - s\,\mat{I}\big), &
+  \mat{\beta}_{\mathrm{d}M} &= \mat{M}^{-1}\,\omega\,\mat{D}^{-}[c]\,\mat{W},
+  \nonumber\\
+  \vec{q}^{\pm}_{\mathrm{d}M} &= \mat{M}^{-1}\,c_{\mathrm{fac}}\,\omega\,
+      e^{-\tau^\ast(\tau)/\mu_0}\,\vec{X}^{\pm}[c], &
+  \tau^\ast(\tau) &= \int_0^\tau \!\big(1-\omega f\big)\,\mathrm{d}\tau' ,
+  \label{eq:deltaM}
+\end{align}
+i.e.\ $c_\ell$ replaces $g_\ell$, the identity term carries the depth-scale
+$s(\tau)$, and the beam attenuation uses the \emph{scaled} cumulative depth
+$\tau^\ast$.  $f=0$ recovers the un-scaled solver exactly.  $\tau^\ast$ is the
+only cumulative (non-pointwise) quantity and is azimuth-mode-independent, so it
+is built once before the Fourier loop.  Only $e^{-\tau^\ast/\,\cdot}$ with
+$\tau^\ast\!\ge\!0$ appears, preserving the no-positive-exponents invariant
+(\cref{sec:bc}).
+
+\paragraph{TMS correction.}
+Delta-$M$ smooths the multiple-scattering field; TMS restores the single
+scattering with the \emph{exact}, untruncated phase function.  Mapping
+PythonicDISORT's per-layer correction to the continuum gives the upwelling ToA
+correction as a single one-dimensional $\tau$-quadrature,
+\begin{equation}
+  \Delta u^{+}_i(\phi) = \frac{I_0}{4\pi\mu_i}\!\int_0^{\tau_{\mathrm{bot}}}\!
+    \omega(\tau)\,\big[p_{\mathrm{full}} - (1-f)\,p_{\mathrm{trunc}}\big]
+      \!\big(\cos\Theta_i(\phi)\big)\,
+    e^{-\tau^\ast(\tau)\,(1/\mu_0 + 1/\mu_i)}\,\mathrm{d}\tau ,
+  \label{eq:tms}
+\end{equation}
+whose angular bracket collapses to the \emph{missing forward-peak detail}
+$\sum_{\ell<N_{\mathrm{Leg}}}(2\ell+1)f\,P_\ell
+  + \sum_{\ell\ge N_{\mathrm{Leg}}}(2\ell+1)g_\ell\,P_\ell$
+at the exact scattering-angle cosine $\cos\Theta_i(\phi)$ between the incident
+beam $(-\mu_0,\phi_0)$ and the outgoing $(+\mu_i,\phi)$.  The integrand is smooth
+(the angular sharpness lives in $\cos\Theta$, evaluated exactly), so a fixed
+$\sim\!128$-point Gauss--Legendre rule suffices; the exponent $1/\mu_0+1/\mu_i$
+is a \emph{sum} (no $\mu_i=\mu_0$ singularity for upwelling, invariant
+preserved).  TMS corrects the intensity only---the flux and $u_0$ remain the
+delta-$M$ $m=0$ quantities---and, being analytic in $\mu$, is added directly at
+the requested polar angle when interpolating rather than interpolated through the
+quadrature nodes.  The solver matches PythonicDISORT's own \texttt{NT\_cor}
+solution to $\sim\!3\times10^{-7}$ for a homogeneous layer (float64).
+
+\paragraph{Residual at extreme peaks.}
+TMS is a single-scattering-only correction, so for phase functions far
+under-resolved by the stream count it does not guarantee strictly non-negative
+radiance: the delta-$M$-scaled, $N$-stream \emph{multiple}-scattering field can
+retain a small negative lobe (measured: H--G $g=0.9$ at NQuad$=16$, raw min
+$-0.13$ reduced to $-0.025$).  This residual is present in PythonicDISORT's
+\texttt{NT\_cor} as well---it is intrinsic to truncated-basis discrete
+ordinates, not this implementation.  For realistic cloud asymmetry
+($g\!\approx\!0.85$) the radiance is non-negative; for sharper peaks the residual
+is most simply removed by \emph{more streams} (cheap here, since the solve is
+jit-able and batchable across columns).  The Nakajima--Tanaka IMS correction is
+\emph{not} the remedy---it is downward-only by construction in
+DISORT~\cite{STWLE2000} and is likewise omitted by LIDORT/VLIDORT.  The
+$\delta$-$M$+ truncation~\cite{LinStamnes2018} is an alternative that improves the
+truncated representation, but it is confined to the DISORT/AccuRT ecosystem and
+its same-cost claim does not carry over to a differentiable forward model (it
+replaces the trivial $f=g_{N_{\mathrm{Leg}}}$ slice with a per-layer nonlinear
+moment-matching solve in the autodiffed path); it is not pursued here.
 
 %======================================================================
 \section{Invariant-Imbedding Riccati Formulation}\label{sec:riccati}
@@ -1535,6 +1621,25 @@ retrieval pipeline:
   \emph{Pythonic-DISORT: Comprehensive Documentation},
   2024.
   \url{https://pythonic-disort.readthedocs.io}
+
+\bibitem{Wiscombe1977}
+  W.~J.~Wiscombe,
+  ``The delta--$M$ method: rapid yet accurate radiative flux calculations
+  for strongly asymmetric phase functions,''
+  \emph{J.\ Atmos.\ Sci.}, vol.~34, pp.~1408--1422, 1977.
+
+\bibitem{LinStamnes2018}
+  Z.~Lin, S.~Stamnes, Z.~Jin, I.~Laszlo, S.-C.~Tsay, W.~J.~Wiscombe,
+  and K.~Stamnes,
+  ``New treatment of strongly anisotropic scattering phase functions:
+  The delta--$M$+ method,''
+  \emph{J.\ Atmos.\ Sci.}, vol.~75, no.~1, pp.~327--336, 2018.
+
+\bibitem{STWLE2000}
+  K.~Stamnes, S.-C.~Tsay, W.~Wiscombe, I.~Laszlo, and K.~Evans,
+  \emph{DISORT, a General-Purpose Fortran Program for Discrete-Ordinate-Method
+  Radiative Transfer in Scattering and Emitting Layered Media: Documentation of
+  Methodology}, 2000. (App.~A: the IMS correction applies to downward intensities only.)
 
 \bibitem{ambarzumian1943}
   V.~A.~Ambartsumian,

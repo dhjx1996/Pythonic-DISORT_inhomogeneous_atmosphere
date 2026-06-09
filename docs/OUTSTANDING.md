@@ -8,22 +8,43 @@ Tags: **[BLOCKER]** must fix before retrieval works · **[DECISION]** a choice t
 
 ---
 
-## A. Negative ToA radiances — forward model is physically wrong  [BUG] [BLOCKER]
+## A. Negative ToA radiances — forward model was physically wrong  [RESOLVED in the realistic regime]
 
-For a realistic forward-peaked cloud phase function (g₁≈0.85), the reconstructed ToA
-**radiance** goes negative, even though `flux_up_ToA` and the m=0 mode `u0` stay positive.
-The negatives appear in the **Fourier azimuth reconstruction** at the quadrature nodes
-(m≥1 modes ring), *before* any μ-interpolation — so they are **not** an interpolation artifact
-(linear-spline μ-interpolation still returns negatives), and **not** fixed by the optics
-choice in item B (same optics → same solve → same ringing).
+**Resolved** by delta-M scaling + the Nakajima–Tanaka **TMS** correction (opt-in
+`delta_M_scaling=True, NT_cor=True`; see `DESIGN_DECISIONS.md` §6). The symptom: for a realistic
+forward-peaked cloud phase function (g₁≈0.85) the reconstructed ToA **radiance** went negative
+(the m≥1 Fourier modes rang from the truncated forward peak) even though `flux_up_ToA` and the
+m=0 mode `u0` stayed positive — the textbook finite-stream truncation artifact, which is why
+flux-based tests passed and the DYAMOND flux lookup tables never exposed it.
 
-- **Likely cause:** no **delta-M scaling** and no **Nakajima–Tanaka (TMS) correction** (both
-  deferred). This is the textbook cause of negative intensities for forward-peaked phase
-  functions with finite streams; angle-integrated fluxes stay correct, which is why
-  flux-based tests pass and the DYAMOND flux lookup tables never exposed it.
-- **Next step:** confirm by comparing `u_func(φ)` at the nodes against a `pydisort` reference
-  and checking the per-mode `u_m` decay; then implement delta-M (+ likely TMS).
-- A radiance-observable retrieval cannot proceed until this is fixed.
+- **Fix:** delta-M removes the forward peak from the truncated expansion (smooth, non-negative
+  multiple-scattering field); TMS adds back the single scattering computed with the exact,
+  untruncated phase function at the exact scattering angle. Correctness is verified by matching
+  PythonicDISORT's own `NT_cor` solution to ~1e-6 (`tests/20_deltaM_benchmark_test.py`, exact
+  single-layer + τ-varying), and the negative radiance is removed in the realistic regime
+  (g≈0.85, NQuad=8: raw min −0.023 → corrected +0.043; `tests/19_deltaM_test.py`).
+- **Residual at extreme peaks (known truncation limitation, not a bug).** Strict non-negativity is
+  *not* guaranteed at finite streams: for very sharp peaks under-resolved by the stream count
+  (measured g=0.9 at NQuad=16) delta-M+TMS *reduces* the negativity ~80 % (raw min −0.128 →
+  corrected −0.025) but leaves a residual — and PythonicDISORT's `NT_cor` shows the *same* residual
+  (we match it to ~1e-6), confirming it is intrinsic to the method class, not our implementation.
+- **If it ever bites, the lever is more streams.** First *measure* whether the residual matters at
+  the actual retrieval geometries/bands and an achievable NQuad (cloud retrievals observe
+  back/side-scatter, while truncation error concentrates at ≲20° forward-aureole angles — likely
+  below noise for us). If it does matter, raise **NQuad** — universal, monotone, no new failure
+  modes, and cheap for us (jit+batch makes the bigger N×N matmuls GPU-friendly). **δ-M+**
+  ([Lin & Stamnes 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC8051203/)) was examined and
+  **deprioritised**: adoption is confined to the Stamnes ecosystem (DISORT/AccuRT; not LIDORT/
+  VLIDORT/libRadtran/SHDOM), its wins are for extreme peaks (HG g=0.999, oceanic Fournier–Forand)
+  outside our regime, and its "same cost" holds for the RT solve but **not** our differentiable
+  pipeline — it replaces the trivial slice `f=g_{NLeg}` with a per-layer nonlinear (c,σ)
+  moment-matching solve that would sit inside the autodiffed hot path every retrieval iteration.
+- **IMS not implemented — and correctly so.** DISORT's IMS corrects **downward intensities only by
+  construction** (STWLE 2000 = Stamnes, Tsay, Wiscombe, Laszlo & Evans, *DISORT report*, App. A,
+  just after eq A.1: the −µ argument, "we correct only downward not upward intensities"). So there
+  is **no standard upward IMS** to apply to our ToA-upwelling observable, and the retrieval-grade
+  codes LIDORT/VLIDORT (Spurr) omit IMS too (exact single-scatter + streams, + a separate 2OS
+  model). See `DESIGN_DECISIONS.md` §6.
 
 ---
 
@@ -57,33 +78,95 @@ re-selection for if the lookup-slope Jacobian proves too inexact for the final f
 
 ---
 
-## C. jit-ability of the solver — the retrieval-cost lever  [BLOCKER]
+## C. jit-ability of the solver — the retrieval-cost lever  [RESOLVED]
 
-The retrieval needs `jax.jit` to amortise compilation across hundreds of forward/grad
-evaluations, but `pydisort_riccati_jax` is currently **differentiable yet not jit-able as a
-whole** (it interleaves SciPy-based setup with the traceable solve). Unjitted, every call
-recompiles (~135 s, identical on CPU and GPU since compilation is host-side → the GPU sits
-idle). Two host-side blockers, both with known fixes:
+**Resolved** by a host-side **setup / traceable solve split** (the composable seam; see
+[`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §7). `riccati_setup(...)` runs all the SciPy,
+`mu0`/`tau_bot`-independent work once; `riccati_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
+mu0, num_modes=K)` is then a pure, **jit / grad / jacfwd-able** function of the traced inputs, and
+`eval_radiance(...)` is the traceable observable. The one-shot `pydisort_riccati_jax` delegates to
+the same core (5-tuple unchanged, **bit-for-bit** — test 21b). Cold→warm caching confirmed (e.g.
+NQuad=6 thin: jit forward ~42 s compile → ~0.3 s cached, no recompile across varying
+`tau_bot`/`mu0`; reverse-`grad` ~3 min compile then cached); `tests/supplementary/demo_jit_retrieval.py`
+runs the live recipe.
 
-1. `_kvaerno5_integrate` does `np.asarray(sol.ts)` + dynamic slicing to build `tau_grid`.
-   Fix: `SaveAt(t1=True)` (only the final state is needed for ToA) — no host sync, no dynamic
-   shapes.
-2. `_precompute_legendre` calls `scipy.special` on the quadrature nodes; under `jit` everything
-   is a tracer. Fix: feed it the **numpy** GL nodes (deterministic from static N; numpy ops
-   aren't traced) — keeps SciPy, just off the traced path.
+The two host-side blockers and their fixes:
 
-**Action:** refactor into a non-jit `setup(...)` (quadrature + Legendre tables, run once) and a
-jit-able `solve(params)`. With both fixes, a jitted forward measured ~117 s compile then ~5 s
-cached; jitted grad ~442 s compile then ~19.5 s cached (≈27× per-eval speedup over recompiling).
+1. `_kvaerno5_integrate` did `np.asarray(sol.ts)` + dynamic slicing to build `tau_grid`. Fix: a
+   `save_grid` flag — `SaveAt(t1=True)` (only the final state is needed for ToA) on the jit path,
+   no host sync, `tau_bot` may be traced; the offline grid path keeps `SaveAt(steps=True)`.
+2. `_precompute_legendre` called `scipy.special` on what become tracers. Fix: it is
+   `mu0`-independent, so it moves wholesale into `setup`; the one `mu0`-dependent term
+   `P_l^m(−μ0)` is computed in-trace by a **custom associated-Legendre recurrence**
+   (`_assoc_legendre_neg_mu0_jax`) so `mu0` can be traced (DESIGN_DECISIONS §7; gate test 21a).
+
+**Mode count via the exact DISORT azimuthal-convergence (Cauchy) criterion** (STWLE2000 §3.7 p.89):
+`calibrate_num_modes` returns a concrete `int K ≤ NFourier` from a user-set `ε_azim` (strong
+default 1e-3; `0` ⇒ all modes), and `riccati_solve(..., num_modes=K)` runs exactly K modes as a
+static Python-unrolled loop — differentiable in both AD modes, jit-able, no `vmap`/`while_loop`
+(DESIGN_DECISIONS §7). **AD-mode caveat:** reverse-`grad` (the discrete adjoint, §5) is the default;
+forward-`jacfwd` needs `riccati_setup(..., adjoint=diffrax.ForwardMode())` (the reverse default is a
+`custom_vjp` that cannot be forward-differentiated). **Residual caveats:** a *callable* BDRF
+evaluated at a *traced* `mu0` is not jit-able (it calls NumPy/SciPy on the beam cosine — matrix
+BDRFs and no-BDRF are fine); `phi0`, `I0`, and the boundary conditions remain static (baked into
+`setup`).
+
+**Deferred micro-optimisation — single-trace `scan`+pad/mask (only if cold-compile K-traces ever
+bind).** K is a static int, so the unrolled `for m in range(K)` bakes K into the graph *structure*:
+each distinct K pays one cold compile. The optimisation replaces the unroll with a single `lax.scan`
+over a fixed `NFourier`, **pads** each mode's ragged `(NLeg−m,N)` tensors to a uniform `(NLeg,N)`
+and **masks** the `l<m` rows, so K enters only as a runtime scan-length/mask — one compile serves
+every K (re-calibrating K never recompiles). It trades the clean per-mode einsum kernels for
+padded+masked ones; it pays off only if many frequent re-calibrations *and* a wide-ranging,
+oscillating K *and* those recompiles dominating wall time all hold. In the recommended usage K is
+calibrated once per geometry/regime and is stable (a tiny, cached set of K-traces), so this is
+deferred until shown to bind.
+
+**Empirical history (the evidence that motivated the split; 2026-06-08, NQuad=8, T4 vs CPU; see
+`tests/supplementary/profile_solver.py`).** *Recompile-every-call:* three identical unjitted calls
+took 60.2/57.9/59.7 s on GPU and 50.9/49.4/50.3 s on CPU — **zero speedup on repeat**, confirming
+every call recompiled. *Host-side compile:* a cProfile attributed ~54 s of the ~60 s to
+`jax…trace_to_jaxpr` + `pjit._trace_for_jit` (16× = 8 modes × 2 sweeps via `diffrax.diffeqsolve`) —
+Python tracing + XLA *lowering*, not device execution; the GPU sat idle (≈18 % slower than CPU).
+*The fix prototype worked:* a jit-able single-mode forward R-solve (`SaveAt(t1=True)` + numpy GL
+nodes) compiled in ~2 s then ran cached in 2–29 ms (≈100–1000× cold→warm) — now realised in full by
+the seam above.
 
 ---
 
-## D. GPU is latency-bound for this solver  [NOTE]
+## D. GPU is latency-bound for this solver  [NOTE — empirically confirmed]
 
 Cached execution is dominated by **many sequential tiny matmuls** (NFourier modes × 2 sweeps ×
-~35 adaptive steps × 5 ESDIRK stages on N×N, N≤8/16). This is kernel-launch-latency-bound, so
-a T4 is *not* faster than CPU. Real speed levers: fewer Fourier modes, fewer adaptive steps
-(looser `tol`), not the GPU.
+~35 adaptive steps × 5 ESDIRK stages on N×N, N≤8/16). This is kernel-launch-latency-bound, so the
+GPU is *not* faster than CPU per single column. Real speed levers: fewer Fourier modes, fewer
+adaptive steps (looser `tol`), and batching across columns (below) — not the device itself.
+
+**Measured (2026-06-08, `tests/supplementary/profile_solver.py`).** The results below were taken on
+a Tesla T4, but the analysis is **GPU-agnostic**: the binding costs are host-side XLA compilation
+and per-kernel launch latency, both set off-device, so the conclusions are about software structure
+and batch regime, not the specific accelerator. Cached warm execution of the jit-able single-mode
+solve: **CPU 2.1 ms vs GPU 28.9 ms — the GPU is 14× slower** (each tiny 4×4-matrix kernel launch is
+latency-bound, with no parallelism to exploit). The levers behave as claimed: NFourier 8→2 cut the
+unjitted call 62→14 s (GPU) / 51→14 s (CPU, ~linear); looser `tol` 1e-3→1e-2 cut the *cached* warm
+time 28.9→22.2 ms (GPU) / 2.1→1.6 ms (CPU) — but barely moved the unjitted call (62→61 s), because
+there compile, not step count, dominates.
+
+**Important qualifier — this is the *single-column* regime; batching across columns flips it
+(`tests/supplementary/batch_columns.py`).** Per-column launch/dispatch latency is set off-device,
+so the single-column result is a property of the workload, not the GPU. But the retrieval is
+embarrassingly parallel across columns: `jax.vmap` over a batch turns the tiny matmuls into batched
+matmuls that fill the device. Measured warm per-column time vs batch size B (µs/column):
+
+| B | 1 | 16 | 64 | 256 | 1024 | 4096 |
+|---|---|---|---|---|---|---|
+| **GPU** | 30592 | 2233 | **555** | 155 | 50 | **16** |
+| **CPU** | 1908 | 1021 | **959** | 854 | 829 | 846 |
+
+CPU per-column is ~flat (limited parallelism); GPU per-column collapses ~1900× once there is a
+batch to hide latency behind. **Crossover at B≈64; at B=4096 the GPU is ~53× faster than CPU per
+column.** So "GPU not a lever" holds *per single column*, but the right retrieval architecture is
+**jit (item C) + vmap a batch of columns onto the GPU** — it is the batch, not the device, that
+delivers the latency hiding.
 
 ---
 
@@ -95,8 +178,10 @@ reverse-mode for large p (crossover p≈15–20 at m=10 observations).
 
 ## F. Other deferred forward-model features  [DEFERRED]
 
-Delta-M scaling (see item A), Nakajima–Tanaka (TMS) corrections, isotropic internal source
-(only the collimated beam is handled), and non-ToA depth evaluation (only τ=0 is returned).
+Isotropic internal source (only the collimated beam is handled) and non-ToA depth evaluation
+(only τ=0 is returned). *(Delta-M scaling and the Nakajima–Tanaka TMS correction are now
+implemented — see item A and `DESIGN_DECISIONS.md` §6. IMS remains out of scope — it is
+downward-only by construction in DISORT and is likewise omitted by LIDORT/VLIDORT; see item A.)*
 
 ---
 
@@ -112,12 +197,13 @@ be relied on until re-examined:
   threshold already gives 6); (iii) it was measured emphasising the m=0 mode, without delta-M,
   at N=8, and for a single geometry/thickness — all of which can suppress it. Claim only "small
   DOF," not "4."
-- **Multi-mode / angular DOF is contaminated by the missing delta-M (item A).** In
+- **Multi-mode / angular DOF was contaminated by the missing delta-M (item A — now fixed).** In
   `adiabatic_cloud_with_drizzle.ipynb` the per-Fourier-mode ‖∂u/∂g‖ is *larger* for several
-  m≥1 modes (e.g. m=7 ≈ 0.5) than for m=0 (≈ 0.1) — but m≥1 is exactly where the radiance rings
-  without delta-M. So whether higher azimuthal modes carry genuine extra information cannot be
-  judged until delta-M/TMS is fixed; the QRCP grids in that notebook sum all modes and inherit
-  the contamination.
+  m≥1 modes (e.g. m=7 ≈ 0.5) than for m=0 (≈ 0.1) — but m≥1 is exactly where the radiance rang
+  without delta-M. So whether higher azimuthal modes carry genuine extra information could not be
+  judged until delta-M/TMS was fixed; the QRCP grids in that notebook sum all modes and inherited
+  the contamination. **With item A now resolved, re-run the rank/Jacobian analysis with
+  `delta_M_scaling=True, NT_cor=True` before drawing any angular-DOF conclusions.**
 - **Profile-independence unproven.** Demonstrated only for a localised g-spike on one smooth
   adiabatic base; the angular-collapse depth depends on ω/band; globally different profiles
   (thin, multi-layer, inversion) untested.
@@ -136,3 +222,50 @@ full-u with all 16 Fourier modes = 128 rows, and NQuad=32; ToA rank stayed 4 in 
 per-mode BoA decay ‖J^{m=1}‖≈9e-12, ‖J^{m=2}‖≈1e-16) lives in the removed
 `technical_reports/boa_step_clustering_report.tex` — recoverable from git `99fb971`. **Treat its
 conclusions as contaminated** (built on the un-delta-M'd m≥1 modes); re-derive, don't cite.
+
+### Per-mode ODE grids and the retrieval grid  [DEFERRED — logged]
+
+*(Significance is to retrieval-grid **quality**, not compute — cost is secondary here. Surfaced
+while deciding not to `vmap` the Fourier modes, item C / §7; logged for the retrieval-grid work.)*
+
+The ODE grid that §3a uses as the retrieval-grid candidate **pool** is, today, the **m=0 grid
+alone**: the solver computes a grid per Fourier mode but returns only `tau_grid_m0` and **discards
+the m≥1 grids**. m=0 is a defensible default — it carries the slowest (diffusion) eigenvalue and
+the beam source, so it is typically the *densest* single grid and the largest single-channel
+superset, and it holds the flux plus the bulk of the ToA-weighted, small-DOF information
+(§3b/c). But each Fourier mode is an **independent angular information channel** with its **own**
+ODE grid; discarding the m≥1 grids likely throws away retrieval-grid information. Significance:
+
+- **Pool completeness (improves the §3a *superset*).** The observable is `Σ_m u_m·cos(m(φ0−φ))`;
+  different modes can be sensitive to different τ-depths, so the m=0 grid can *miss* τ-features
+  informative only for the angular (m≥1) channels. The principled pool is plausibly the **union of
+  the non-negligible modes' grids** (`∪_m {variation_m} ⊇ ∪_m {retrievable_m}`) — a strict
+  generalization of §3a's "subset of the m=0 grid."
+- **Selection precision (improves the §3a *subset*).** QRCP/sensitivity selection currently runs on
+  the **summed** Jacobian (it blends modes; this §G already flags it). A **per-mode sensitivity
+  decomposition** prunes more precisely: keep a τ-point only if *some* non-negligible mode is
+  sensitive to it; drop one whose only support is a Cauchy-negligible mode, even where the summed
+  Jacobian gave it modest weight.
+- **Decides the open angular-DOF question (above).** Re-running the (now delta-M-corrected) per-mode
+  Jacobian/grid analysis answers *where in τ* each azimuthal mode places its sensitivity: if the
+  m≥1 modes cluster at the **same** near-ToA depths as m=0, they add angular detail at **no new
+  vertical resolution** (pool stays ≈ m=0); if they place steps **deeper/differently**, they carry
+  **complementary vertical information** and the pool must be the union. This is the decisive test
+  of whether higher azimuthal modes lift the retrievable *vertical* DOF.
+- **Ties to the Cauchy stop (item C / §7).** The same K from the azimuthal-convergence criterion
+  that truncates the *forward* also names the **non-negligible modes** whose grids should form the
+  retrieval-grid pool — so the Cauchy machinery feeds the grid construction directly.
+- **Caveat — variation ≠ information.** A per-mode grid is placed by that mode's *state* variation,
+  which includes the optics-independent **BoA imbedding boundary layer** (≈zero information) present
+  in *every* mode. So the per-mode *grids* enlarge the pool, but it is the per-mode *sensitivity*
+  (the adjoint face, §3a) that does the informative pruning.
+- **Step-count as a cheap amplitude predictor (hypothesis, secondary).** A mode whose Riccati state
+  barely leaves its IC (few adaptive steps) plausibly yields a small ‖u_m‖; if so, step count
+  a-priori predicts mode negligibility. The *true* Cauchy signal is the amplitude ‖u_m‖ (what
+  DISORT tests); step count is only a correlate — to be checked, not assumed.
+
+**Net:** the "best" retrieval grid is plausibly the **sensitivity-selected subset of the union of
+the non-negligible (Cauchy-K) modes' ODE grids** — generalizing §3a from the m=0 grid to the full
+angular-channel set. **Prerequisite:** retain the per-mode grids (and per-mode `u_m` /
+sensitivities) in the offline `return_grid=True` path (currently discarded). Implementation
+deferred; this records the design so the retrieval-grid work can pick it up.

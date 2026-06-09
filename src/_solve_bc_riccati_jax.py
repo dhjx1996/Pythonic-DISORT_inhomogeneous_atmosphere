@@ -16,6 +16,7 @@ def _solve_bc_riccati_jax(
     BDRF_Fourier_mode, mu_arr_pos, W,
     m, mu0, I0_div_4pi_scaled, tau_bot,
     there_is_beam_source,
+    tau_star_bot=None,
 ):
     """
     Solve the N x N boundary-condition system from star-product operators.
@@ -30,7 +31,15 @@ def _solve_bc_riccati_jax(
     -------
     I_plus_top : (N,) JAX array
         Upwelling intensity at tau=0.
+
+    Notes
+    -----
+    ``tau_star_bot`` is the scaled cumulative optical depth at the bottom
+    boundary (delta-M); the direct-beam surface reflection attenuates as
+    exp(-tau_star_bot / mu0).  It defaults to ``tau_bot`` (un-scaled case).
     """
+    if tau_star_bot is None:
+        tau_star_bot = tau_bot
     m_equals_0 = int(m == 0)
     mu_arr_pos_times_W = mu_arr_pos * W
 
@@ -57,7 +66,7 @@ def _solve_bc_riccati_jax(
                 mathscr_X_pos = jnp.zeros(N)
 
         if there_is_beam_source:
-            beam_surface_term = mathscr_X_pos * jnp.exp(-tau_bot / mu0)
+            beam_surface_term = mathscr_X_pos * jnp.exp(-tau_star_bot / mu0)
         else:
             beam_surface_term = jnp.zeros(N)
         b_pos_eff = b_pos_m + beam_surface_term

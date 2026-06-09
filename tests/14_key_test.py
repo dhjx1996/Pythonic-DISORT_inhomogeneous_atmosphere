@@ -20,7 +20,7 @@ from PythonicDISORT import subroutines
 from _riccati_solver_jax import (
     _riccati_forward_jax, _riccati_backward_jax,
     _make_alpha_beta_funcs_jax, _make_q_funcs_jax,
-    _precompute_legendre, _riccati_rhs_jax,
+    _precompute_legendre, _assoc_legendre_neg_mu0_jax, _riccati_rhs_jax,
 )
 from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import multilayer_pydisort_toa_full_phi
@@ -40,8 +40,7 @@ mu_arr_pos = jnp.array(mu_arr_pos)
 W = jnp.array(W)
 M_inv = 1.0 / mu_arr_pos
 
-mu0_setup = 0.5  # for precompute_legendre
-leg_data = _precompute_legendre(0, NLeg, mu_arr_pos, mu0_setup)
+leg_data = _precompute_legendre(0, NLeg, mu_arr_pos)  # mu0-independent tensors
 alpha_func, beta_func = _make_alpha_beta_funcs_jax(
     omega_func, Leg_coeffs_func, 0, leg_data, mu_arr_pos, W, M_inv, N,
 )
@@ -188,9 +187,11 @@ def test_14e():
     I0_div_4pi = 1.0 / (4 * pi)
 
     # Build beam-source q functions using the JAX helper
-    leg_data_beam = _precompute_legendre(0, NLeg, mu_arr_pos, mu0)
+    leg_data_beam = _precompute_legendre(0, NLeg, mu_arr_pos)
+    asso_leg_mu0 = _assoc_legendre_neg_mu0_jax(0, NLeg, mu0)
     q_up_func, q_down_func = _make_q_funcs_jax(
-        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, M_inv, mu0,
+        omega_func, Leg_coeffs_func, 0, leg_data_beam, asso_leg_mu0,
+        mu_arr_pos, M_inv, mu0,
         I0_div_4pi, True, N,  # m_equals_0=True for m=0
     )
 

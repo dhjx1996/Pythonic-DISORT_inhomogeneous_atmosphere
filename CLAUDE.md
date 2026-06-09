@@ -47,8 +47,8 @@ The solver is three flat modules in `src/` (added to `sys.path` by `tests/confte
 
 | File | Purpose |
 |---|---|
-| `src/pydisort_riccati_jax.py` | public entry point: validation, quadrature, Fourier loop, output assembly, `interpolate` |
-| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s |
+| `src/pydisort_riccati_jax.py` | one-shot `pydisort_riccati_jax` **and** the jit-able composable seam (`riccati_setup`/`riccati_solve`/`calibrate_num_modes`/`eval_radiance`); Fourier loop, output assembly, `interpolate` |
+| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s; `_assoc_legendre_neg_mu0_jax` (traced-mu0), `_precompute_tms`/`_apply_tms` |
 | `src/_solve_bc_riccati_jax.py` | N×N boundary-condition solve from the scattering operators |
 
 `tests/` holds the PyTest suite (constant-ω sanity checks → τ-varying convergence → thick
@@ -94,13 +94,41 @@ arbitrary polar angles (JAX-traceable).
 **Retrieval observable.** The full azimuthally-resolved `u_ToA_func(φ)` at ToA — tests compare
 that against pydisort, not just `u0` or `flux_up`.
 
+### jit-able retrieval forward — the composable seam  (`docs/DESIGN_DECISIONS.md` §7)
+
+The forward model **is jit-able** (OUTSTANDING §C **resolved**) via a host-side setup / traceable
+solve split — the one-shot `pydisort_riccati_jax` is the same core, so its 5-tuple is unchanged
+(bit-for-bit). Recipe:
+
+```python
+setup = riccati_setup(NQuad, I0, phi0, ...)               # host-side, run once
+K     = calibrate_num_modes(setup, of, lf, tau_bot, mu0,  # exact DISORT Cauchy stop (p.89)
+                            mu_obs, phi_obs)               # -> static int K <= NFourier
+def forward(theta, tau_bot, mu0):
+    of, lf = optics_from(theta)
+    res = riccati_solve(setup, of, lf, tau_bot, mu0, num_modes=K)   # traceable
+    return eval_radiance(setup, res, mu_obs, phi_obs)               # observable
+f = jax.jit(forward)                 # compile once (K mode-blocks), cached
+g = jax.jit(jax.grad(forward))       # reverse-mode discrete adjoint (default)
+```
+
+- **Traced:** `tau_bot`, `mu0`, optics closures. **Static (in `setup`):** grid sizes, `I0`, `phi0`,
+  BCs, BDRF, `delta_M`/`NT_cor` flags. Close `setup` over the jitted fn; don't pass it as a traced arg.
+- **Forward-mode** (`jax.jacfwd`, small-DOF retrieval) needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`
+  — the reverse-mode default is a `custom_vjp` that can't be forward-differentiated.
+- **`tol_azim`** sets the Cauchy ε (default 1e-3; `0` ⇒ all NFourier modes, which the one-shot entry uses).
+- Demo: `tests/supplementary/demo_jit_retrieval.py`. Tests: `tests/21_jit_test.py`.
+
 ### Open / deferred
 
-Delta-M scaling, Nakajima–Tanaka corrections, isotropic internal source, non-ToA depth, the
-retrieval loop itself, and the τ-grid utility are **not yet implemented** — and there is an
-active **negative-radiance** issue for forward-peaked phase functions. All tracked in
-`docs/OUTSTANDING.md`. The discrete adjoint is **not** a separate feature — it is free
-reverse-mode AD (verified); see `docs/DESIGN_DECISIONS.md` §5.
+**Delta-M scaling and the Nakajima–Tanaka TMS correction are implemented** (opt-in
+`delta_M_scaling=True, NT_cor=True`; see `docs/DESIGN_DECISIONS.md` §6) — this resolved the
+**negative-radiance** issue for forward-peaked phase functions (`docs/OUTSTANDING.md` §A). IMS is
+omitted by design (it corrects only the downward field). **jit-ability is resolved** (the
+composable seam above; `docs/OUTSTANDING.md` §C → `docs/DESIGN_DECISIONS.md` §7). Still **not yet
+implemented**: isotropic internal source, non-ToA depth, the retrieval loop itself, and the τ-grid
+utility — all tracked in `docs/OUTSTANDING.md`. The discrete adjoint is **not** a separate feature
+— it is free reverse-mode AD (verified); see `docs/DESIGN_DECISIONS.md` §5.
 
 ## Differentiable Mie front-end (`miejax_lite`)
 
