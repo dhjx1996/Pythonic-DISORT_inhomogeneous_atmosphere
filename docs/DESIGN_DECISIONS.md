@@ -134,6 +134,21 @@ a *few shape parameters*, not a fine level-by-level grid; place what resolution 
 cloud top by *sensitivity*, not by assumed profile curvature (adiabatic curvature is steepest at
 *base* — where the observable is weakest); the deep r_e is prior-dominated, not measured.
 
+**(d) The inter-node interpolation is part of the forward map, not a post-hoc step — and the
+display must mirror it.** Once §3c fixes the nodes, the *function class between nodes* is the
+remaining parameterisation choice. It lives **inside** F(x): the single lever
+`retrieval_oe.RetrievalForward._re_of_tau` is what every solve, calibration, ODE-grid build,
+Jacobian, and re-meshing re-map integrates, so it *defines what is retrieved* — **plot the result
+with `RetrievalForward.profile()`** (which routes through the same lever) so the displayed curve
+cannot drift from the forward model. *(Earlier framing of this as an independent post-hoc choice
+was wrong — corrected here.)* **Current default: r_e³-linear (adiabatic)** — `r_e³ ∝ LWC ∝ τ`, so
+it is physically natural, represents the adiabatic prior *exactly*, gets per-segment curvature from
+two endpoints (no grid-size coupling), and stays a convex/non-overshooting map in `r_e³`. It is C⁰
+(kinked at nodes). The function-class itself is **not settled** — it is an open inverse-problem
+bias–variance lever (linear baseline; PCHIP for higher-DOF regimes), tracked in
+[OUTSTANDING §B′](./OUTSTANDING.md); bounded above by the integrator order (~C⁶, §1) and far more
+tightly by the small DOF here.
+
 *(Distilled into report_riccati_solver.tex §"The Retrieval Grid and Its Relation to the ODE
 Grid" from the former technical_reports/boa_step_clustering_report.tex and the tests/supplementary
 QRCP/Jacobian scripts — removed, recoverable from git `99fb971`; see also the retained

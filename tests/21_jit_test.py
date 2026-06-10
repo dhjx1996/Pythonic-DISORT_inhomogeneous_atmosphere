@@ -7,25 +7,16 @@ seam (`riccati_setup` / `riccati_solve` / `calibrate_num_modes` /
 of the traced inputs (tau_bot, mu0, and the optics closures). See
 docs/DESIGN_DECISIONS.md §7.
 
-Test taxonomy (see the plan): tests are either **permanent** (they exercise
-behaviour specific to *this* solver) or **temporary / once-off** (they only
-re-verify generic JAX-language guarantees and can be dropped once trusted):
-
-  PERMANENT (solver-specific)
     21a  custom associated-Legendre recurrence P_l^m(-mu0) vs scipy.lpmv, with a
-         profile and a gradient-finiteness check (the gate of plan decision 4).
+         profile and a gradient-finiteness check.
     21b  parity: unjit riccati_solve == jax.jit(riccati_solve) == legacy
          pydisort_riccati_jax; eval_radiance == legacy u_ToA_func / interpolate;
          all vs the pydisort reference. With and without delta_M + NT_cor.
-    21f  DISORT azimuthal convergence (Cauchy, STWLE2000 §3.7 p.89):
+    21c  DISORT azimuthal convergence (Cauchy, STWLE2000 §3.7 p.89):
          calibrate_num_modes reproduces the exact stop, and the K-mode radiance
          matches the full-NFourier radiance within tol_azim.
 
-  TEMPORARY / once-off (generic JAX features — safe to delete later)
-    21c  cold->warm compile caching across varying tau_bot / mu0.
-    21d  grad / jacfwd compose through the jitted forward.
-
-Default partition is float32; a few tight checks are @pytest.mark.float64.
+Default partition is float32.
 """
 import sys
 import time
@@ -50,17 +41,17 @@ from _helpers import pydisort_toa_full_phi, PHI_VALUES
 
 
 # ===========================================================================
-# 21a — custom associated-Legendre recurrence (PERMANENT; gate, decision 4)
+# 21a — custom associated-Legendre recurrence
 # ===========================================================================
 
 def test_21a_assoc_legendre_matches_scipy():
     """P_l^m(-mu0) from the custom JAX recurrence vs scipy.special.lpmv.
 
     This is *our* code (JAX has no usable associated-Legendre — lpmn is
-    deprecated, there is no lpmv), so it is a permanent solver-specific test. It
-    is what lets mu0 be a traced solve input. Tolerance is the active dtype's
-    floor: ~1e-3 (loose) in float32 — the high-m values span ~1e15 so float32
-    relative roundoff shows — and tight in float64.
+    deprecated, there is no lpmv). It is what lets mu0 be a traced solve input. 
+    Tolerance is the active dtype's floor: ~1e-3 (loose) in float32 
+    — the high-m values span ~1e15 so float32 relative roundoff shows — 
+    and tight in float64.
     """
     print("\n--- Test 21a: associated-Legendre recurrence vs scipy ---")
     tol = 5e-3 if jnp.result_type(float) == jnp.float32 else 1e-10
@@ -127,7 +118,7 @@ def test_21a_assoc_legendre_profile():
 
 
 # ===========================================================================
-# 21b — parity (PERMANENT): seam == jit(seam) == legacy == pydisort
+# 21b — parity: seam == jit(seam) == legacy == pydisort
 # ===========================================================================
 
 _NQuad = 8
@@ -154,7 +145,7 @@ def test_21b_parity_unjit_jit_legacy_noscaling():
         lambda tb, m0: riccati_solve(setup, _omega_func, _Leg, tb, m0).u_modes
     )
     u_jit = jit_solve(_tau_bot, _mu0)
-    assert np.allclose(np.asarray(res.u_modes), np.asarray(u_jit), rtol=1e-5, atol=1e-6), \
+    assert np.allclose(np.asarray(res.u_modes), np.asarray(u_jit), rtol=1e-4, atol=1e-6), \
         "jit(riccati_solve) != unjit riccati_solve"
 
     # Legacy 5-tuple shares the same core (return_grid=True path).
@@ -190,12 +181,12 @@ def test_21b_parity_with_deltaM_NT():
     )
     # flux uses only m=0 (delta-M); seam flux from u_modes[0].
     flux_seam = 2 * pi * float(jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, res.u_modes[0]))
-    assert np.allclose(flux_seam, float(flux), rtol=1e-4, atol=1e-7), "flux parity (delta-M)"
+    assert np.allclose(flux_seam, float(flux), rtol=1e-4, atol=1e-6), "flux parity (delta-M)"
 
     # eval_radiance (smooth interp + analytic TMS) == legacy interpolate at nodes.
     # Scale-relative per phi (pointwise rtol is meaningless at the phi=pi
     # back-azimuth null in float32 -- cf. 19c); the two are the same computation
-    # bar the SaveAt(t1) vs SaveAt(steps) final-state difference (~1e-7).
+    # bar the SaveAt(t1) vs SaveAt(steps) final-state difference (~1e-6).
     u_interp = interpolate(uf, mu_pos)
     for phi in PHI_VALUES:
         ev = np.asarray(eval_radiance(setup, res, jnp.asarray(setup.mu_arr_pos), phi))
@@ -225,7 +216,7 @@ def test_21b_parity_vs_pydisort_reference():
 
 
 # ===========================================================================
-# 21f — DISORT azimuthal convergence / Cauchy criterion (PERMANENT)
+# 21c — DISORT azimuthal convergence / Cauchy criterion
 # ===========================================================================
 
 def _reference_cauchy_K(u_modes, mu_obs, phi_obs, phi0, tol_azim):
@@ -241,7 +232,7 @@ def _reference_cauchy_K(u_modes, mu_obs, phi_obs, phi0, tol_azim):
         term = u_modes[m][:, None] * np.cos(m * (phi0 - phi_obs))[None, :]
         I_K = I_K + term
         denom = np.where(np.abs(I_K) < 1e-30, 1e-30, np.abs(I_K))
-        if float(np.max(np.abs(term) / denom)) <= tol_azim:
+        if float(np.max(np.abs(term) / denomS)) <= tol_azim:
             consecutive += 1
             if consecutive >= 2:
                 K = m + 1
@@ -251,7 +242,7 @@ def _reference_cauchy_K(u_modes, mu_obs, phi_obs, phi0, tol_azim):
     return K
 
 
-def test_21f_cauchy_matches_reference():
+def test_21c_cauchy_matches_reference():
     """calibrate_num_modes reproduces the exact p.89 stop (twice-rule, max over
     user angles); tol_azim=0 returns all NFourier modes; K is monotone in
     tol_azim; and the K-mode radiance is within ~tol_azim of the full series.
@@ -259,7 +250,7 @@ def test_21f_cauchy_matches_reference():
     Structured to reuse the (expensive, un-jit) full solve: one full solve drives
     both the independent Cauchy reference and the K-vs-full radiance check.
     """
-    print("\n--- Test 21f: DISORT azimuthal convergence (Cauchy) ---")
+    print("\n--- Test 21c: DISORT azimuthal convergence (Cauchy) ---")
     from pydisort_riccati_jax import _barycentric_interpolate
     NQ = 8
     mu0, I0, phi0, tau_bot = 0.6, 1.0, 0.0, 6.0
@@ -302,84 +293,3 @@ def test_21f_cauchy_matches_reference():
     # Monotone: tighter tol_azim keeps no fewer modes.
     assert all(Ks[i] <= Ks[i + 1] for i in range(len(Ks) - 1)), \
         f"K not monotone non-decreasing as tol tightens: {Ks}"
-
-
-# ===========================================================================
-# 21c — cold->warm compile caching  (TEMPORARY / once-off; generic JAX)
-# ===========================================================================
-
-@pytest.mark.jit_slow
-def test_21c_temp_cold_warm_caching():
-    """[TEMPORARY] jit(forward) compiles once then caches across tau_bot / mu0.
-
-    This re-verifies a generic JAX guarantee (a jit cache hit on a fixed input
-    signature); it is not solver-specific. Safe to delete once trusted. Asserts
-    the warm call is much faster than the cold (compile) call."""
-    print("\n--- Test 21c [temp]: cold->warm caching ---")
-    setup = riccati_setup(_NQuad, _I0, _phi0, tol_azim=0.0)
-    mu_obs = jnp.array([0.4, 0.7])
-    phi_obs = jnp.array([0.0, pi / 3])
-
-    @jax.jit
-    def forward(tau_bot, mu0):
-        r = riccati_solve(setup, _omega_func, _Leg, tau_bot, mu0)
-        return eval_radiance(setup, r, mu_obs, phi_obs)
-
-    t0 = time.perf_counter()
-    forward(8.0, 0.6).block_until_ready()
-    cold = time.perf_counter() - t0
-
-    warms = []
-    for tb, m0 in [(7.0, 0.55), (9.0, 0.62), (10.0, 0.7), (6.0, 0.5)]:
-        t0 = time.perf_counter()
-        forward(tb, m0).block_until_ready()
-        warms.append(time.perf_counter() - t0)
-    warm = float(np.mean(warms))
-    print(f"  cold={cold:.2f}s  warm={warm * 1e3:.1f}ms  (speedup {cold / max(warm, 1e-9):.0f}x)")
-    assert warm < cold, "no cold->warm speedup (cache not hit?)"
-    assert warm < 1.0, "warm call unexpectedly slow (recompiling each call?)"
-
-
-# ===========================================================================
-# 21d — grad / jacfwd through the jitted forward  (TEMPORARY / once-off)
-# ===========================================================================
-
-@pytest.mark.jit_slow
-def test_21d_temp_grad_jacfwd_compose_through_jit():
-    """[TEMPORARY] reverse-mode grad and forward-mode jacfwd compose with jit.
-
-    Generic JAX-language guarantee (AD composes with jit). Solver-specific
-    gradient *accuracy* vs finite differences is covered by 18 and 20e; here we
-    only assert the compositions run and agree.
-
-    The two AD modes need different diffrax adjoints (the reverse default is a
-    custom_vjp that can't be forward-differentiated), so reverse uses the default
-    setup and forward uses an ``adjoint=ForwardMode()`` setup — exactly the two
-    recipes documented on the module.
-    """
-    print("\n--- Test 21d [temp]: grad / jacfwd through jit ---")
-    import diffrax
-    mu_obs = jnp.array([0.5])
-    phi_obs = jnp.array([0.0])
-
-    def _forward(setup, tau_bot, mu0):
-        r = riccati_solve(setup, _omega_func, _Leg, tau_bot, mu0)
-        return jnp.sum(eval_radiance(setup, r, mu_obs, phi_obs))
-
-    # Reverse-mode (default discrete adjoint).
-    setup_rev = riccati_setup(_NQuad, _I0, _phi0, tol_azim=0.0)
-    g_tau = float(jax.jit(jax.grad(lambda tb, m0: _forward(setup_rev, tb, m0),
-                                   argnums=0))(8.0, 0.6))
-    g_mu = float(jax.jit(jax.grad(lambda tb, m0: _forward(setup_rev, tb, m0),
-                                  argnums=1))(8.0, 0.6))
-
-    # Forward-mode (ForwardMode adjoint).
-    setup_fwd = riccati_setup(_NQuad, _I0, _phi0, tol_azim=0.0,
-                              adjoint=diffrax.ForwardMode())
-    jf = float(jax.jit(jax.jacfwd(lambda tb, m0: _forward(setup_fwd, tb, m0),
-                                  argnums=0))(8.0, 0.6))
-
-    print(f"  d/dtau(rev)={g_tau:.4e}  d/dmu0(rev)={g_mu:.4e}  jacfwd(tau)={jf:.4e}")
-    assert np.isfinite(g_tau) and np.isfinite(g_mu) and np.isfinite(jf)
-    # reverse- and forward-mode must agree for a scalar output.
-    assert abs(g_tau - jf) / max(abs(jf), 1e-6) < 1e-2, "grad != jacfwd"

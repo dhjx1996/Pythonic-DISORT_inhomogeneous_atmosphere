@@ -1,0 +1,91 @@
+{
+  "function_class": "linear (jnp.interp on r_e)",
+  "date": "2026-06-10",
+  "profile": "RF11 thin marine Sc, tau_bot=1.21",
+  "config": {
+    "NQuad": 16,
+    "NFourier": 8,
+    "NLeg_all": 128,
+    "bands_um": [
+      1.24,
+      2.13
+    ],
+    "view_mu": [
+      0.9,
+      0.65,
+      0.5
+    ],
+    "view_phi_pi": [
+      1,
+      1,
+      1
+    ],
+    "mu0": 0.6,
+    "k_active": 4,
+    "n_outer": 2,
+    "prior": "adiabatic + Bayesian-Tikhonov"
+  },
+  "key_results": {
+    "y_bands_x_angles": [
+      [
+        0.1096,
+        0.2464,
+        0.2474
+      ],
+      [
+        0.1062,
+        0.2174,
+        0.2795
+      ]
+    ],
+    "initial_grid_tau": [
+      0.0,
+      0.032,
+      0.311,
+      0.652
+    ],
+    "final_grid_tau": [
+      0.0,
+      0.08,
+      0.309,
+      0.519
+    ],
+    "retrieved_re": [
+      8.43,
+      8.5,
+      8.11,
+      7.52
+    ],
+    "truth_at_nodes": [
+      7.77,
+      8.61,
+      8.61,
+      7.65
+    ],
+    "prior_xa": [
+      7.77,
+      7.69,
+      7.46,
+      7.23
+    ],
+    "DOFS": 2.12,
+    "error_1sigma_um": [
+      1.68,
+      1.49,
+      1.44,
+      0.93
+    ],
+    "converged": true,
+    "resid_norm": 0.00137
+  },
+  "notebook_stream_outputs_verbatim": [
+    "RF11: tau_bot=1.21, r_e 5.8-8.7 um, n=20",
+    "2 bands x 3 angles = 6 observations; NLeg_all=128, NFourier=8 (fixed)",
+    "observation y = pi u/(mu0 I0)   [rows = bands, cols = view angles]\n[[0.1096 0.2464 0.2474]\n [0.1062 0.2174 0.2795]]",
+    "ODE pool: 20 nodes  ->  QRCP-selected 4: tau = [0.    0.032 0.311 0.652]",
+    "prior  x_a   = [7.77 7.74 7.45 7.07]\nprior  sigma = [3.  3.2 4.8 6.8] um (top->base)",
+    "converged=True, cost 1.01e+00 -> 5.19e-02, ||y-F|| = 1.37e-03\nfinal grid tau = [0.    0.08  0.309 0.519]\n  retrieved = [8.43 8.5  8.11 7.52]\n  truth     = [7.77 8.61 8.61 7.65]\n  prior x_a = [7.77 7.69 7.46 7.23]",
+    "DOFS = 2.12   (independent pieces of profile information)\nretrieval 1-sigma error = [1.68 1.49 1.44 0.93] um"
+  ],
+  "note": "Baseline for comparing against the r_e^3-linear (and PCHIP) function class -- see OUTSTANDING.md B'. One profile is not definitive."
+}
