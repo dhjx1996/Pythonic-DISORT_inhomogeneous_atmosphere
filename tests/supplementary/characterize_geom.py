@@ -14,7 +14,7 @@ import numpy as np
 import jax.numpy as jnp
 import vocals_io as vio
 from miejax_lite import mie_legendre_precompute, build_re_table, select_channel, table_lookup
-from pydisort_riccati_jax import riccati_setup, riccati_solve, calibrate_num_modes, eval_radiance
+from pydisort_riccati_jax import riccati_setup, riccati_solve, eval_radiance
 
 NQuad = int(sys.argv[1]) if len(sys.argv) > 1 else 24
 NLeg_all = int(sys.argv[2]) if len(sys.argv) > 2 else 32
@@ -39,12 +39,12 @@ for bi, name in [(1, "2.13µm"), (0, "1.24µm")]:
     opt = select_channel(table, bi)
     om = lambda tau: table_lookup(opt, jnp.interp(tau, knots, vals))[0]
     leg = lambda tau: table_lookup(opt, jnp.interp(tau, knots, vals))[1]
-    setup = riccati_setup(NQuad, I0, phi0, NLeg_all=NLeg_all, BDRF_Fourier_modes=BDRF[0],
-                          delta_M_scaling=True, NT_cor=True, tol=1e-3, tol_azim=1e-3)
-    K = calibrate_num_modes(setup, om, leg, thin.tau_bot, mu0,
-                            jnp.asarray(mu_grid), jnp.asarray(phi_grid))
+    setup = riccati_setup(NQuad, I0, phi0, mu0, NLeg_all=NLeg_all,
+                          BDRF_Fourier_modes=BDRF[0],
+                          delta_M_scaling=True, NT_cor=True, tol=1e-3)
+    K = setup.NFourier      # all modes — the actual compile-memory stressor
     t = time.perf_counter()
-    res = riccati_solve(setup, om, leg, thin.tau_bot, mu0, num_modes=K)
+    res = riccati_solve(setup, om, leg, thin.tau_bot, num_modes=K)
     R = np.asarray(eval_radiance(setup, res, jnp.asarray(mu_grid),
                                  jnp.asarray(phi_grid))) * pi / (mu0 * I0)
     print(f"\n=== {name}  K={K}  ({time.perf_counter()-t:.0f}s) ===")

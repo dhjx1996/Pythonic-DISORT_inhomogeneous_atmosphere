@@ -262,14 +262,14 @@ def test_20e_fd_gradient():
     g0 = 0.8
 
     setup = riccati_setup(
-        NQ, I0, phi0, NLeg_all=NLa, delta_M_scaling=True, NT_cor=True,
-        tol=1e-8, tol_azim=0.0,
+        NQ, I0, phi0, mu0, NLeg_all=NLa, delta_M_scaling=True, NT_cor=True,
+        tol=1e-8,
     )
     omega_func = lambda tau: 0.95
 
     def _res(g):
         return riccati_solve(setup, omega_func, lambda tau: g ** jnp.arange(NLa),
-                             tau_bot, mu0)
+                             tau_bot)
 
     def flux_of_g(g):
         return 2 * pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, _res(g).u_modes[0])

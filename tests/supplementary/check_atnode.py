@@ -15,7 +15,7 @@ import numpy as np
 import jax.numpy as jnp
 import vocals_io as vio
 from miejax_lite import mie_legendre_precompute, build_re_table, select_channel, table_lookup
-from pydisort_riccati_jax import riccati_setup, riccati_solve, calibrate_num_modes, eval_radiance
+from pydisort_riccati_jax import riccati_setup, riccati_solve, eval_radiance
 
 NQuad = int(sys.argv[1]) if len(sys.argv) > 1 else 16
 NLeg_all = int(sys.argv[2]) if len(sys.argv) > 2 else 32
@@ -37,12 +37,13 @@ for bi, name in [(1, "2.13µm"), (0, "1.24µm")]:
     opt = select_channel(table, bi)
     om = lambda tau: table_lookup(opt, jnp.interp(tau, knots, vals))[0]
     leg = lambda tau: table_lookup(opt, jnp.interp(tau, knots, vals))[1]
-    setup = riccati_setup(NQuad, I0, phi0, NLeg_all=NLeg_all, BDRF_Fourier_modes=BDRF,
-                          delta_M_scaling=True, NT_cor=True, tol=1e-3, tol_azim=1e-3)
+    setup = riccati_setup(NQuad, I0, phi0, mu0, NLeg_all=NLeg_all,
+                          BDRF_Fourier_modes=BDRF,
+                          delta_M_scaling=True, NT_cor=True, tol=1e-3)
     mu_nodes = np.asarray(setup.mu_nodes)            # the exact quadrature angles
-    K = calibrate_num_modes(setup, om, leg, thin.tau_bot, mu0, jnp.asarray(mu_nodes), jnp.asarray(phi_grid))
+    K = setup.NFourier
     t = time.perf_counter()
-    res = riccati_solve(setup, om, leg, thin.tau_bot, mu0, num_modes=K)
+    res = riccati_solve(setup, om, leg, thin.tau_bot, num_modes=K)
     R_node = np.asarray(eval_radiance(setup, res, jnp.asarray(mu_nodes), jnp.asarray(phi_grid))) * pi / (mu0 * I0)
     # off-node: midpoints between adjacent nodes (worst case for interpolation)
     mu_mid = 0.5 * (mu_nodes[:-1] + mu_nodes[1:])

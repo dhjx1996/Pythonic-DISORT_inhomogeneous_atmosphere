@@ -16,8 +16,9 @@ Design choices (see the plan + DESIGN_DECISIONS):
 - **State** ``x`` = ``r_e`` at a handful of free τ-nodes (cloud top τ=0 always a
   node); cloud base ``(τ_bot, r_base)`` is a *fixed, known* anchor (simplification
   — the two hardest quantities to retrieve in thick cloud are deferred).
-  ``r_e(τ)`` is the interpolant through the nodes + base anchor — **r_e³-linear
-  (adiabatic) by default**, set by the single lever :meth:`RetrievalForward._re_of_tau`.
+  ``r_e(τ)`` is the interpolant through the nodes + base anchor — **r_e⁵-linear
+  (adiabatic) by default** (the adiabatic law in optical depth is r_e ∝ τ^(1/5) —
+  see :meth:`RetrievalForward._re_of_tau`), set by that single lever.
   That interpolation is **part of the forward map** (it defines what is retrieved),
   *not* a post-hoc display choice; plot the result with :meth:`RetrievalForward.profile`
   so the curve mirrors ``F(x)``. The function-class is an open lever (linear /
@@ -43,8 +44,8 @@ import jax
 import jax.numpy as jnp
 
 from pydisort_riccati_jax import (
-    riccati_setup, riccati_solve, calibrate_num_modes, eval_radiance,
-    pydisort_riccati_jax,
+    riccati_setup, riccati_solve, eval_radiance,
+    pydisort_riccati_jax, _barycentric_interpolate,
 )
 from miejax_lite import table_lookup
 
@@ -55,34 +56,41 @@ from miejax_lite import table_lookup
 class RetrievalForward:
     """Multi-band, multi-angle ToA-reflectance forward model for OE.
 
-    Builds one host-side ``setup`` per band (geometry shared; the per-band BDRF
-    and optics table differ), calibrates the DISORT Cauchy mode count ``K`` per
-    band at a reference state, and exposes jitted ``forward`` / ``jacobian``
-    callables plus the ODE-grid and pool-sensitivity utilities used by the
-    retrieval-grid selector.
+    Builds one host-side ``setup`` per band (geometry — incl. the **static**
+    ``mu0`` — shared; the per-band BDRF and optics table differ), and exposes
+    jitted ``forward`` / ``jacobian`` callables plus the ODE-grid and
+    pool-sensitivity utilities used by the retrieval-grid selector. The per-band
+    Fourier mode count ``K`` (``K_list``) defaults to the full ``NFourier`` and
+    can be trimmed offline by the S_ε selector :func:`select_num_modes`.
     """
 
     def __init__(self, opt_bands, *, NQuad, mu0, I0, phi0, tau_bot, r_base,
                  view_mu, view_phi, BDRF_bands=None, NLeg_all=128, NFourier=8,
-                 tol=1e-3, tol_azim=0.0):
+                 tol=1e-3, re_class="re5-linear"):
         # NLeg_all>=128: a Mie cloud phase function needs ~60+ moments for the
         # NT/TMS single-scatter; 32 gives a Gibbs-oscillating p_full that wrecks
         # thin-cloud (single-scatter-dominated) off-nadir radiance. See
         # docs/OUTSTANDING.md §A′. Cheap: NLeg_all feeds only the TMS quadrature.
         #
-        # NFourier fixed small (8), tol_azim=0 ⇒ NO in-loop Cauchy selector
-        # (OUTSTANDING §H "Q2"): the relative azimuthal test saturates (K=NFourier)
-        # for thin low-signal clouds anyway, while the *absolute* mode amplitudes
-        # decay fast after delta-M (NFourier=8 reproduces NFourier=16 to <1%). A
-        # fixed small NFourier both bounds the Fourier *unroll* (so jacrev fits in
-        # memory — §H) and skips calibrate's wasted full-NFourier solve. Pick
-        # NFourier offline from the per-mode amplitudes; do not re-select per solve.
+        # NFourier is now just the **static ceiling** on the azimuthal mode count.
+        # Post the scan-the-modes refactor (OUTSTANDING §H) the mode body compiles
+        # once via lax.scan, so running all NFourier modes no longer OOMs the
+        # forward/jacrev — NFourier need not be held artificially small for memory.
+        # Mode truncation is a *runtime* saving: pick num_modes <= NFourier offline
+        # with the S_ε selector (:func:`select_num_modes`) from the per-mode
+        # reflectance amplitudes vs the measurement noise, then bake it into
+        # ``K_list``. (Default 8 suffices for the thin VOCALS case; raise it for
+        # thick cloud, where the selector then trims it back down.)
         self.opt_bands = list(opt_bands)
         self.n_bands = len(self.opt_bands)
         self.mu0 = float(mu0)
         self.I0 = float(I0)
         self.tau_bot = float(tau_bot)
         self.r_base = float(r_base)
+        if re_class not in ("re5-linear", "linear"):
+            raise ValueError(f"unknown re_class {re_class!r}; "
+                             "expected 're5-linear' or 'linear'")
+        self.re_class = re_class             # profile parameterisation lever (§B′)
         self.view_mu = jnp.asarray(view_mu, dtype=float)
         self.view_phi = jnp.asarray(view_phi, dtype=float)
         self.n_view = int(self.view_mu.shape[0])
@@ -90,9 +98,9 @@ class RetrievalForward:
         if BDRF_bands is None:
             BDRF_bands = [()] * self.n_bands
         self.setups = [
-            riccati_setup(NQuad, I0, phi0, NFourier=NFourier, NLeg_all=NLeg_all,
-                          BDRF_Fourier_modes=bdrf, delta_M_scaling=True,
-                          NT_cor=True, tol=tol, tol_azim=tol_azim)
+            riccati_setup(NQuad, I0, phi0, mu0, NFourier=NFourier,
+                          NLeg_all=NLeg_all, BDRF_Fourier_modes=bdrf,
+                          delta_M_scaling=True, NT_cor=True, tol=tol)
             for bdrf in BDRF_bands
         ]
         self.K_list = [s.NFourier for s in self.setups]
@@ -117,27 +125,33 @@ class RetrievalForward:
         Plot the result with :meth:`profile`, which routes through here so the
         display mirrors F(x).
 
-        **Default: r_e³-linear (adiabatic).** Since r_e³ ∝ LWC ∝ τ, r_e³ is
-        interpolated linearly in τ and cube-rooted. This (i) is the physically
-        natural class, (ii) is *coherent with the adiabatic prior* — it represents
-        ``x_a`` exactly — and (iii) gets per-segment curvature from just the two
-        endpoint values, so it has **no grid-size coupling** (well-defined down to
-        one free node + base). It is still C⁰ (kinked at the nodes).
+        **Default: r_e⁵-linear (adiabatic).** The adiabatic effective radius grows as
+        r_e ∝ τ^(1/5) in optical depth: r_e³ ∝ LWC ∝ geometric height z, and the
+        extinction β ∝ r_e² ∝ z^(2/3) makes τ = ∫β dz ∝ z^(5/3), so LWC ∝ τ^(3/5) and
+        r_e ∝ τ^(1/5) (equivalently the canonical adiabatic N_d ∝ τ^(1/2) r_e^(-5/2)).
+        So r_e⁵ is what is linear in τ: it is interpolated linearly and 5th-rooted.
+        This (i) is the adiabatic class, (ii) is coherent with the adiabatic prior
+        (same 1/5 law ⇒ represents ``x_a`` exactly), and (iii) gets per-segment
+        curvature from the two endpoint values, so it has **no grid-size coupling**.
+        It is C⁰ (kinked at nodes); with finite ``r_base`` the slope at base stays
+        finite (no root cusp).
 
-        Swap the class **here and only here** to propagate it through forward /
-        calibrate / ODE-grid / Jacobian / re-meshing / display::
+        The class is the ``re_class`` constructor lever, switched **here and only
+        here** so it propagates through forward / mode-amplitudes / ODE-grid /
+        Jacobian / re-meshing / display by construction::
 
-            linear (impute-nothing baseline):  jnp.interp(tau, knots, vals)
-            PCHIP (C¹, overshoot-free):         needs ≥3 nodes for curvature and
-                                                couples to node count — revisit at
-                                                higher DOF (e.g. thick cloud); a
-                                                node-based C¹ class cannot avoid that
-                                                coupling (OUTSTANDING §B′).
+            "re5-linear" (default, adiabatic): jnp.interp(tau,knots,vals**5)**(1/5)
+            "linear" (impute-nothing baseline):  jnp.interp(tau, knots, vals)
+            PCHIP (C¹):  not wired in — needs ≥3 nodes, couples to node count, so its
+                         curvature is an FD artifact at low DOF; the clean class test
+                         is model comparison (linear vs adiabatic fit χ²), §B′.
 
         "Which class" is an inverse-problem bias–variance decision (OUTSTANDING §B′),
         bounded above by the integrator order (~C⁶, §1) and far more tightly by DOFS.
         """
-        return jnp.interp(tau, knots, vals ** 3) ** (1.0 / 3.0)
+        if self.re_class == "linear":
+            return jnp.interp(tau, knots, vals)
+        return jnp.interp(tau, knots, vals ** 5) ** (1.0 / 5.0)   # re5-linear (adiabatic)
 
     def profile(self, x, tau_nodes, tau):
         """Evaluate the retrieved r_e(τ) **exactly as the forward integrates it**.
@@ -157,7 +171,7 @@ class RetrievalForward:
         def leg(tau):
             return table_lookup(opt, self._re_of_tau(tau, knots, vals))[1]
 
-        res = riccati_solve(setup, om, leg, self.tau_bot, self.mu0, num_modes=K)
+        res = riccati_solve(setup, om, leg, self.tau_bot, num_modes=K)
         u = jnp.stack([eval_radiance(setup, res, self.view_mu[i], self.view_phi[i])
                        for i in range(self.n_view)])           # (n_view,)
         return jnp.pi * u / (self.mu0 * self.I0)
@@ -169,10 +183,25 @@ class RetrievalForward:
             for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
         ])                                                     # (n_bands*n_view,)
 
-    # -- calibration: set the per-band Cauchy K at a reference state ----------
-    def calibrate(self, x_ref, tau_nodes):
+    # -- per-mode reflectance amplitudes (drives the S_ε mode selector) -------
+    def mode_amplitudes(self, x_ref, tau_nodes):
+        """Per-band, per-mode ToA-reflectance amplitude at a reference state.
+
+        For each band runs ONE full-``NFourier`` solve and decomposes the ToA
+        bidirectional reflectance into its azimuthal Fourier contributions at the
+        view angles::
+
+            contrib_m(μ_i, φ_i) = π · u_m(μ_i) · cos(m (φ0 − φ_i)) / (μ0 I0)
+
+        (``u_m`` the m-th Fourier mode of the ToA upwelling field, barycentrically
+        interpolated to the view μ). Returns ``amp`` of shape ``(n_bands,
+        NFourier)`` with ``amp[b, m] = max_i |contrib_m|`` — the worst-case
+        reflectance any single mode adds across the views. Consumed by
+        :func:`select_num_modes`; the *absolute* per-mode amplitude (not a relative
+        partial sum) is the meaningful quantity to compare against the noise floor.
+        """
         knots, vals = self._knots_vals(x_ref, tau_nodes)
-        Ks = []
+        amps = []
         for opt, setup in zip(self.opt_bands, self.setups):
             def om(tau, opt=opt):
                 return table_lookup(opt, self._re_of_tau(tau, knots, vals))[0]
@@ -180,12 +209,18 @@ class RetrievalForward:
             def leg(tau, opt=opt):
                 return table_lookup(opt, self._re_of_tau(tau, knots, vals))[1]
 
-            Ks.append(calibrate_num_modes(setup, om, leg, self.tau_bot,
-                                          self.mu0, self.view_mu, self.view_phi))
-        self.K_list = [int(k) for k in Ks]
-        # K changed ⇒ invalidate compiled callables (K is static/baked).
-        self._fwd_jit = self._jac_jit = self._jac_grid_jit = None
-        return self.K_list
+            res = riccati_solve(setup, om, leg, self.tau_bot)   # all NFourier
+            u_modes = res.u_modes                               # (NFourier, N)
+            # u_m at each view μ: barycentric interp of each mode's (N,) vector.
+            u_view = _barycentric_interpolate(
+                self.view_mu, setup.mu_nodes, u_modes.T, setup.bary_weights
+            )                                                   # (n_view, NFourier)
+            m_arr = jnp.arange(u_modes.shape[0])
+            cosm = jnp.cos(m_arr[None, :]
+                           * (setup.phi0 - self.view_phi)[:, None])  # (n_view, NF)
+            contrib = jnp.pi * u_view * cosm / (self.mu0 * self.I0)  # (n_view, NF)
+            amps.append(np.asarray(jnp.max(jnp.abs(contrib), axis=0)))  # (NF,)
+        return np.stack(amps)                                   # (n_bands, NF)
 
     # -- jitted forward + Jacobian (compiled once, cached) -------------------
     def forward(self, x, tau_nodes):
@@ -234,6 +269,49 @@ class RetrievalForward:
 def build_forward(*args, **kw):
     """Functional alias for :class:`RetrievalForward`."""
     return RetrievalForward(*args, **kw)
+
+
+# ============================================================================
+# 1b. Azimuthal mode-count selector (S_ε, replaces the relative Cauchy test)
+# ============================================================================
+def select_num_modes(fwd: RetrievalForward, x_ref, tau_nodes, Se, *, frac=1/3.0):
+    """Pick the per-band Fourier mode count ``K`` from the **measurement noise**.
+
+    The old in-solver relative Cauchy test (STWLE2000 p.89) was removed with the
+    scan-the-modes refactor (OUTSTANDING §H): it saturated (``K=NFourier``) for
+    thin low-signal clouds and, more fundamentally, judged convergence against the
+    *signal* rather than the *noise*. Here truncation is a noise-aware **runtime**
+    optimisation — there is no point computing a mode whose ToA-reflectance
+    contribution is small compared with what the instrument can measure.
+
+    For each band, takes the per-mode reflectance amplitudes
+    (:meth:`RetrievalForward.mode_amplitudes` at the reference state ``x_ref``) and
+    keeps the smallest ``K`` such that **every** higher mode ``m >= K`` contributes
+    less than ``frac · min σ_ε`` at every view — where ``σ_ε = √diag(Se)`` is the
+    observation 1σ. ``frac = 1/3`` keeps the dropped-mode error well inside the
+    noise. Sets and returns ``fwd.K_list``; invalidates the compiled callables (K is
+    static / baked into the jitted forward).
+
+    Parameters
+    ----------
+    fwd : RetrievalForward
+    x_ref, tau_nodes : reference state at which to measure the mode amplitudes
+        (the mode spectrum is weakly state-dependent — pick a representative
+        first-guess profile, e.g. the prior mean).
+    Se : (m, m) array — observation error covariance (reflectance²).
+    frac : float — keep-threshold as a fraction of the minimum observation σ_ε.
+    """
+    sigma_eps = np.sqrt(np.diag(np.asarray(Se, float)))
+    thresh = float(frac) * float(np.min(sigma_eps))
+    amps = fwd.mode_amplitudes(x_ref, tau_nodes)               # (n_bands, NFourier)
+    K_list = []
+    for amp in amps:
+        sig = np.where(amp >= thresh)[0]            # modes above the noise floor
+        K = int(sig.max()) + 1 if sig.size else 1   # smallest K dropping only sub-noise modes
+        K_list.append(max(1, min(K, amp.shape[0])))
+    fwd.K_list = K_list
+    fwd._fwd_jit = fwd._jac_jit = fwd._jac_grid_jit = None
+    return fwd.K_list
 
 
 # ============================================================================
@@ -307,9 +385,11 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
                          strength=1.0):
     """Adiabatic first guess ``x_a`` and correlated prior covariance ``S_a``.
 
-    ``x_a`` is the r_e³-linear adiabatic profile (known base → prior top radius)
-    sampled at ``tau_nodes``. ``S_a`` is a depth-increasing, exponentially
-    correlated Gaussian::
+    ``x_a`` is the r_e⁵-linear adiabatic profile (known base → prior top radius)
+    sampled at ``tau_nodes`` — the adiabatic law *in optical depth* is r_e ∝ τ^(1/5)
+    (r_e³ ∝ LWC ∝ height z, and β ∝ r_e² makes τ ∝ z^(5/3), so r_e ∝ τ^(1/5)).
+    Coherent with the ``re5-linear`` forward class. ``S_a`` is a depth-increasing,
+    exponentially correlated Gaussian::
 
         S_a[i,j] = σ_i σ_j exp(-|τ_i-τ_j| / ℓ),   σ(τ) tight at top, loose at base
 
@@ -317,11 +397,22 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
     (default τ_bot/2) and ``strength`` (a single σ-scale knob) are the only free
     regularisation levers. Same signature as a future *learned* prior
     (ensemble mean + sample/EOF covariance would slot in here).
+
+    ``r_top_prior`` is the prior *belief* about the cloud-top radius (the top node is
+    retrieved; this is only its prior mean). When the truth top is not known, the
+    data-grounded climatological value is the **VOCALS-REx ensemble's own** cloud-top
+    r_e distribution (125 profiles): mean ≈ **9.7 µm** (median 9.5, σ 2.3; range
+    4.9–18.0), or ≈ **10.3 ± 2.2 µm** for the thick (τ_bot>8) subset — and that
+    empirical σ≈2.2–2.3 µm is consistent with the ``sigma_top=3`` used here. (The OSSE
+    demo instead passes the true top, deliberately: see notebook §12 — a perfectly
+    anchored adiabatic prior makes the measurement's *departure* from adiabatic
+    unambiguous.) This empirical mean+spread is the first rung of a fully learned prior.
     """
     tau_nodes = np.asarray(tau_nodes, float)
-    # adiabatic r_e^3-linear: r_e^3 linear in optical depth (LWC ∝ τ).
+    # adiabatic r_e^5-linear: r_e^5 linear in optical depth (r_e ∝ τ^(1/5); see
+    # docstring for the height-vs-optical-depth derivation).
     frac = 1.0 - tau_nodes / tau_bot                           # 1 at top, 0 base
-    x_a = (r_base ** 3 + (r_top_prior ** 3 - r_base ** 3) * frac) ** (1.0 / 3.0)
+    x_a = (r_base ** 5 + (r_top_prior ** 5 - r_base ** 5) * frac) ** (1.0 / 5.0)
 
     if corr_length is None:
         corr_length = max(tau_bot / 2.0, 1e-3)
@@ -434,24 +525,34 @@ class Posterior:
     error: np.ndarray          # √diag(S_hat) — retrieval 1σ error per node
     A: np.ndarray              # averaging kernel matrix
     dofs: float                # degrees of freedom for signal = tr(A)
+    data_fraction: np.ndarray  # per-node 1 − Ŝ_ii/Sa_ii — measurement vs prior
 
 
 def posterior_diagnostics(K, Sa, Se) -> Posterior:
-    """Rodgers posterior covariance, averaging kernels, and DOFS.
+    """Rodgers posterior covariance, averaging kernels, DOFS, and the per-node
+    measurement-vs-prior split.
 
     ``Ŝ = (Kᵀ Sε⁻¹ K + Sa⁻¹)⁻¹``;  ``A = Ŝ Kᵀ Sε⁻¹ K``;  ``DOFS = tr(A)``.
     The averaging-kernel rows show *where in τ* each retrieved level draws its
     information (peaks spread through the column ⇔ vertical resolving power);
     DOFS is the number of independent pieces of profile information.
+
+    ``data_fraction[i] = 1 − Ŝ_ii / Sa_ii`` is the **fractional variance
+    reduction** at node i — how much of that node's value the *measurement*
+    pinned down versus what it inherited from the prior (0 = pure prior, 1 = fully
+    measured). It is the plain-language, per-node companion to the (scalar) DOFS
+    and the (matrix) averaging kernel: a labelled "x% measured / (1−x)% prior" bar.
     """
     K = np.asarray(K, float)
+    Sa = np.asarray(Sa, float)
     Se_inv = np.linalg.inv(np.asarray(Se, float))
-    Sa_inv = np.linalg.inv(np.asarray(Sa, float))
+    Sa_inv = np.linalg.inv(Sa)
     KtSeK = K.T @ Se_inv @ K
     S_hat = np.linalg.inv(KtSeK + Sa_inv)
     A = S_hat @ KtSeK
+    data_fraction = 1.0 - np.diag(S_hat) / np.diag(Sa)
     return Posterior(S_hat=S_hat, error=np.sqrt(np.diag(S_hat)), A=A,
-                     dofs=float(np.trace(A)))
+                     dofs=float(np.trace(A)), data_fraction=data_fraction)
 
 
 # ============================================================================

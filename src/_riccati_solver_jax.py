@@ -46,10 +46,10 @@ def _precompute_legendre(m, NLeg, mu_arr_pos):
 
     Uses scipy.special at *setup* time (not JAX-traceable). Everything here is a
     function of (m, NLeg, mu_arr_pos) only — all **mu0-independent** — so it is
-    built once per Fourier mode in :func:`riccati_setup` and reused across solves
-    (and across traced mu0 values). The mu0-dependent term ``P_l^m(-mu0)`` is
-    computed separately, inside the traceable solve, by
-    :func:`_assoc_legendre_neg_mu0_jax` (so mu0 can be a JAX tracer).
+    built once per Fourier mode in :func:`riccati_setup`. The mu0-dependent term
+    ``P_l^m(-mu0)`` is likewise precomputed host-side with scipy at the **static**
+    mu0 (``_padded_legendre_modes`` in ``pydisort_riccati_jax``) — there is no
+    in-trace recurrence (mu0 is no longer a traced input; OUTSTANDING §H).
 
     Parameters
     ----------
@@ -98,75 +98,14 @@ def _precompute_legendre(m, NLeg, mu_arr_pos):
     }
 
 
-def _assoc_legendre_neg_mu0_jax(m, NLeg, mu0):
-    """Associated Legendre values ``P_l^m(-mu0)`` for l = m, m+1, ..., NLeg-1.
-
-    JAX-traceable / differentiable in ``mu0`` — the drop-in, tracer-safe
-    replacement for the scipy ``sp.lpmv(m, l, -mu0)`` term that used to be baked
-    into :func:`_precompute_legendre`. This is what lets ``mu0`` be a traced
-    input to the solve (so a swath of solar geometries can reuse one compiled
-    forward; see docs/DESIGN_DECISIONS.md §7).
-
-    Method — the standard **fixed-m upward-in-l** recurrence (the numerically
-    stable direction; no cancellation), with the Condon–Shortley phase so the
-    result matches ``scipy.special.lpmv`` bit-for-method:
-
-        P_m^m(x)   = (-1)^m (2m-1)!! (1 - x^2)^{m/2}
-        P_{m+1}^m  = x (2m+1) P_m^m
-        (l-m) P_l^m = (2l-1) x P_{l-1}^m - (l+m-1) P_{l-2}^m,    l > m+1
-
-    evaluated at ``x = -mu0``. ``m`` and ``NLeg`` are static (Python ints), so the
-    recurrence is unrolled at trace time; only ``mu0`` flows through as a tracer.
-
-    Parameters
-    ----------
-    m : int
-        Azimuthal Fourier mode index (>= 0).
-    NLeg : int
-        Number of Legendre terms (the values returned span l in [m, NLeg)).
-    mu0 : float or JAX scalar
-        Cosine of the beam zenith angle, in (0, 1].
-
-    Returns
-    -------
-    (NLeg - m,) JAX array of ``P_l^m(-mu0)`` for l = m .. NLeg-1.
-    """
-    n_ells = NLeg - m
-    if n_ells <= 0:
-        return jnp.zeros(0, dtype=jnp.result_type(float))
-
-    x = -jnp.asarray(mu0, dtype=jnp.result_type(float))
-
-    # (2m-1)!! = 1*3*5*...*(2m-1), and (-1)^m  — both static.
-    double_factorial = 1.0
-    for k in range(1, 2 * m, 2):
-        double_factorial *= k
-    sign = -1.0 if (m % 2) else 1.0
-
-    # P_m^m(x) = (-1)^m (2m-1)!! (1-x^2)^{m/2}  (= 1 for m=0; (1-x^2)^0 is safe).
-    Pmm = sign * double_factorial * (1.0 - x * x) ** (0.5 * m)
-    vals = [Pmm]
-    if n_ells == 1:
-        return jnp.stack(vals)
-
-    Pm1m = x * (2 * m + 1) * Pmm                       # P_{m+1}^m
-    vals.append(Pm1m)
-    P_lm2, P_lm1 = Pmm, Pm1m
-    for l in range(m + 2, NLeg):
-        P_l = ((2 * l - 1) * x * P_lm1 - (l + m - 1) * P_lm2) / (l - m)
-        vals.append(P_l)
-        P_lm2, P_lm1 = P_lm1, P_l
-    return jnp.stack(vals)
-
-
 # ---------------------------------------------------------------------------
 # JAX-traceable coefficient functions
 # (cf. _solve_for_gen_and_part_sols: D_pos, D_neg, alpha, beta construction)
 # ---------------------------------------------------------------------------
 
-def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
-                                mu_arr_pos, W, M_inv, N,
-                                NLeg=None, delta_M=False):
+def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func,
+                                weighted_poch_m, asso_leg_pos_m, asso_leg_neg_m,
+                                W, M_inv, N, NLeg=None, delta_M=False):
     """Build JAX-traceable alpha(tau) and beta(tau) for the Riccati ODE.
 
     In pydisort, alpha and beta are constant per layer and computed inline.
@@ -178,62 +117,59 @@ def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
     omega is applied separately so that omega(tau) and the phase function
     can vary independently (cf. Remark in report section 1.2).
 
+    **Mode-map form (OUTSTANDING §H).** The per-mode Legendre tensors are passed
+    as *padded* ``(NLeg,)`` / ``(NLeg, N)`` arrays indexed by absolute l, with the
+    ``l < m`` rows pre-zeroed (``weighted_poch_m`` carries the zeros). There is no
+    static ``m`` and no ``c[m:]`` slice, so this body runs unchanged for every
+    Fourier mode under ``lax.scan`` (the mode index is the scanned axis, not a
+    Python int). The l<m terms contribute zero, so the einsums equal the original
+    ragged ``(NLeg-m, N)`` contraction.
+
     Delta-M scaling (``delta_M=True``), physical-tau form (see
     docs/DESIGN_DECISIONS.md): the truncation fraction f(tau) = g_{NLeg}(tau)
-    is the first dropped Legendre moment.  The phase-function moments used in
-    the D^m kernel become the *effective* moments c_l = g_l - f, and the
-    identity term -I in alpha is replaced by -scale_tau * I with
-    scale_tau(tau) = 1 - omega(tau) * f(tau).  This is the delta-M solution
-    obtained without reparametrizing the integration variable (we keep
-    integrating in physical tau; the dtau*/dtau = scale_tau Jacobian collapses
-    onto these two substitutions).  f=0 reproduces the un-scaled kernel exactly.
+    is the first dropped Legendre moment.  The phase-function moments become the
+    *effective* moments c_l = g_l - f, and the identity term -I in alpha is
+    replaced by -scale_tau * I with scale_tau(tau) = 1 - omega(tau) * f(tau).
+    f=0 reproduces the un-scaled kernel exactly.
 
     Parameters
     ----------
-    omega_func    : tau -> scalar
+    omega_func      : tau -> scalar
     Leg_coeffs_func : tau -> (NLeg_all,) array of Legendre coefficients
-    m             : int, Fourier mode index
-    leg_data      : dict from _precompute_legendre
-    mu_arr_pos    : (N,) JAX array
-    W             : (N,) JAX array, quadrature weights
-    M_inv         : (N,) JAX array, 1/mu_arr_pos
-    N             : int, half-stream count
-    NLeg          : int, number of Legendre terms used in the solve (so that
-                    f = Leg_coeffs[NLeg] is the first dropped moment)
-    delta_M       : bool, enable delta-M scaling
+    weighted_poch_m : (NLeg,) padded (2l+1)(l-m)!/(l+m)!, zero for l < m
+    asso_leg_pos_m  : (NLeg, N) padded P_l^m(+mu_i), zero for l < m
+    asso_leg_neg_m  : (NLeg, N) padded P_l^m(-mu_i), zero for l < m
+    W               : (N,) JAX array, quadrature weights
+    M_inv           : (N,) JAX array, 1/mu_arr_pos
+    N               : int, half-stream count
+    NLeg            : int, number of Legendre terms used (f = Leg_coeffs[NLeg])
+    delta_M         : bool, enable delta-M scaling
 
     Returns
     -------
     (alpha_func, beta_func) : each  tau -> (N, N) JAX array
     """
-    weighted_poch = leg_data['weighted_poch']
-    asso_leg_term_pos = leg_data['asso_leg_term_pos']
-    asso_leg_term_neg = leg_data['asso_leg_term_neg']
     I_N = jnp.eye(N)
 
     def _effective_moments(tau, omega):
-        """Return (c[m:], scale_tau): delta-M effective moments and depth scale.
+        """Return (weighted_poch_m * c, scale_tau): delta-M effective moments.
 
-        f=0 path (delta_M=False) returns the un-scaled moments g_l[m:] and
-        scale_tau=1, reproducing the original kernel bit-for-bit.
+        c_l = g_l - f over all l in [0, NLeg); the padded weighted_poch_m zeroes
+        the l < m terms. f=0 (delta_M=False) gives scale_tau=1 and the un-scaled
+        moments, reproducing the original kernel bit-for-bit.
         """
         Leg_coeffs = Leg_coeffs_func(tau)
-        if delta_M:
-            f = Leg_coeffs[NLeg]
-        else:
-            f = 0.0
+        f = Leg_coeffs[NLeg] if delta_M else 0.0
         c = Leg_coeffs[:NLeg] - f          # effective moments c_l = g_l - f
         scale_tau = 1.0 - omega * f         # = 1 when f = 0
-        return weighted_poch * c[m:], scale_tau
+        return weighted_poch_m * c, scale_tau
 
     def alpha_func(tau):
         omega = omega_func(tau)
         weighted_Leg_coeffs, scale_tau = _effective_moments(tau, omega)
         # D_pos = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(mu_j)
         D_pos = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
-                                  asso_leg_term_pos, asso_leg_term_pos)
-        # alpha = M_inv * (omega * D_pos * W - scale_tau * I)
-        # (cf. _solve_for_gen_and_part_sols: alpha = M_inv[:, None] * DW)
+                                  asso_leg_pos_m, asso_leg_pos_m)
         return M_inv[:, None] * (omega * D_pos * W[None, :] - scale_tau * I_N)
 
     def beta_func(tau):
@@ -241,16 +177,15 @@ def _make_alpha_beta_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data,
         weighted_Leg_coeffs, _ = _effective_moments(tau, omega)
         # D_neg = (1/2) sum_l weighted_Leg_coeffs_l * P_l^m(mu_i) * P_l^m(-mu_j)
         D_neg = 0.5 * jnp.einsum('l,li,lj->ij', weighted_Leg_coeffs,
-                                  asso_leg_term_pos, asso_leg_term_neg)
-        # beta = M_inv * omega * D_neg * W  (no identity term -> no scale_tau)
-        # (cf. _solve_for_gen_and_part_sols: beta = M_inv[:, None] * D_neg * W[None, :])
+                                  asso_leg_pos_m, asso_leg_neg_m)
         return M_inv[:, None] * (omega * D_neg * W[None, :])
 
     return alpha_func, beta_func
 
 
-def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data, asso_leg_term_mu0,
-                       mu_arr_pos, M_inv, mu0, I0_div_4pi, m_equals_0, N,
+def _make_q_funcs_jax(omega_func, Leg_coeffs_func,
+                       weighted_poch_m, asso_leg_pos_m, asso_leg_neg_m,
+                       asso_leg_mu0_m, M_inv, mu0, I0_div_4pi, m_is_zero, N,
                        NLeg=None, delta_M=False, tau_star_eval=None):
     """Build JAX-traceable beam-source q functions.
 
@@ -258,72 +193,63 @@ def _make_q_funcs_jax(omega_func, Leg_coeffs_func, m, leg_data, asso_leg_term_mu
     (cf. _solve_for_gen_and_part_sols: X_pos, X_neg computation, and
      section 3.6.1 of the PythonicDISORT docs, pythonic-disort.readthedocs.io)
 
-    Delta-M scaling (``delta_M=True``): the phase-function moments become the
-    effective moments c_l = g_l - f (f = g_{NLeg}), and the beam attenuation
-    exp(-tau/mu0) is replaced by exp(-tau*(tau)/mu0) where tau*(tau) is the
-    scaled cumulative optical depth (``tau_star_eval``).  f=0 and the identity
-    tau_star_eval reproduce the original source bit-for-bit.
+    **Mode-map form (OUTSTANDING §H), static mu0.** The Legendre tensors — including
+    ``asso_leg_mu0_m = P_l^m(-mu0)`` — are *padded* ``(NLeg,)`` / ``(NLeg, N)`` arrays
+    indexed by absolute l (zero for l < m), so the body is mode-index-free and runs
+    under ``lax.scan``. ``m_is_zero`` (1.0 for mode 0, else 0.0) replaces
+    ``int(m == 0)``. mu0 is now **static** (baked into ``setup``): ``asso_leg_mu0_m``
+    is precomputed host-side with scipy in :func:`riccati_setup`, so the in-trace
+    associated-Legendre recurrence is gone.
+
+    Delta-M scaling (``delta_M=True``): the moments become c_l = g_l - f (f = g_{NLeg})
+    and the beam attenuation exp(-tau/mu0) becomes exp(-tau*(tau)/mu0) with the scaled
+    cumulative depth ``tau_star_eval``. f=0 + identity tau_star_eval reproduce the
+    original source bit-for-bit.
 
     Parameters
     ----------
-    omega_func      : tau -> scalar
-    Leg_coeffs_func : tau -> (NLeg_all,) array of Legendre coefficients
-    m               : int, Fourier mode index
-    leg_data        : dict from _precompute_legendre (mu0-independent tensors)
-    asso_leg_term_mu0 : (NLeg-m,) JAX array, P_l^m(-mu0) for l in [m, NLeg).
-                      Supplied by :func:`_assoc_legendre_neg_mu0_jax` (traceable
-                      in mu0) rather than read from ``leg_data``, so mu0 can be a
-                      traced solve input.
-    mu_arr_pos      : (N,) JAX array
+    weighted_poch_m : (NLeg,) padded weighted Pochhammer, zero for l < m
+    asso_leg_pos_m  : (NLeg, N) padded P_l^m(+mu_i), zero for l < m
+    asso_leg_neg_m  : (NLeg, N) padded P_l^m(-mu_i), zero for l < m
+    asso_leg_mu0_m  : (NLeg,) padded P_l^m(-mu0), zero for l < m  (static mu0)
     M_inv           : (N,) JAX array
-    mu0             : float or JAX scalar, beam cosine
+    mu0             : float (static), beam cosine
     I0_div_4pi      : float, I0 / (4 pi) after rescaling
-    m_equals_0      : bool
-    N               : int
-    NLeg            : int, number of Legendre terms used in the solve
-    delta_M         : bool, enable delta-M effective moments
-    tau_star_eval   : callable tau -> scaled cumulative depth tau*(tau);
-                      defaults to the identity (tau* = tau) for the un-scaled case.
+    m_is_zero       : scalar, 1.0 for mode 0 else 0.0
+    N, NLeg         : ints
+    delta_M         : bool
+    tau_star_eval   : callable tau -> tau*(tau); identity if None (un-scaled).
 
     Returns
     -------
     (q_up_func, q_down_func) : each  tau -> (N,) JAX array
     """
-    weighted_poch = leg_data['weighted_poch']
-    asso_leg_term_pos = leg_data['asso_leg_term_pos']
-    asso_leg_term_neg = leg_data['asso_leg_term_neg']
-
     if tau_star_eval is None:
         tau_star_eval = lambda tau: tau
 
     # scalar_fac = I0_div_4pi * (2 - delta_m0)
-    # (cf. _solve_for_gen_and_part_sols: scalar_fac_asso_leg_term_mu0,
-    #  but the per-ell poch and mu0 terms are in the pre-computed tensors)
-    scalar_fac = I0_div_4pi * (2 - int(m_equals_0))
+    scalar_fac = I0_div_4pi * (2.0 - m_is_zero)
 
     def _weighted_eff_moments(tau):
-        """weighted_poch * c[m:] with c_l = g_l - f (f=0 if not delta_M)."""
+        """weighted_poch_m * c with c_l = g_l - f (padding zeroes l < m)."""
         Leg_coeffs = Leg_coeffs_func(tau)
         f = Leg_coeffs[NLeg] if delta_M else 0.0
         c = Leg_coeffs[:NLeg] - f
-        return weighted_poch * c[m:]
+        return weighted_poch_m * c
 
     def q_up_func(tau):
         omega = omega_func(tau)
-        # X_pos: beam source for upward direction (cf. X_pos = X_temp @ asso_leg_term_pos)
-        # Note: no factor of 1/2 here, unlike D^m (see eq. Qm in report)
-        weighted_Leg_coeffs = _weighted_eff_moments(tau)
-        X_pos = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
-                           asso_leg_term_pos, asso_leg_term_mu0)
+        # X_pos: beam source for upward direction. No factor 1/2 (unlike D^m).
+        X_pos = jnp.einsum('l,li,l->i', _weighted_eff_moments(tau),
+                           asso_leg_pos_m, asso_leg_mu0_m)
         return (M_inv * scalar_fac * omega
                 * jnp.exp(-tau_star_eval(tau) / mu0) * X_pos)
 
     def q_down_func(tau):
         omega = omega_func(tau)
-        # X_neg: beam source for downward direction (cf. X_neg = X_temp @ asso_leg_term_neg)
-        weighted_Leg_coeffs = _weighted_eff_moments(tau)
-        X_neg = jnp.einsum('l,li,l->i', weighted_Leg_coeffs,
-                           asso_leg_term_neg, asso_leg_term_mu0)
+        # X_neg: beam source for downward direction.
+        X_neg = jnp.einsum('l,li,l->i', _weighted_eff_moments(tau),
+                           asso_leg_neg_m, asso_leg_mu0_m)
         return (M_inv * scalar_fac * omega
                 * jnp.exp(-tau_star_eval(tau) / mu0) * X_neg)
 

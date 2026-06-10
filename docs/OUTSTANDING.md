@@ -139,17 +139,23 @@ choice** — it defines *what is retrieved*, so any change must (and now does) p
 displayed curve too (`profile()` mirrors it). *(We — and the user — initially mis-filed this as an
 independent downstream interpolation; corrected.)*
 
-**Current default = r_e³-linear (adiabatic)** `jnp.interp(τ, knots, vals**3)**(1/3)`. Chosen because
-`r_e³ ∝ LWC ∝ τ` so it is physically natural, **represents the adiabatic prior exactly** (verified
-~7e-7), and gets per-segment curvature from the two endpoint values ⇒ **no grid-size coupling**.
-It is still C⁰ (kinked at nodes). Baseline of the *previous* linear-class run saved for comparison:
-`docs/retrieval_baseline_linear_class.json`.
+**Current default = r_e⁵-linear (adiabatic)** `jnp.interp(τ, knots, vals**5)**(1/5)`. The adiabatic
+effective radius grows as `r_e ∝ τ^(1/5)` in optical depth: `r_e³ ∝ LWC ∝ geometric height z`, and the
+extinction `β ∝ r_e² ∝ z^(2/3)` makes `τ = ∫β dz ∝ z^(5/3)`, so `LWC ∝ τ^(3/5)` and **`r_e ∝ τ^(1/5)`**
+(≡ the canonical adiabatic `N_d ∝ τ^(1/2) r_e^(-5/2)`; verified numerically — `r_e⁵` linear in
+`(1−τ/τ_bot)` to ~1e-12). So `r_e⁵` is what is linear in τ. It **represents the adiabatic prior
+exactly**, gets per-segment curvature from the two endpoint values ⇒ **no grid-size coupling**, and
+with finite `r_base` keeps `dr_e/dτ` finite at base (no cusp). It is still C⁰ (kinked at nodes).
+Baselines saved for comparison: `docs/retrieval_baseline_linear_class.json` (thin, linear class) and
+`docs/retrieval_thick_RF03_tau23.json` (thick, re5-linear).
 
 **The candidates and the axis that separates them — node-based smoothness vs grid coupling:**
 
 - **linear** (`jnp.interp(τ, knots, vals)`) — the "impute-nothing" baseline; C⁰, no coupling.
-- **r_e³-linear** *(default)* — C⁰, no coupling, physical, prior-coherent. Imputes the *adiabatic*
-  shape per segment (a defensible physical prior, consistent with the S_a we already use).
+- **r_e⁵-linear** *(default, adiabatic)* — C⁰, no coupling, prior-coherent. Imputes the *adiabatic*
+  shape per segment (r_e ∝ τ^(1/5); consistent with the adiabatic S_a prior mean). The §B′ model
+  comparison probes it against **linear** — insensitivity ⇒ the data can't distinguish shapes (linear
+  fine by Occam); a real difference ⇒ shape info, pick by evidence.
 - **PCHIP (monotone-cubic, C¹)** — the only listed class that **de-kinks** the profile (so it would
   de-artifact the class↔ODE-grid↔re-meshing loop below). **But it couples to grid size:** a node-based
   C¹ class sets nodal slopes from *neighbours*, so it degrades to linear at 2 points and only gains
@@ -166,19 +172,19 @@ It is still C⁰ (kinked at nodes). Baseline of the *previous* linear-class run 
 1. **class↔grid↔re-meshing kink-coupling.** A C⁰ profile's kinks sit at the nodes, so the ODE grid
    (placed by the ~C⁶ error estimator) *clusters at the nodes*, and QRCP/re-meshing then re-select
    near them — partly self-referential (also taints the *first* pool, built on the coarse first-guess
-   grid). C⁰ classes (linear, r_e³-linear) keep this; only a C¹ class removes it. It is **second-order**
+   grid). C⁰ classes (linear, r_e⁵-linear) keep this; only a C¹ class removes it. It is **second-order**
    (a mild step-count/selection effect), so not worth importing PCHIP's grid-coupling to fix *here*.
 2. **probe the class by model comparison, not grid stability.** "Grid doesn't move ⇒ profile near
    prior ⇒ adiabatic class confirmed" is **confounded** — at DOFS≈2 the profile is prior-dominated
    regardless, and the kink artifact pins the grid. The clean test is to retrieve the *same data*
-   under {linear, r_e³-linear, PCHIP} and compare fit χ² / posterior: insensitivity ⇒ data can't
+   under {linear, r_e⁵-linear, PCHIP} and compare fit χ² / posterior: insensitivity ⇒ data can't
    distinguish shapes (linear fine by Occam); a real difference ⇒ data carry shape info, pick by
    evidence. **One profile is not definitive** — needs a multi-profile study.
 
 **How to change:** edit `_re_of_tau` once; forward, `calibrate`, `ode_grid`, Jacobian, the re-meshing
 re-map in `gauss_newton_oe`, pool sampling in `select_retrieval_grid`, and `profile()` all follow.
 The cleanest *promotion* makes the **state itself** the new class's coefficients (e.g. node values of
-r_e³, or basis amplitudes) so parameterisation, prior mean, and display are coincident by construction.
+r_e⁵, or basis amplitudes) so parameterisation, prior mean, and display are coincident by construction.
 
 ---
 
@@ -200,31 +206,25 @@ The two host-side blockers and their fixes:
    `save_grid` flag — `SaveAt(t1=True)` (only the final state is needed for ToA) on the jit path,
    no host sync, `tau_bot` may be traced; the offline grid path keeps `SaveAt(steps=True)`.
 2. `_precompute_legendre` called `scipy.special` on what become tracers. Fix: it is
-   `mu0`-independent, so it moves wholesale into `setup`; the one `mu0`-dependent term
-   `P_l^m(−μ0)` is computed in-trace by a **custom associated-Legendre recurrence**
-   (`_assoc_legendre_neg_mu0_jax`) so `mu0` can be traced (DESIGN_DECISIONS §7; gate test 21a).
+   `mu0`-independent, so it moves wholesale into `setup`. *(Originally the one `mu0`-dependent term
+   `P_l^m(−μ0)` was computed in-trace by a custom associated-Legendre recurrence so `mu0` could be
+   traced. **Superseded by §H:** `mu0` is now **static**, so that term is also precomputed host-side
+   with scipy and the in-trace recurrence was removed.)*
 
-**Mode count via the exact DISORT azimuthal-convergence (Cauchy) criterion** (STWLE2000 §3.7 p.89):
-`calibrate_num_modes` returns a concrete `int K ≤ NFourier` from a user-set `ε_azim` (strong
-default 1e-3; `0` ⇒ all modes), and `riccati_solve(..., num_modes=K)` runs exactly K modes as a
-static Python-unrolled loop — differentiable in both AD modes, jit-able, no `vmap`/`while_loop`
-(DESIGN_DECISIONS §7). **AD-mode caveat:** reverse-`grad` (the discrete adjoint, §5) is the default;
-forward-`jacfwd` needs `riccati_setup(..., adjoint=diffrax.ForwardMode())` (the reverse default is a
-`custom_vjp` that cannot be forward-differentiated). **Residual caveats:** a *callable* BDRF
-evaluated at a *traced* `mu0` is not jit-able (it calls NumPy/SciPy on the beam cosine — matrix
-BDRFs and no-BDRF are fine); `phi0`, `I0`, and the boundary conditions remain static (baked into
-`setup`).
+**Mode count.** *(Originally the exact DISORT azimuthal-convergence (Cauchy) criterion, STWLE2000
+§3.7 p.89, via `calibrate_num_modes`.* **Superseded by §H:** that relative partial-sum test saturated
+at low signal and was removed; mode truncation is now the noise-aware `retrieval_oe.select_num_modes`.
+The solver default is all `NFourier` modes; `riccati_solve(..., num_modes=K)` runs exactly K.) The AD
+and static caveats still hold: reverse-`grad` (the discrete adjoint, §5) is the default; forward-`jacfwd`
+needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`; `phi0`, `I0`, `mu0`, and the boundary
+conditions are static (baked into `setup`). The old callable-BDRF-at-traced-`mu0` jit hazard is gone
+now that `mu0` is static — BDRFs are evaluated host-side at the static `mu0` in `riccati_setup`.
 
-**Deferred micro-optimisation — single-trace `scan`+pad/mask (only if cold-compile K-traces ever
-bind).** K is a static int, so the unrolled `for m in range(K)` bakes K into the graph *structure*:
-each distinct K pays one cold compile. The optimisation replaces the unroll with a single `lax.scan`
-over a fixed `NFourier`, **pads** each mode's ragged `(NLeg−m,N)` tensors to a uniform `(NLeg,N)`
-and **masks** the `l<m` rows, so K enters only as a runtime scan-length/mask — one compile serves
-every K (re-calibrating K never recompiles). It trades the clean per-mode einsum kernels for
-padded+masked ones; it pays off only if many frequent re-calibrations *and* a wide-ranging,
-oscillating K *and* those recompiles dominating wall time all hold. In the recommended usage K is
-calibrated once per geometry/regime and is stable (a tiny, cached set of K-traces), so this is
-deferred until shown to bind.
+**Single-trace `scan`+pad/mask — IMPLEMENTED (§H).** The deferred optimisation landed: the unrolled
+`for m in range(K)` is replaced by a single `lax.scan` over the **padded** `(NFourier, NLeg, N)`
+per-mode tensors (`l<m` rows zeroed). One compile serves every K, and — the actual motivation — the
+mode body compiles **once** (O(1) compile memory in mode count), which lifted the NQuad=24 / jacrev
+OOM ceiling.
 
 **Empirical history (the evidence that motivated the split; 2026-06-08, NQuad=8, T4 vs CPU; see
 `tests/supplementary/profile_solver.py`).** *Recompile-every-call:* three identical unjitted calls
@@ -286,6 +286,10 @@ Isotropic internal source (only the collimated beam is handled) and non-ToA dept
 (only τ=0 is returned). *(Delta-M scaling and the Nakajima–Tanaka TMS correction are now
 implemented — see item A and `DESIGN_DECISIONS.md` §6. IMS remains out of scope — it is
 downward-only by construction in DISORT and is likewise omitted by LIDORT/VLIDORT; see item A.)*
+
+**Adjoint robustness (minor).** A reverse-mode `grad` can NaN (singular lineax solve) on an
+*aggressively steep* synthetic r_e profile — not real VOCALS-REx, which is finite-slope; quick fix
+is a least-squares adjoint solver, `AutoLinearSolver(well_posed=False)`. Low priority.
 
 ---
 
@@ -374,9 +378,118 @@ angular-channel set. **Prerequisite:** retain the per-mode grids (and per-mode `
 sensitivities) in the offline `return_grid=True` path (currently discarded). Implementation
 deferred; this records the design so the retrieval-grid work can pick it up.
 
+### Re-mesh instability ⇒ the node basis is correlated  [OPEN — flagged 2026-06, revisit soon]
+
+*Surfaced building the thick-cloud (RF03, τ≈23) retrieval. Recorded for the upcoming retrieval-grid
+/ parameterisation work; the demo sidesteps it with `n_outer=1` (select-once).*
+
+**Symptom.** With the lagged re-mesh (`gauss_newton_oe(n_outer=2)`), the first QRCP selection at the
+adiabatic first guess gave a clean, well-spread grid `[0, 1.2, 3.5, 6.6, 13]`; the **re-selection at
+the post-fit state** returned `[0, 0.65, 2.9, 12.6, 13.8]` — two nodes **clustered deep** (Δτ≈1.2,
+both ±3 µm) and the mid-cloud (τ≈6) abandoned. The retrieved **profile barely changed** between the
+two; only the **node placement** jumped.
+
+**Diagnosis — correlated node-sensitivity columns, re-pivoted at a moved linearization point.**
+Two compounding causes:
+1. **The node basis is non-orthogonal.** Because `r_e(τ)` is an *interpolant*, moving any one node's
+   value changes the radiance over the whole τ-span of its two adjacent segments, so neighbouring
+   nodes' Jacobian columns `∂y/∂r_e(τ_j)` overlap heavily. Evidence: the averaging-kernel diagonal is
+   **spread**, `A_ii ≈ [0.61, 0.39, 0.30, 0.40, 0.66]` — *no* node is independently resolved; the
+   2.36 DOFS are shared. QRCP must pivot among **near-collinear** columns, which is ill-conditioned:
+   a small change in the linearization point reshuffles the pivot order. The re-mesh supplies exactly
+   that, so the set jumps.
+2. **k_active > DOFS — by design, not a defect.** `k_active=5` with DOFS≈2.3 leaves ~2 nodes in
+   the near-null space, *prior-regularized on purpose*: we **want** a few more nodes than DOFS,
+   because (i) a node basis is never fully independent — `DOFS = tr(A) < n_nodes` is intrinsic, the
+   nodes are not the independent quantities — and (ii) letting the prior fill the under-determined
+   directions is the point of regularized OE, a feature. What is unstable is **only where QRCP
+   *places* those surplus nodes**: with no data to pin them, pivoting among near-collinear columns is
+   arbitrary. (Their ±3 µm bars ≈ prior σ confirm they are prior-supplied.) So the result is fine —
+   the cure is to stabilise *placement*, not to cut `k_active` down to DOFS (which would discard the
+   deliberately prior-filled nodes).
+The **deep-node leverage** also misleads the placement: with the base anchor fixed, a deep node's
+wide `r_e⁵` segment reaches up into the *visible* upper cloud, so it gets non-trivial sensitivity
+(high `A_ii`) despite being imprecise — the §B′ class↔grid coupling.
+
+**Not a retrieval failure** — fit `‖y−F‖≈1e-2 ≈` noise, profile stable; only the *placement* is
+unstable. So `n_outer=1` (freeze the grid) is a legitimate fix for the figure, not just hiding.
+
+**Candidate fixes (revisit) — stabilise *placement*, keep k slightly > DOFS:**
+- **Freeze the grid (`n_outer=1`).** Select once, don't re-pivot at the moved estimate. What the demo
+  does; simplest, keeps k>DOFS, no recompiles. The lagged re-mesh stays available for the thin case
+  where the grid genuinely needs refining.
+- **Scale the Jacobian by prior σ before QRCP.** `select_retrieval_grid` runs QRCP on the **raw**
+  Jacobian (the "(scaled)" in its docstring is aspirational); ranking by *information*
+  (sensitivity × prior σ) rather than raw sensitivity places the surplus nodes more sensibly.
+- **Rank-revealing cardinality (partial — note the tension).** The QRCP **R-diagonal** pivot
+  magnitudes a-priori show where the resolvable directions end; useful as a *diagnostic*. But cutting
+  `k_active` to ≈DOFS is **not** the goal — we deliberately keep a few prior-filled nodes — and it
+  also breaks the **fixed-cardinality, recompile-free** re-mesh design.
+- **The real answer — leave the node basis.** Retrieve a few **orthogonal shape modes** (SVD/EOF of
+  the sensitivity or prior) instead of N correlated node values: then k = DOFS by construction, there
+  is nothing to re-pivot, and "where did the info come from" is a clean per-mode statement. This is
+  exactly [§B′](#b-the-r_eτ-profile-parameterisation--the-inter-node-interpolation-lever--open--explore)'s
+  "leave interpolation behind, fit a low-dim shape/EOF basis." **The flapping re-mesh is empirical
+  motivation for that architecture**, not just a nuisance.
+
+### Planned change — auto-select the node count `k_active` from a QRCP threshold  [TODO, record only]
+
+Today `k_active` is a **hardcoded hyperparameter** (4 thin / 5 thick); `select_retrieval_grid`
+QRCP-*ranks* the pool but the *count* is manual. Replace it with a **data-driven threshold**, computed
+**once** at the first guess and **frozen** for the retrieval (so the forward/Jacobian still compile
+once — mirrors how `select_num_modes` fixes the Fourier-mode count). Keep `k` **slightly above the
+resolvable rank** on purpose, so the prior still fills a margin (per above: nodes are never independent,
+and prior influence is a feature — so the target is *≈DOFS + small margin*, **not** exactly DOFS).
+
+The QRCP already produces the signal: the **pivoted R-diagonal** `r_1 ≥ r_2 ≥ …` is each node's
+*marginal* information (its residual sensitivity after orthogonalising against the already-chosen
+nodes) — a surrogate singular-value spectrum of the node basis. Candidate thresholds:
+
+- **Noise-aware (preferred — mirrors `select_num_modes`).** Whiten first:
+  `K̃ = Se^(−1/2) · K · Sa^(1/2)` (rows by noise, columns by the prior square-root; `diag(σ_prior)` is
+  the cheap approximation that ignores prior correlations). Then the R-diagonal is in **SNR units**, and
+  the per-direction **filter factor** `f_i = r_i²/(1+r_i²)` is literally "fraction from data" (Rodgers
+  — the *same* quantity as the UQ data-fraction bar), with `Σ f_i ≈ DOFS`. Keep all directions with
+  `r_i ≳ 1` (data-dominated, `f_i ≳ ½`) **plus a small fixed margin** of prior-dominated ones ⇒ `k`
+  self-consistently lands at ≈DOFS + margin with **no circular post-hoc DOFS**. *(This also finally
+  implements the column-scaling `select_retrieval_grid`'s docstring already claims.)*
+- **Relative cutoff (simpler, less principled).** Keep while `r_i/r_1 > ε` (ε≈0.05–0.1) — numerical-rank
+  style, but raw units ⇒ `ε` is a feel parameter, not tied to the noise.
+- **Cumulative information.** Keep until `Σ_{≤k} r_i² / Σ r_i² ≥ frac` (PCA-style) — robust-ish but
+  `frac` is opaque.
+
+Constraints: always include cloud-top (τ≈0); clamp `k ∈ [1, k_max]`; choose-once-and-freeze
+(recompile-free); the **margin is the explicit "let the prior fill" knob**. Prereq: the
+whitening/column-scaling (QRCP currently runs on the **raw** Jacobian).
+
 ---
 
-## H. Fourier-mode unroll → compile-memory; revisit vmap/scan + static-mu0  [OPEN — found 2026-06]
+## H. Fourier-mode unroll → compile-memory; revisit vmap/scan + static-mu0  [RESOLVED — 2026-06]
+
+**Resolution (2026-06).** Implemented all three levers below as a unit:
+1. **`lax.scan` over the Fourier modes** (chosen over `vmap` by a de-risk + profiling prototype that
+   ran the identical padded-tensor + static-μ0 mode body under both, asserting forward + `jacrev` +
+   `jacfwd` parity vs the old unrolled solve at ~1e-15). **Memory-first decision:** both compile the
+   mode body **once** (O(1) graph), but `scan` is sequential (one mode's working set live at a time)
+   and preserves each mode's *independent* adaptive stepping, whereas `vmap` materialises all
+   modes×columns simultaneously and forces a uniform step count. Since not-OOMing outranks speed
+   (and we batch *columns*, not modes, operationally), `scan` won. The ragged `(NLeg−m, N)` per-mode
+   tensors are **padded** to `(NFourier, NLeg, N)` with the `l<m` rows zeroed, so the body is
+   mode-index-free (the mode index is the scanned axis, not a Python int).
+2. **Static μ0.** `P_l^m(−μ0)` is precomputed host-side with scipy (`_padded_legendre_modes`) into a
+   `(NFourier, NLeg)` table; the in-trace `_assoc_legendre_neg_mu0_jax` recurrence is **removed**.
+   `mu0` moved from a `riccati_solve` arg to a `riccati_setup` parameter.
+3. **Cauchy → S_ε.** `calibrate_num_modes` (the relative azimuthal partial-sum test, which saturated
+   at low signal) is **removed**; mode truncation is now the noise-aware `retrieval_oe.select_num_modes`
+   — keep the smallest `K` whose dropped modes each contribute `< ⅓·min σ_ε` to the ToA reflectance.
+   It is a *runtime* optimisation (the scan already removed the compile-memory necessity), so the
+   solver default is "all `NFourier` modes."
+
+Verified: the float32 suite is numerically unchanged (all `NFourier` is the default); the two OOM
+cases now compile — `characterize_geom.py 24` (forward) and `check_jac.py 16` (NFourier=16 `jacrev`
+at NQuad=16). The historical analysis that motivated this is kept below.
+
+---
 
 `riccati_solve` runs the K azimuthal modes as a **Python-unrolled loop** (DESIGN §7: "static,
 Python-unrolled … each mode keeps its natural ragged `(NLeg−m, N)` tensors — no pad/mask"), so the

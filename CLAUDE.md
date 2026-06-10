@@ -47,8 +47,8 @@ The solver is three flat modules in `src/` (added to `sys.path` by `tests/confte
 
 | File | Purpose |
 |---|---|
-| `src/pydisort_riccati_jax.py` | one-shot `pydisort_riccati_jax` **and** the jit-able composable seam (`riccati_setup`/`riccati_solve`/`calibrate_num_modes`/`eval_radiance`); Fourier loop, output assembly, `interpolate` |
-| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s; `_assoc_legendre_neg_mu0_jax` (traced-mu0), `_precompute_tms`/`_apply_tms` |
+| `src/pydisort_riccati_jax.py` | one-shot `pydisort_riccati_jax` **and** the jit-able composable seam (`riccati_setup`/`riccati_solve`/`eval_radiance`); the `lax.scan`-over-modes Fourier solve, padded per-mode + static-μ0 setup, output assembly, `interpolate` |
+| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s; mode-index-free α/β/q builders (padded per-mode tensors), `_precompute_tms`/`_apply_tms` |
 | `src/_solve_bc_riccati_jax.py` | N×N boundary-condition solve from the scattering operators |
 
 `tests/` holds the PyTest suite (constant-ω sanity checks → τ-varying convergence → thick
@@ -101,22 +101,25 @@ solve split — the one-shot `pydisort_riccati_jax` is the same core, so its 5-t
 (bit-for-bit). Recipe:
 
 ```python
-setup = riccati_setup(NQuad, I0, phi0, ...)               # host-side, run once
-K     = calibrate_num_modes(setup, of, lf, tau_bot, mu0,  # exact DISORT Cauchy stop (p.89)
-                            mu_obs, phi_obs)               # -> static int K <= NFourier
-def forward(theta, tau_bot, mu0):
+setup = riccati_setup(NQuad, I0, phi0, mu0, ...)          # host-side, run once (mu0 static)
+def forward(theta, tau_bot):
     of, lf = optics_from(theta)
-    res = riccati_solve(setup, of, lf, tau_bot, mu0, num_modes=K)   # traceable
-    return eval_radiance(setup, res, mu_obs, phi_obs)               # observable
-f = jax.jit(forward)                 # compile once (K mode-blocks), cached
+    res = riccati_solve(setup, of, lf, tau_bot)            # traceable; all NFourier modes
+    return eval_radiance(setup, res, mu_obs, phi_obs)      # observable
+f = jax.jit(forward)                 # compile once (mode body via lax.scan), cached
 g = jax.jit(jax.grad(forward))       # reverse-mode discrete adjoint (default)
 ```
 
-- **Traced:** `tau_bot`, `mu0`, optics closures. **Static (in `setup`):** grid sizes, `I0`, `phi0`,
+- **Traced:** `tau_bot`, optics closures. **Static (in `setup`):** grid sizes, `I0`, `phi0`, `mu0`,
   BCs, BDRF, `delta_M`/`NT_cor` flags. Close `setup` over the jitted fn; don't pass it as a traced arg.
+  `mu0` is static — re-build `setup` to change solar geometry (one cheap compile per μ0).
+- **Fourier modes run under `lax.scan`** (the mode body compiles **once**, O(1) in mode count —
+  OUTSTANDING §H), which removed the old K-fold-unroll compile-memory OOM at NQuad≥24 / NFourier=16-jacrev.
+  Default = all `NFourier` modes; trim the count offline with the noise-aware S_ε selector
+  `retrieval_oe.select_num_modes` (replaces the old relative-Cauchy `calibrate_num_modes`) and pass it as
+  `riccati_solve(..., num_modes=K)`.
 - **Forward-mode** (`jax.jacfwd`, small-DOF retrieval) needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`
   — the reverse-mode default is a `custom_vjp` that can't be forward-differentiated.
-- **`tol_azim`** sets the Cauchy ε (default 1e-3; `0` ⇒ all NFourier modes, which the one-shot entry uses).
 - Demo: `tests/supplementary/demo_jit_retrieval.py`. Tests: `tests/21_jit_test.py`.
 
 ### Open / deferred

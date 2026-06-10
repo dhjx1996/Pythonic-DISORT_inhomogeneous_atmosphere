@@ -69,11 +69,11 @@ def test_grad_through_solve_matches_finite_difference():
     # Setup once; tol=1e-8 so the adaptive grid is stable and F is smooth in
     # omega -> FD reaches its float64 floor (~1e-10) and adjoint-vs-FD is a
     # genuine accuracy check, not noise.
-    setup = riccati_setup(NQuad, I0, phi0, tol=1e-8, tol_azim=0.0)
+    setup = riccati_setup(NQuad, I0, phi0, mu0, tol=1e-8)
 
     def flux_of_omega(omega):
         res = riccati_solve(setup, lambda tau: omega, lambda tau: _g_iso,
-                            tau_bot, mu0)
+                            tau_bot)
         return 2 * pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, res.u_modes[0])
 
     f = jax.jit(flux_of_omega)                 # compile once, reuse for FD

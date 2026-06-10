@@ -26,8 +26,9 @@ fwd = roe.RetrievalForward(opt_bands, NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,
 print(f"{len(bands)} bands x {view_mu.size} angles = {fwd.m} obs")
 tau_ref = np.linspace(0.0, thin.tau_bot, 5)[:-1]
 x_ref, _ = roe.make_adiabatic_prior(tau_ref, thin.tau_bot, thin.r_base, r_top_prior=thin.r_top)
-t = time.perf_counter(); K = fwd.calibrate(x_ref, tau_ref)
-print(f"NFourier={NFourier} -> K={K} ({time.perf_counter()-t:.0f}s)")
+# Keep the FULL NFourier (no select_num_modes truncation): this script's job is
+# to prove the jacrev compiles at the full mode count — the OOM stressor (§H).
+print(f"NFourier={NFourier} -> K_list={fwd.K_list} (all modes; OOM stress test)")
 t = time.perf_counter(); y = np.asarray(fwd.forward(x_ref, tau_ref))
 print(f"forward y={np.round(y,4)} positive={np.all(y>0)} ({time.perf_counter()-t:.0f}s)")
 t = time.perf_counter()

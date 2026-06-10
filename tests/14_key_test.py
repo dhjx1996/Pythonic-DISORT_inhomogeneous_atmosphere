@@ -15,12 +15,13 @@ into pydisort_riccati_jax).
 import numpy as np
 import jax.numpy as jnp
 import pytest
+import scipy.special as sp
 from math import pi
 from PythonicDISORT import subroutines
 from _riccati_solver_jax import (
     _riccati_forward_jax, _riccati_backward_jax,
     _make_alpha_beta_funcs_jax, _make_q_funcs_jax,
-    _precompute_legendre, _assoc_legendre_neg_mu0_jax, _riccati_rhs_jax,
+    _precompute_legendre, _riccati_rhs_jax,
 )
 from pydisort_riccati_jax import pydisort_riccati_jax
 from _helpers import multilayer_pydisort_toa_full_phi
@@ -41,8 +42,12 @@ W = jnp.array(W)
 M_inv = 1.0 / mu_arr_pos
 
 leg_data = _precompute_legendre(0, NLeg, mu_arr_pos)  # mu0-independent tensors
+# Mode m=0: the padded per-mode tensors are just the raw leg_data arrays (no
+# l<m rows to zero), so pass them straight to the mode-index-free builder.
 alpha_func, beta_func = _make_alpha_beta_funcs_jax(
-    omega_func, Leg_coeffs_func, 0, leg_data, mu_arr_pos, W, M_inv, N,
+    omega_func, Leg_coeffs_func,
+    leg_data['weighted_poch'], leg_data['asso_leg_term_pos'],
+    leg_data['asso_leg_term_neg'], W, M_inv, N, NLeg,
 )
 
 # Constant alpha/beta for the homogeneous reference checks
@@ -186,17 +191,22 @@ def test_14e():
     mu0 = 0.5
     I0_div_4pi = 1.0 / (4 * pi)
 
-    # Build beam-source q functions using the JAX helper
+    # Build beam-source q functions using the JAX helper (mode m=0). mu0 is now
+    # static, so P_l^m(-mu0) is precomputed host-side with scipy (the in-trace
+    # recurrence was removed); for m=0 the padded tensors are the raw leg_data.
     leg_data_beam = _precompute_legendre(0, NLeg, mu_arr_pos)
-    asso_leg_mu0 = _assoc_legendre_neg_mu0_jax(0, NLeg, mu0)
+    asso_leg_mu0 = jnp.asarray([sp.lpmv(0, l, -mu0) for l in range(NLeg)])
     q_up_func, q_down_func = _make_q_funcs_jax(
-        omega_func, Leg_coeffs_func, 0, leg_data_beam, asso_leg_mu0,
-        mu_arr_pos, M_inv, mu0,
-        I0_div_4pi, True, N,  # m_equals_0=True for m=0
+        omega_func, Leg_coeffs_func,
+        leg_data_beam['weighted_poch'], leg_data_beam['asso_leg_term_pos'],
+        leg_data_beam['asso_leg_term_neg'], asso_leg_mu0,
+        M_inv, mu0, I0_div_4pi, 1.0, N, NLeg,  # m_is_zero=1.0 for m=0
     )
 
     alpha_func_beam, beta_func_beam = _make_alpha_beta_funcs_jax(
-        omega_func, Leg_coeffs_func, 0, leg_data_beam, mu_arr_pos, W, M_inv, N,
+        omega_func, Leg_coeffs_func,
+        leg_data_beam['weighted_poch'], leg_data_beam['asso_leg_term_pos'],
+        leg_data_beam['asso_leg_term_neg'], W, M_inv, N, NLeg,
     )
 
     # Tight-tolerance reference

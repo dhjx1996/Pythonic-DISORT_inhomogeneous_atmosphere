@@ -40,13 +40,17 @@ fwd = roe.RetrievalForward(
     view_mu=view_mu, view_phi=view_phi, BDRF_bands=BDRF, NLeg_all=NLeg_all,
     NFourier=NFourier)
 
-# reference state for calibration: adiabatic first guess on a coarse grid
+# reference state for mode selection: adiabatic first guess on a coarse grid
 tau_ref = np.linspace(0.0, thin.tau_bot, 5)[:-1]               # 4 interior nodes
 x_ref, _ = roe.make_adiabatic_prior(tau_ref, thin.tau_bot, thin.r_base,
                                     r_top_prior=thin.r_top)
 t1 = time.perf_counter()
-K = fwd.calibrate(x_ref, tau_ref)
-print(f"calibrate K={K}  ({time.perf_counter()-t1:.1f}s)")
+# Pick the azimuthal mode count from the noise floor (S_ε selector) up front, so
+# the forward compiles once at the chosen K. Use a representative noise for
+# selection (the retrieval's own Se is built from the OSSE y below).
+Se_sel = (0.005 ** 2) * np.eye(fwd.m)
+K = roe.select_num_modes(fwd, x_ref, tau_ref, Se_sel)
+print(f"select_num_modes K={K}  ({time.perf_counter()-t1:.1f}s)")
 
 # --- OSSE observation from the dense truth ----------------------------------
 t1 = time.perf_counter()

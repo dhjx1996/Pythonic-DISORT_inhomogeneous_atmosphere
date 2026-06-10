@@ -1,4 +1,4 @@
-"""Forward-only positivity + Cauchy-convergence check at production stream count."""
+"""Forward-only positivity + S_ε mode-selection check at production stream count."""
 import sys, time
 from pathlib import Path
 from math import pi
@@ -26,8 +26,11 @@ fwd = roe.RetrievalForward([band], NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,
 tau_ref = np.linspace(0.0, thin.tau_bot, 5)[:-1]
 x_ref, _ = roe.make_adiabatic_prior(tau_ref, thin.tau_bot, thin.r_base, r_top_prior=thin.r_top)
 t = time.perf_counter()
-K = fwd.calibrate(x_ref, tau_ref)
-print(f"NQuad={NQuad} NFourier={NFourier} -> Cauchy K={K}  saturated={K[0]>=NFourier}  ({time.perf_counter()-t:.0f}s)")
+# Noise-aware azimuthal mode selection (replaces the old relative Cauchy test):
+# a representative PACE-like 0.5%-reflectance 1σ noise floor.
+Se = (0.005 ** 2) * np.eye(fwd.m)
+K = roe.select_num_modes(fwd, x_ref, tau_ref, Se)
+print(f"NQuad={NQuad} NFourier={NFourier} -> S_eps K={K}  saturated={K[0]>=NFourier}  ({time.perf_counter()-t:.0f}s)")
 t = time.perf_counter()
 y = np.asarray(fwd.forward(x_ref, tau_ref))
 print(f"forward y (R) at view_mu={view_mu}: {np.round(y,4)}  all_positive={np.all(y>0)}  ({time.perf_counter()-t:.0f}s)")

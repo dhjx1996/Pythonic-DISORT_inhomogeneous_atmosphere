@@ -141,11 +141,13 @@ remaining parameterisation choice. It lives **inside** F(x): the single lever
 Jacobian, and re-meshing re-map integrates, so it *defines what is retrieved* — **plot the result
 with `RetrievalForward.profile()`** (which routes through the same lever) so the displayed curve
 cannot drift from the forward model. *(Earlier framing of this as an independent post-hoc choice
-was wrong — corrected here.)* **Current default: r_e³-linear (adiabatic)** — `r_e³ ∝ LWC ∝ τ`, so
-it is physically natural, represents the adiabatic prior *exactly*, gets per-segment curvature from
-two endpoints (no grid-size coupling), and stays a convex/non-overshooting map in `r_e³`. It is C⁰
-(kinked at nodes). The function-class itself is **not settled** — it is an open inverse-problem
-bias–variance lever (linear baseline; PCHIP for higher-DOF regimes), tracked in
+was wrong — corrected here.)* **Current default: r_e⁵-linear (adiabatic)** — the adiabatic law *in
+optical depth* is `r_e ∝ τ^(1/5)`: `r_e³ ∝ LWC ∝ geometric height z`, but `β ∝ r_e² ∝ z^(2/3)` makes
+`τ ∝ z^(5/3)`, so `LWC ∝ τ^(3/5)` and `r_e ∝ τ^(1/5)` (≡ canonical `N_d ∝ τ^(1/2) r_e^(-5/2)`). So
+`r_e⁵` is linear in τ; it represents the adiabatic prior *exactly*, gets per-segment curvature from two
+endpoints (no grid-size coupling), and stays non-overshooting with finite base slope. It is C⁰ (kinked
+at nodes). The function-class itself is **not settled** — it is an open inverse-problem bias–variance
+lever (linear / adiabatic / PCHIP), tracked in
 [OUTSTANDING §B′](./OUTSTANDING.md); bounded above by the integrator order (~C⁶, §1) and far more
 tightly by the small DOF here.
 
@@ -284,6 +286,18 @@ gradients); `tests/supplementary/demo_deltaM_tms.py` is the radiance-vs-angle fi
 
 ## 7. jit-able forward via a host-side setup / traceable solve split; DISORT azimuthal convergence  [SETTLED]
 
+> **Update (OUTSTANDING §H, 2026-06).** Three things below were changed when the §H compile-memory
+> OOM was fixed; the seam shape and bit-for-bit core are otherwise as described:
+> 1. **μ0 is now static** (a `riccati_setup` parameter, not a `riccati_solve` arg). The in-trace
+>    associated-Legendre recurrence `_assoc_legendre_neg_mu0_jax` is **removed** — `P_l^m(−μ0)` is
+>    precomputed host-side with scipy. So wherever this section says "traced `mu0`" / "the recurrence",
+>    read "static `mu0`, precomputed".
+> 2. **The Fourier modes run under `lax.scan`** over padded `(NFourier, NLeg, N)` per-mode tensors
+>    (not a Python-unrolled loop over ragged tensors). The mode body compiles **once** (O(1) compile
+>    memory), which is what lifted the OOM ceiling.
+> 3. **`calibrate_num_modes` (the relative Cauchy test) is removed.** Mode truncation is now the
+>    noise-aware `retrieval_oe.select_num_modes` (S_ε); the solver default is all `NFourier` modes.
+
 Resolves [OUTSTANDING C](./OUTSTANDING.md) (the retrieval-cost blocker). The forward model is now
 **jit-able** through a thin, documented composable seam that separates the host-side SciPy setup
 from a traceable solve — so the retrieval amortises one compile across hundreds of forward/gradient
@@ -344,10 +358,11 @@ gradient tests are unchanged.
 **NO-POSITIVE-EXPONENTS (§2) preserved** — the split changes only *where* quantities are computed,
 not the Riccati state, which stays O(1).
 
-*(Implemented in `src/pydisort_riccati_jax.py` — `SetupData`/`SolveResult`, `riccati_setup`,
-`_fourier_solve`, `riccati_solve`, `calibrate_num_modes`, `eval_radiance` — and
-`src/_riccati_solver_jax.py` — `_assoc_legendre_neg_mu0_jax`, the `save_grid`/`adjoint` flags,
-`_precompute_tms`/`_apply_tms`. Verified: `tests/21_jit_test.py` (assoc-Legendre vs scipy + profile,
-seam↔jit↔legacy↔pydisort parity, the exact Cauchy criterion, cold→warm caching, grad/jacfwd through
-jit); the FD adjoint tests `18`/`20e` were rerouted through the jitted seam.
-`tests/supplementary/demo_jit_retrieval.py` is the recipe demo.)*
+*(Implemented in `src/pydisort_riccati_jax.py` — `SetupData`/`SolveResult`, `riccati_setup`
+(static `mu0`, padded per-mode + scipy `P_l^m(−μ0)` tensors), `_fourier_solve` (the `lax.scan`
+over modes), `riccati_solve`, `eval_radiance` — and `src/_riccati_solver_jax.py` — the
+mode-index-free α/β/q builders, the `save_grid`/`adjoint` flags, `_precompute_tms`/`_apply_tms`.
+Verified: `tests/21_jit_test.py` (seam↔jit↔legacy↔pydisort parity, with/without delta-M+TMS);
+the FD adjoint tests `18`/`20e` were rerouted through the jitted seam.
+`tests/supplementary/demo_jit_retrieval.py` is the recipe demo. The S_ε mode selector lives in
+`src/retrieval_oe.py::select_num_modes`.)*
