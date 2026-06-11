@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2023 HO Jia Xu Dion
+Copyright (c) 2026 HO Jia Xu Dion
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

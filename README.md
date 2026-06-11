@@ -24,6 +24,23 @@ rₑ(τ)  ──miejax_lite──▶  (ω(τ), gₗ(τ))  ──pydisort_riccati
 
 `miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics.
 
+## VOCALS-REx retrieval demo
+
+Effective-radius profiles rₑ(τ) retrieved from real VOCALS-REx marine-stratocumulus
+penetrations (C-130 CDP probe), using multi-band (1.24 / 1.64 / 2.13 µm) multi-angle
+observations with Gauss–Newton optimal estimation and autodiff Jacobians. Grey: in-situ
+truth; blue: retrieved ±1σ; dashed orange: adiabatic prior; red dot: known cloud base.
+
+<p align="center">
+<img src="docs/retrieval_thin.png" width="380" alt="Thin cloud retrieval (RF11, τ≈1.2)"/>
+&nbsp;&nbsp;
+<img src="docs/retrieval_thick.png" width="380" alt="Thick cloud retrieval (RF03, τ≈23)"/>
+</p>
+
+**Left:** thin, near-adiabatic cloud (RF11, τ ≈ 1.2)
+**Right:** thick, non-adiabatic cloud (RF03, τ ≈ 23)
+See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_retrieval.ipynb).
+
 ## Layout
 
 | Path | What |
@@ -51,9 +68,9 @@ cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
 
 ## Status
 
-Forward solver works and is differentiable end-to-end. The retrieval loop is **not yet built**,
-and delta-M / Nakajima–Tanaka corrections are **not yet applied** (radiances for strongly
-forward-peaked phase functions are affected — see `docs/OUTSTANDING.md`). Contact: Dion Ho,
-dh3065@columbia.edu.
+Forward solver and retrieval loop work end-to-end: differentiable Mie optics → Riccati RT →
+Gauss–Newton optimal estimation with autodiff Jacobians, validated on VOCALS-REx profiles
+(see demo above). Delta-M scaling and Nakajima–Tanaka TMS correction are implemented (opt-in).
+Open items are tracked in `docs/OUTSTANDING.md`. Contact: Dion Ho, dh3065@columbia.edu.
 
 License: MIT (see `LICENSE.md`).
