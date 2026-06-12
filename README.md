@@ -1,14 +1,13 @@
-# pydisort_riccati_jax — differentiable RT solver for inhomogeneous atmospheres
+# pydisort_riccati_jax — differentiable RT solver for inhomogeneous atmospheres (WORK IN PROGRESS)
 
 A JAX, fully differentiable forward solver for the 1-D radiative transfer equation in a
 plane-parallel atmosphere with **continuously τ-varying** single-scattering albedo ω(τ) and
-phase function gₗ(τ). It returns the upwelling radiance field at the top of atmosphere
+phase function p(τ; μ, φ). It returns the upwelling radiance field at the top of atmosphere
 u⁺(τ=0, μ, φ) and is built to sit inside an iterative retrieval of the cloud effective-radius
 profile rₑ(τ).
 
 The solver integrates the **invariant-imbedding matrix Riccati equation** with diffrax's
-adaptive **Kvaerno5** (L-stable ESDIRK), so the step count tracks the slow *diffusion* scale
-rather than the fast ballistic one (~35 adaptive steps for a τ=30 cloud). Differentiating the
+adaptive **Kvaerno5/4** (L-stable ESDIRK). Differentiating the
 forward model is free reverse-mode autodiff — no hand-derived adjoint.
 
 > This project began as a fork of **PythonicDISORT** but is now its own solver. PythonicDISORT
@@ -18,17 +17,18 @@ forward model is free reverse-mode autodiff — no hand-derived adjoint.
 ## The retrieval chain
 
 ```
-rₑ(τ)  ──miejax_lite──▶  (ω(τ), gₗ(τ))  ──pydisort_riccati_jax──▶  u⁺(τ=0, μ, φ)
+rₑ(τ)  ──miejax_lite──▶  (ω(τ), p(τ; μ, φ))  ──pydisort_riccati_jax──▶  u⁺(τ=0, μ, φ)
    (Mie, differentiable)        (this solver)        (retrieval observable at ToA)
 ```
 
-`miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics.
+`miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics, 
+ported to JAX from [`miepython`](https://miepython.readthedocs.io/en/latest/).
 
 ## VOCALS-REx retrieval demo
 
-Effective-radius profiles rₑ(τ) retrieved from real VOCALS-REx marine-stratocumulus
-penetrations (C-130 CDP probe), using multi-band (1.24 / 1.64 / 2.13 µm) multi-angle
-observations with Gauss–Newton optimal estimation and autodiff Jacobians. Grey: in-situ
+Effective-radius profiles rₑ(τ) per [VOCALS-REx](https://doi.org/10.5194/acp-11-627-2011)
+in-situ observations of marine stratocumulus (C-130 CDP probe), retrieved using multi-band (1.24 / 1.64 / 2.13 µm) multi-angle
+satellite radiances with Gauss–Newton optimal estimation and autodiff Jacobians. Grey: in-situ
 truth; blue: retrieved ±1σ; dashed orange: adiabatic prior; red dot: known cloud base.
 
 <p align="center">
