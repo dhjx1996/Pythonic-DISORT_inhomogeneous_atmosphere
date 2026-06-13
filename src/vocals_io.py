@@ -40,6 +40,7 @@ class CloudProfile:
     """One vertical penetration, ordered cloud-top (τ=0) → cloud-base (τ_bot)."""
     tau: np.ndarray        # optical depth, increasing from 0 at cloud top
     r_e: np.ndarray        # effective radius [µm] at each τ node
+    v_eff: np.ndarray      # effective variance (Hansen & Travis 1974) at each node
     altitude: np.ndarray   # altitude [m] (decreasing: top → base)
     total_Nc: np.ndarray   # number concentration [cm^-3]
     lwc: np.ndarray        # liquid water content [g/m^3]
@@ -99,18 +100,21 @@ def read_flight(path: str | Path) -> dict:
     finally:
         ds.close()
 
-    # CDP moments (Hansen–Travis): total N_c, r_e = M3/M2, LWC.
+    # CDP moments (Hansen–Travis 1974): total N_c, r_e = M3/M2, v_eff, LWC.
     total_Nc = Nc_bins.sum(axis=1)                             # cm^-3
     m2 = (Nc_bins * r_cent ** 2).sum(axis=1)
     m3 = (Nc_bins * r_cent ** 3).sum(axis=1)
+    m4 = (Nc_bins * r_cent ** 4).sum(axis=1)
     with np.errstate(divide="ignore", invalid="ignore"):
         r_e = np.where(m2 > 0, m3 / m2, 0.0)                   # µm
+        v_eff = np.where((m2 > 0) & (r_e > 0), m4 / (r_e ** 2 * m2) - 1.0, 0.0)
     # LWC = 4/3 π ρ Σ N r³, with N in cm^-3 and r in cm → g/m^3.
     r_cent_cm = r_cent * 1e-4
     lwc = 4.0 / 3.0 * np.pi * RHO_LW * (Nc_bins * r_cent_cm ** 3).sum(axis=1)
 
     return dict(flight=path.name.split(".")[0], time=time, altitude=altitude,
-                total_Nc=total_Nc, r_e=r_e, lwc=lwc, bin_radii=r_cent)
+                total_Nc=total_Nc, r_e=r_e, v_eff=v_eff, lwc=lwc,
+                bin_radii=r_cent)
 
 
 # ----------------------------------------------------------------------------
@@ -151,18 +155,19 @@ def find_profiles(flight: dict, *, lwc_threshold: float = LWC_THRESHOLD,
         ascending = frac_up >= 0.5
         if max(frac_up, 1 - frac_up) < monotone_frac:   # not a clean traverse
             continue
-        prof = _build_profile(a, re[sl], Nc[sl], lwc[sl], ascending,
-                              flight["flight"])
+        prof = _build_profile(a, re[sl], flight["v_eff"][sl], Nc[sl],
+                              lwc[sl], ascending, flight["flight"])
         if prof is not None:
             profiles.append(prof)
     return profiles
 
 
-def _build_profile(altitude, re, Nc, lwc, ascending, flight) -> CloudProfile | None:
+def _build_profile(altitude, re, ve, Nc, lwc, ascending, flight) -> CloudProfile | None:
     """Order top→base and integrate τ(z) = π ∫ Q_ext r_e² N_c dz from the top."""
     # Order so index 0 is cloud TOP (max altitude), last is cloud BASE.
     order = np.argsort(-altitude)
-    altitude, re, Nc, lwc = altitude[order], re[order], Nc[order], lwc[order]
+    altitude, re, ve, Nc, lwc = (altitude[order], re[order], ve[order],
+                                 Nc[order], lwc[order])
 
     # τ from cloud top down: integrand [1/m] = π Q_ext r_e² N_c with r_e in m,
     # N_c in m^-3.  π Q (re·1e-6)² (Nc·1e6) = π Q · re²[µm] · Nc[cm^-3] · 1e-6.
@@ -172,8 +177,9 @@ def _build_profile(altitude, re, Nc, lwc, ascending, flight) -> CloudProfile | N
         0.5 * (integrand[1:] + integrand[:-1]) * np.diff(depth))])
     if not np.all(np.isfinite(tau)) or tau[-1] <= 0:
         return None
-    return CloudProfile(tau=tau, r_e=re, altitude=altitude, total_Nc=Nc,
-                        lwc=lwc, ascending=bool(ascending), flight=flight)
+    return CloudProfile(tau=tau, r_e=re, v_eff=ve, altitude=altitude,
+                        total_Nc=Nc, lwc=lwc, ascending=bool(ascending),
+                        flight=flight)
 
 
 # ----------------------------------------------------------------------------

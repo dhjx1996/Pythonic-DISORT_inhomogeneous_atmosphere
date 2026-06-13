@@ -128,6 +128,14 @@ profile-independent retrieval grid) argues *few, sensitivity-placed* nodes suffi
 robustness. **Current lean:** prototype the r_e-axis table; reserve the τ-axis + lagged
 re-selection for if the lookup-slope Jacobian proves too inexact for the final fit.
 
+**2026-06-12 — settled, and the r_e-table decision strengthened.** The hybrid simplification
+(traced-Mie ω + HG phase function, dropping the Legendre table) was tested and **rejected**:
+the r_e signal is mostly phase-function-borne (ω carries ~1% of the thin-cloud sensitivity at
+1.24 µm, ≤ 61% even in the best case), HG breaks the retrieval outright, and the traced
+`mie_avg` slope is moving-radius-grid quadrature noise that the table secant smooths over —
+the table slope is the *better* ∂ω/∂r_e. See `DESIGN_DECISIONS.md` §8 (decision) and
+`docs/jacobian_decomposition.ipynb` (the full diagnostic).
+
 ### B′. The r_e(τ) profile parameterisation — the inter-node interpolation lever  [OPEN — explore]
 
 *Distinct from the optics-table axis above:* this is how the retrieval state (r_e at the few grid

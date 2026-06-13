@@ -366,3 +366,29 @@ Verified: `tests/21_jit_test.py` (seam↔jit↔legacy↔pydisort parity, with/wi
 the FD adjoint tests `18`/`20e` were rerouted through the jitted seam.
 `tests/supplementary/demo_jit_retrieval.py` is the recipe demo. The S_ε mode selector lives in
 `src/retrieval_oe.py::select_num_modes`.)*
+
+## 8. The r_e signal is phase-function-borne; Mie-Legendre table optics retained  [SETTLED]
+
+`docs/jacobian_decomposition.ipynb` splits the retrieval Jacobian ∂R/∂r_e into its ω and gₗ
+channels (freeze-one-channel closures; the split reproduces `RetrievalForward.jacobian` exactly
+and is chain-rule additive) on three VOCALS truth profiles. Verdict — **the r_e retrieval is
+not an ω retrieval**:
+
+- The phase-function channel carries ~99% of the sensitivity for thin clouds at 1.24 µm,
+  ~60–90% at 2.13 µm, and still 40% for the thick (τ=23) cloud at 2.13 µm. It also carries the
+  *angular* information: the J_ω view-rows are near-parallel (~1 DOF however many views) while
+  the J_g rows decorrelate across views — the multi-angle vertical DOF is g-borne.
+- HG with the **exact** table g(r_e) is a 10–20σ forward error in the retrieval geometry
+  (glory/backscatter, Θ ≈ 153–176°) and the HG retrieval is unfittable (DOFS 0.7 vs 2.6): the
+  information rides on high-order Legendre moments (consistent with the §6 `NLeg_all` finding).
+- The "exact AD Jacobian" motivation for tracing Mie fails on its own: `mie_avg`'s radius grid
+  moves with r_e, so AD differentiates the oscillating quadrature artifact (differentiation is
+  a high-pass; locally ~10×-wrong slopes at production `n_radii`), whereas the table's wide-
+  baseline secant low-passes it (~5% median slope agreement at 2.13 µm). The table slope is the
+  *better* ∂ω/∂r_e.
+
+**Decision:** keep the (n_re, NLeg) Legendre table (`miejax_lite.table_lookup`) as the
+production optics path; the hybrid traced-Mie-ω + HG pipeline is rejected. If a traced ω path
+is ever wanted (hyperspectral), `mie_avg` first needs an r_e-independent radius grid. The GN
+state must be clamped to the table support *inside* the forward map (bounded-state forward) —
+model error can otherwise drive iterates to NaN optics. Details and figures: the notebook.
