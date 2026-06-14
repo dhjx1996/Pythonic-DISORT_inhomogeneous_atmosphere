@@ -550,3 +550,53 @@ Cauchy test was saturating over a tiny denominator and misleading us into 16 mod
 
 *(Decision this session: demo proceeds at NQuad=16, NFourier=8, NLeg_all=128, autodiff Jacobian —
 multi-angle multi-band, no flux-only pivot needed.)*
+
+---
+
+## I. Polarized single-scattering cloudbow forward — the v_e / cloud-top-r_e observable  [DEFERRED — prototyped on `ve_retrieval`]
+
+A second observable, **orthogonal to the scalar ToA radiance**: the single-scattering polarized
+cloudbow. It is the **only** accurate lever for droplet effective *variance* v_e (scalar intensity
+gives DOFS≈1 — v_e barely touches ω, Δω~1e-3), and it sharpens cloud-top r_e. Prototyped and
+validated on the `ve_retrieval` branch (`src/polarized_mie.py`, `src/cloudbow_retrieval.py`);
+logged here as the top merge candidate. Full assessment + merge plan:
+`ve_retrieval:docs/ve_retrieval/ASSESSMENT.md`.
+
+**Observable (no RT solver).** R_Q(Θ) = ¼ ∫₀^{τ_bot} ω(τ′)·F₁₂[r_e,v_e](Θ)·exp[−τ′(1/μ₀+1/μ)] dτ′
+/(μμ₀), over the cloudbow Θ≈135–165°: **primary-bow position → r_e, supernumerary damping → v_e**.
+F₁₂ is gamma-averaged exact Mie (`mie_avg_polmatrix`, validated vs miepython to 1e-5); the
+v_e/r_e Jacobian is exact Mie (differentiable); it reuses the existing OE core
+(`gauss_newton_oe`, `posterior_diagnostics`). This *is* the published standard — Bréon & Goloub
+1998 / Alexandrov 2012a / McBride 2020 / Pörtge 2023 / HARP2 (Smith 2026), their
+`Q = A·P₁₂ + B·cos²θ + C` — but recast in **differentiable, Bayesian (DOFS/AK)** form instead of a
+linear least-squares LUT fit. References: `docs/Cloudbow_retrieval_method.pdf`,
+`docs/Cloudbow_retrieval_method_HARP2.pdf`.
+
+**Why merge it (operational case):** cheap (~16 s, no RT solve), simple (an integral), and it
+**generalizes to aerosols** — it is the POLDER/RSP/HARP2 polarimetric size-distribution machinery
+(extend `miejax_lite` past water droplets). VOCALS OSSE: v_e RMSE 0.007–0.009, DOFS 1.27 (thick) /
+1.84 (thin), cloud-top near-exact.
+
+**Scope / limitations (honest):**
+- **v_e is a cloud-TOP observable** (top τ≲1, single-scattering). Deeper v_e is physically shielded —
+  a fundamental limit, consistent with the whole cloudbow literature (cloud-top DSD only); not a
+  solver deficiency.
+- **Single-scattering is biased vs full vector-RT** (full-Stokes MC `src/polarized_mc.py`: ~2× R_Q
+  at the primary bow; DOLP 0.30→0.07 by τ=5). Fine for *relative*-shape fitting (the standard method
+  absorbs multiple scatter into `B·cos²θ+C`); for *absolute* polarized-radiance fitting use the
+  differentiable **MC-table** forward (`src/cloudbow_table.py`).
+- Needs a gamma-singularity clamp `v_eff ∈ [3e-3, 0.4]`; R_Q **saturates** with τ_bot (thick v_e is
+  τ_bot-insensitive; the thin un-saturated bow *level* encodes τ).
+- The scalar Riccati returns **unphysical negative backscatter** at cloudbow angles (forward-peak /
+  delta-M limit) — do **not** use the Riccati solver for the cloudbow; the MC is the reference there.
+
+**Fusion with the scalar r_e(τ) profile (the operational target).** Fold the cloudbow cloud-top r_e
+as a **top-WEIGHTED** linear pseudo-observation Σ_j a_j r_e(τ_j) = ⟨r_e⟩_w (weights a_j ∝ e^{−κτ},
+κ = 1/μ₀ + 1/μ — the cloudbow measures a depth-weighted average, **not** r_e(0)). The **naive**
+simultaneous scalar+cloudbow joint *hurts* (deep-r_e vs effective-top-r_e fight contaminates v_e);
+use the top-weighted pseudo-obs or a cloudbow-only joint. Prototype:
+`ve_retrieval:docs/ve_retrieval/merge_re_*.py` (`CloudbowConstrainedForward`, `continuous_weights`)
+— librarify into `retrieval_oe.py` when porting.
+
+Relates to §F (deferred forward-model features) and §G (information content — the cloudbow's
+DOFS/averaging-kernel story is the worked example of "what is actually retrievable").
