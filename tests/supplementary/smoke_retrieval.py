@@ -32,7 +32,7 @@ print(f"setup+table {time.perf_counter()-t0:.1f}s")
 mu0, I0, phi0 = 0.6, 1.0, 0.0
 view_mu = np.array([0.90, 0.65, 0.50])         # nadir-ish .. ~60deg (PACE/SPEXone envelope)
 view_phi = np.array([pi, pi, pi])              # principal plane (backscatter)
-BDRF = [[0.05 / pi]]                            # one band
+BDRF = [[0.05]]                                  # one band
 
 fwd = roe.RetrievalForward(
     [band], NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,

@@ -27,7 +27,7 @@ precomp = mie_legendre_precompute(max_nstop=512, NLeg=NLeg_all)
 table = build_re_table([1.24, 2.13], 2.0, 25.0, 32, v_eff, precomp, n_radii=600)
 
 mu0, I0, phi0 = 0.6, 1.0, 0.0
-BDRF = [[0.05 / pi]]
+BDRF = [[0.05]]
 # truth profile nodes (interior; base anchored)
 interior = thin.tau < thin.tau_bot - 1e-9
 knots = jnp.asarray(np.r_[thin.tau[interior], thin.tau_bot])

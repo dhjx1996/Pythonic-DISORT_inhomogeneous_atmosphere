@@ -21,7 +21,7 @@ view_mu = np.array([0.9, 0.65, 0.4])
 view_phi = np.array([pi, pi, pi])
 fwd = roe.RetrievalForward([band], NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,
     tau_bot=thin.tau_bot, r_base=thin.r_base, view_mu=view_mu, view_phi=view_phi,
-    BDRF_bands=[[0.05 / pi]], NLeg_all=NLeg_all, NFourier=NFourier)
+    BDRF_bands=[[0.05]], NLeg_all=NLeg_all, NFourier=NFourier)
 
 tau_ref = np.linspace(0.0, thin.tau_bot, 5)[:-1]
 x_ref, _ = roe.make_adiabatic_prior(tau_ref, thin.tau_bot, thin.r_base, r_top_prior=thin.r_top)

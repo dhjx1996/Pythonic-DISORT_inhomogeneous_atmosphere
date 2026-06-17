@@ -21,7 +21,7 @@ g, omega = 0.8, 0.95
 NLeg_all = 16
 omega_func = lambda t: omega
 Leg = lambda t: g ** jnp.arange(NLeg_all)
-BDRF = [0.05 / pi]            # scalar Lambertian (the suite's form)
+BDRF = [0.05]                 # scalar Lambertian albedo
 
 print(f"dtype={jnp.result_type(float)}")
 

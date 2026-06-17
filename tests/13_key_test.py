@@ -58,7 +58,7 @@ def test_13b():
     tau_bot = 30.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
 
     omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,

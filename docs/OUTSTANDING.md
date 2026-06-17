@@ -600,3 +600,19 @@ use the top-weighted pseudo-obs or a cloudbow-only joint. Prototype:
 
 Relates to §F (deferred forward-model features) and §G (information content — the cloudbow's
 DOFS/averaging-kernel story is the worked example of "what is actually retrievable").
+
+---
+
+## J. BDRF specified as [ρ/π] across the test/demo suite — π-too-dark mislabeling  [RESOLVED 2026-06-17]
+
+**Fixed.** Removed `/π` from every `BDRF_Fourier_modes` call site and regenerated
+`tests/reference_results/*.npz`. All 16 affected float32 tests pass at the physically-correct
+albedos, including the high-stress cases (5e ρ=0.9, 8c ρ=0.85, 8b ρ=0.3, 10d ρ=0.3) — the
+float32 `rel_tol=1e-2` is not stressed by the higher surface reflectance.
+
+Files changed: `tests/5_test.py`, `7_test.py`, `8_test.py`, `9_test.py`, `10_key_test.py`,
+`13_key_test.py`, `15_test.py`, `supplementary/generate_reference.py`,
+`supplementary/smoke_retrieval.py`, `supplementary/thick_retrieval.py`,
+`supplementary/check_forward.py`, `supplementary/check_jac.py`,
+`supplementary/smoke_refactor.py`, `supplementary/check_atnode.py`,
+`supplementary/characterize_geom.py`.

@@ -38,7 +38,7 @@ def test_8a():
     tau_bot, omega = 32.0, 0.99
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
@@ -59,7 +59,7 @@ def test_8b():
     tau_bot, omega = 32.0, 0.99
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.3
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
@@ -80,7 +80,7 @@ def test_8c():
     tau_bot, omega, g = 10.0, 0.9, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.85
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
@@ -122,14 +122,14 @@ def test_8e():
     rho = 0.3
     b_pos = 0.2
     BDRF_callable = [lambda mu, mup, _r=rho: np.full(
-        np.broadcast_shapes(np.shape(mu), np.shape(mup)), _r / pi
+        np.broadcast_shapes(np.shape(mu), np.shape(mup)), _r
     )]
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
         "8e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
-        b_pos=b_pos, BDRF_Fourier_modes=[rho / pi],
+        b_pos=b_pos, BDRF_Fourier_modes=[rho],
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
@@ -144,7 +144,7 @@ def test_8f():
     tau_bot, omega = 5.0, 1 - 1e-6
     mu0, I0, phi0 = 0.080442, pi, pi
     rho = 0.1
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_Rayleigh()
     Leg_coeffs_func = lambda tau: g_l
 

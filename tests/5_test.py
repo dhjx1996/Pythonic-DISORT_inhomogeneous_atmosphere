@@ -34,7 +34,7 @@ def test_5a():
     tau_bot, omega = 0.5, 0.5
     mu0, I0, phi0  = 0.5, 1.0, 0.0
     rho = 0.1
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_isotropic()
     Leg_coeffs_func = lambda tau: g_l
 
@@ -55,7 +55,7 @@ def test_5b():
     tau_bot, omega, g = 1.0, 0.8, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.5
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
@@ -77,13 +77,13 @@ def test_5c():
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.0
     rho = 0.3
 
-    # pydisort mode-m callable: BDRF^m(mu_i, mu_j) = rho/pi for m=0, 0 otherwise.
+    # pydisort mode-m callable: BDRF^m(mu_i, mu_j) = rho for m=0, 0 otherwise.
     # Lambertian surface has only an m=0 contribution.
     BDRF_callable = [lambda mu, mup, _r=rho: np.full(
-        np.broadcast_shapes(np.shape(mu), np.shape(mup)), _r / pi
+        np.broadcast_shapes(np.shape(mu), np.shape(mup)), _r
     )]
     # Scalar equivalent for the pydisort reference
-    BDRF_scalar = [rho / pi]
+    BDRF_scalar = [rho]
 
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
@@ -107,7 +107,7 @@ def test_5d():
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.3
     b_pos, b_neg = 0.2, 0.1
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 
@@ -129,7 +129,7 @@ def test_5e():
     tau_bot, omega, g = 0.5, 0.9, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.9
-    BDRF = [rho / pi]
+    BDRF = [rho]
     g_l = _make_HG(g)
     Leg_coeffs_func = lambda tau: g_l
 

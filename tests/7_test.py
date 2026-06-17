@@ -99,7 +99,7 @@ def test_7c():
     tau_bot = 1.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.3
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func = lambda tau: 0.90 + (0.60 - 0.90) * tau / tau_bot
     g_func     = lambda tau: 0.70 + (0.30 - 0.70) * tau / tau_bot
 

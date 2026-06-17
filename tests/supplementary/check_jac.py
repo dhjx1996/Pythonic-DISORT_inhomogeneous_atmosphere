@@ -22,7 +22,7 @@ mu0, I0, phi0 = 0.6, 1.0, 0.0
 view_mu, view_phi = np.array([0.90, 0.65, 0.50]), np.array([pi, pi, pi])
 fwd = roe.RetrievalForward(opt_bands, NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,
     tau_bot=thin.tau_bot, r_base=thin.r_base, view_mu=view_mu, view_phi=view_phi,
-    BDRF_bands=[[0.05/pi]]*len(bands), NLeg_all=NLeg_all, NFourier=NFourier)
+    BDRF_bands=[[0.05]]*len(bands), NLeg_all=NLeg_all, NFourier=NFourier)
 print(f"{len(bands)} bands x {view_mu.size} angles = {fwd.m} obs")
 tau_ref = np.linspace(0.0, thin.tau_bot, 5)[:-1]
 x_ref, _ = roe.make_adiabatic_prior(tau_ref, thin.tau_bot, thin.r_base, r_top_prior=thin.r_top)

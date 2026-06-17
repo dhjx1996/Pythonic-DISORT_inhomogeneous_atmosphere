@@ -64,7 +64,7 @@ def test_10a():
     tau_bot = 10.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
@@ -83,7 +83,7 @@ def test_10b():
     tau_bot = 30.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,
@@ -102,7 +102,7 @@ def test_10c():
     tau_bot = 10.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.06
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.99995, omega_bot=0.99995,
         g_top=0.87, g_bot=0.83, NLeg=NLeg, NQuad=NQuad,
@@ -121,7 +121,7 @@ def test_10d():
     tau_bot = 30.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.3
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func, Leg_coeffs_func = make_cloud_profile(
         tau_bot, omega_top=0.85, omega_bot=0.96,
         g_top=0.865, g_bot=0.820, NLeg=NLeg, NQuad=NQuad,

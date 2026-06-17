@@ -96,47 +96,47 @@ save("4d", 1.0, 1e-10, NQuad, g_l_iso, 0.5, 0.0, 0.0, b_neg=1.0 / pi)
 
 print("\n=== Test 5: BDRF (Lambertian) ===")
 save("5a", 0.5, 0.5, NQuad, g_l_iso, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.1 / pi])
+     BDRF_Fourier_modes=[0.1])
 
 g_l_5b = 0.75 ** np.arange(NQuad)
 save("5b", 1.0, 0.8, NQuad, g_l_5b, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.5 / pi])
+     BDRF_Fourier_modes=[0.5])
 
 g_l_5c = 0.5 ** np.arange(NQuad)
 save("5c", 2.0, 0.7, NQuad, g_l_5c, 0.6, pi / 0.6, 0.0,
-     BDRF_Fourier_modes=[0.3 / pi])
+     BDRF_Fourier_modes=[0.3])
 
 print("\n=== Test 5d-5e: Combined BDRF + BCs / High albedo ===")
 g_l_5d = 0.5 ** np.arange(NQuad)
 save("5d", 1.0, 0.7, NQuad, g_l_5d, 0.5, 1.0, 0.0,
-     b_pos=0.2, b_neg=0.1, BDRF_Fourier_modes=[0.3 / pi])
+     b_pos=0.2, b_neg=0.1, BDRF_Fourier_modes=[0.3])
 
 g_l_5e = 0.75 ** np.arange(NQuad)
 save("5e", 0.5, 0.9, NQuad, g_l_5e, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.9 / pi])
+     BDRF_Fourier_modes=[0.9])
 
 print("\n=== Test 8: Thick + BCs ===")
 g_l_iso = np.zeros(NQuad); g_l_iso[0] = 1.0
 
 save("8a", 32.0, 0.99, NQuad, g_l_iso, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.05 / pi])
+     BDRF_Fourier_modes=[0.05])
 save("8b", 32.0, 0.99, NQuad, g_l_iso, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.3 / pi])
+     BDRF_Fourier_modes=[0.3])
 
 g_l_8c = 0.75 ** np.arange(NQuad)
 save("8c", 10.0, 0.9, NQuad, g_l_8c, 0.5, 1.0, 0.0,
-     BDRF_Fourier_modes=[0.85 / pi])
+     BDRF_Fourier_modes=[0.85])
 
 save("8d", 32.0, 0.5, NQuad, g_l_iso, 0.1, pi / 0.1, pi,
      b_pos=0.5)
 
 g_l_8e = 0.5 ** np.arange(NQuad)
 save("8e", 5.0, 0.8, NQuad, g_l_8e, 0.6, pi / 0.6, 0.9 * pi,
-     b_pos=0.2, BDRF_Fourier_modes=[0.3 / pi])
+     b_pos=0.2, BDRF_Fourier_modes=[0.3])
 
 g_l_8f = np.zeros(NQuad); g_l_8f[0] = 1.0; g_l_8f[2] = 0.1
 save("8f", 5.0, 1 - 1e-6, NQuad, g_l_8f, 0.080442, pi, pi,
-     BDRF_Fourier_modes=[0.1 / pi])
+     BDRF_Fourier_modes=[0.1])
 
 print("\n=== Test 11: NQuad variation + azimuthal ===")
 NQuad_4 = 4

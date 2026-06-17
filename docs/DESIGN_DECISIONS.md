@@ -392,3 +392,32 @@ production optics path; the hybrid traced-Mie-ω + HG pipeline is rejected. If a
 is ever wanted (hyperspectral), `mie_avg` first needs an r_e-independent radius grid. The GN
 state must be clamped to the table support *inside* the forward map (bounded-state forward) —
 model error can otherwise drive iterates to NaN optics. Details and figures: the notebook.
+
+---
+
+## 9. Lower boundary: Lambertian sea surface, albedo 0.06; the BDRF input *is* the albedo (NOT albedo/π)  [SETTLED]
+
+**Surface.** The bottom boundary is a **Lambertian sea surface with albedo ρ_s = 0.06** — the
+canonical broadband sea-surface value (Payne 1972, *J. Atmos. Sci.* 29, 959–970; reconfirmed by
+Huang et al. 2019, *JGR Oceans* 124, 4856). Applied **identically** in the OSSE-truth and the
+retrieval forward (a *known* boundary, not retrieved). One honest caveat: 0.06 is *broadband*
+(visible-weighted), and our retrieval bands are NIR/SWIR where the ocean is darker (→ ~0 in the
+SWIR, where liquid water absorbs), so a flat 0.06 is a mild **upper bound** on the surface
+contribution — the safe direction for a known lower boundary, and not worth splitting per-band.
+
+**Convention (verified).** `BDRF_Fourier_modes` are the surface-reflectance Fourier modes such
+that, for a Lambertian surface, the m=0 mode **equals the albedo ρ_s directly** — i.e.
+`BDRF_Fourier_modes=[ρ_s]`, **NOT** `[ρ_s/π]`. The BC solve builds `R_surf=(1+δ_{m0})·ρ·μ_j·W_j`,
+whose hemispheric integral is exactly ρ. Confirmed two independent ways: (i) PythonicDISORT's own
+docs (`omega_s = 0.1  # Ocean albedo is approximately 0.1`; `BDRF_Fourier_modes=[omega_s]`); (ii) a
+single-bounce benchmark in this env (ω→0 absorbing slab, `I⁺(μ)=(A·μ₀I₀/π)·e^{−τ/μ₀}·e^{−τ/μ}`):
+input `[0.1]` → effective albedo 0.0998; input `[0.1/π]` → 0.0318. The BC *formulation* (resolvent
+`(I − R_surf·R_down)⁻¹` summing the cloud↔surface multiple reflections + an attenuated direct-beam
+surface term) is correct and reproduces pydisort (`tests/5_test.py`, incl. albedo 0.1).
+
+**Historical bug (flagged; sweep tracked in OUTSTANDING §J).** The repo's notebook/tests/demos
+passed `[ρ/π]` throughout — i.e. surfaces **π× too dark** than labeled (notebook "dark ocean
+0.05/π" = albedo 0.0159; test 5a "albedo 0.1" = 0.0318). This never broke a test (the same value is
+fed to both the Riccati solver and pydisort ⇒ the solver-vs-reference comparison still holds) and
+never biased a retrieval (surface applied consistently in truth + forward) — only the *nominal
+physical albedo* was wrong. The retrieval/OSSE surface (the notebook) is now corrected to `[0.06]`.

@@ -47,7 +47,7 @@ print(f"setup+table {time.perf_counter()-t0:.1f}s  (bands={bands})")
 mu0, I0, phi0 = 0.6, 1.0, 0.0
 view_mu = np.array([0.90, 0.65, 0.50])
 view_phi = np.array([pi, pi, pi])              # principal plane, back-scatter
-BDRF = [[0.05 / pi]] * len(bands)              # dark ocean, per band
+BDRF = [[0.05]] * len(bands)                   # dark ocean, per band
 
 fwd = roe.RetrievalForward(
     opt_bands, NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,

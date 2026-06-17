@@ -94,7 +94,7 @@ def test_9c():
     tau_bot = 10.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func = lambda tau: 0.90 - 0.30 * tau / tau_bot
     g_func     = lambda tau: 0.75 - 0.35 * tau / tau_bot
 
@@ -111,7 +111,7 @@ def test_9d():
     tau_bot = 30.0
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     rho = 0.05
-    BDRF = [rho / pi]
+    BDRF = [rho]
     omega_func = lambda tau: 0.99 - 0.04 * tau / tau_bot
     g_func     = lambda tau: 0.85  # constant
 
