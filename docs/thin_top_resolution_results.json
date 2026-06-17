@@ -1,0 +1,72 @@
+[
+  {
+    "label": "NQ16_moderate",
+    "NQuad": 16,
+    "n_view": 3,
+    "NFourier": 8,
+    "A_top": 0.2338419687895316,
+    "A_profile": 1.8546532004870246,
+    "dofs": 2.959456869584524,
+    "xtop_prior8": 8.35151547770653,
+    "xtop_prior16": 10.660100261337726,
+    "top_prior_following": 0.2885730979538996,
+    "m": 6,
+    "runtime_s": 128.93115696500172
+  },
+  {
+    "label": "NQ24_moderate",
+    "NQuad": 24,
+    "n_view": 3,
+    "NFourier": 8,
+    "A_top": 0.195216430673972,
+    "A_profile": 1.778940079991124,
+    "dofs": 2.8541680643880856,
+    "xtop_prior8": 8.386237938988517,
+    "xtop_prior16": 10.909055325368508,
+    "top_prior_following": 0.3153521732974989,
+    "m": 6,
+    "runtime_s": 162.37970099700033
+  },
+  {
+    "label": "NQ32_moderate",
+    "NQuad": 32,
+    "n_view": 3,
+    "NFourier": 8,
+    "A_top": 0.2247412593280635,
+    "A_profile": 1.7484435543590673,
+    "dofs": 2.8373756931837275,
+    "xtop_prior8": 8.36173071128787,
+    "xtop_prior16": 10.678621366847189,
+    "top_prior_following": 0.28961133194491495,
+    "m": 6,
+    "runtime_s": 190.020089190999
+  },
+  {
+    "label": "NQ24_oblique",
+    "NQuad": 24,
+    "n_view": 5,
+    "NFourier": 12,
+    "A_top": 0.28987566885140104,
+    "A_profile": 2.0031394326184273,
+    "dofs": 3.092639902974692,
+    "xtop_prior8": 8.366975553721877,
+    "xtop_prior16": 10.468534608681331,
+    "top_prior_following": 0.26269488186993173,
+    "m": 10,
+    "runtime_s": 192.10508703099913
+  },
+  {
+    "label": "NQ32_oblique",
+    "NQuad": 32,
+    "n_view": 5,
+    "NFourier": 12,
+    "A_top": 0.2570491396477527,
+    "A_profile": 1.95518099937067,
+    "dofs": 3.0584720358134603,
+    "xtop_prior8": 8.345692937444017,
+    "xtop_prior16": 10.53345893380313,
+    "top_prior_following": 0.27347074954488915,
+    "m": 10,
+    "runtime_s": 238.17063971500102
+  }
+]

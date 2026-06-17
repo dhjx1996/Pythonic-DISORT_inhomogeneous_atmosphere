@@ -581,10 +581,35 @@ continues the visible trend); a true near-base anomaly would be missed (RF05, §
 | **r_base** | **0.06** | ~0.8 (x̂_base 3.6→8.4 for prior 4→10) | shielded ⇒ prior *is* the answer |
 | **τ_bot** | **1.00** | 0 (x̂=23.2 for prior mean 5→25, σ 2→40) | fully measured ⇒ prior irrelevant |
 
-(Thin RF11: r_top only ~0.23 / ~30 %-prior-following — *information-starved thin cloud*,
-**and possibly a discrete-ordinate resolution artefact**: near-top sensitivity is
-single-scattering-dominated and oblique-angle / high-moment sensitive, so it needs more
-streams; see `thin_top_resolution.py`. τ_bot and r_base behave as for thick.)
+(Thin RF11: r_top only ~0.25 vs thick 0.95 — the thin cloud top is genuinely harder to
+resolve. The cause is **angular under-sampling, not stream count or single scattering**
+(`thin_top_resolution.py`, `stream_view_thickthin.py`): A_top is *flat* in NQuad 16→32
+(more streams don't help) but rises with **view-angle count/obliquity** at fixed NQuad —
+thin 3-moderate 0.25 → 3-oblique 0.29 → 8-dense **0.39**; thick saturates at ~0.95 for any
+choice. The radiance is dominated by the **node-bound multiple-scatter field** (the TMS
+single-scatter *correction* is only ~3 % for both clouds), so each view angle is a
+projection of the N node radiances: with n_view < N the node info is under-sampled, and
+denser/oblique views recover more of ∂u_nodes/∂r_top up to the N-node ceiling. **Practical
+upshot: thin retrievals want *more view angles* (dense angular sampling), not more streams;
+thick is saturated on both.** τ_bot and r_base behave as for thick.)
+
+**RULE (enforced as a warning in `RetrievalForward`): use ≥ NQuad//2 view angles.** Off-node
+radiances are interpolations of the `N = NQuad//2` upwelling quadrature-node radiances (plus
+the ~3 % per-angle TMS term), so fewer than N view angles under-samples that field and leaves
+retrievable information unused. The notebook uses 8 views at NQuad=16. *Physical basis for the
+thin/thick split:* multiple scattering drives a thick cloud's interior toward the **diffusion
+limit**; ToA is never itself in the diffusion domain, but the upwelling ToA radiance is *fed by*
+diffusion from below — hence smooth, moment-washed, node-bound, and stream-insensitive. A thin
+cloud lacks that diffusive simplification, so its sparse top information is spread across the
+angular field and must be sampled densely.
+
+**(b′) Report DOFS *and* SIC (`posterior_diagnostics` now returns both).** The thin/thick result
+exposes an inconsistency a single number hides: a *thin* cloud has little depth to vary (**few
+DOF**) yet each feature is sharply measured and it *benefits from more streams/angles*; a *thick*
+cloud varies more (**more DOF**) but diffusion caps the per-stream information so it *gains little
+from more streams*. `DOFS = tr(A)` counts independent *features*; `SIC = ½ log₂|Sa Ŝ⁻¹|` (bits) is
+the *magnitude* of information (how sharply each feature is pinned). Carry both — DOFS answers "how
+many things", SIC answers "how well".
 
 **(c) VOCALS-REx empirical distributions (n=125, τ_bot∈[0.3,60]).** r_top 9.5 ± 2.3 µm
 (MAD; p95 14.0 — the ~14–15 µm **drizzle threshold** is the physical upper bound, big drops

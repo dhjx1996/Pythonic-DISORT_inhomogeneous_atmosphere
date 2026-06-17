@@ -114,6 +114,19 @@ class RetrievalForward:
         self.view_phi = jnp.asarray(view_phi, dtype=float)
         self.n_view = int(self.view_mu.shape[0])
         self.m = self.n_bands * self.n_view          # observation dimension
+        # Off-node radiances are interpolated from the NQuad//2 upwelling quadrature
+        # nodes (plus the small per-angle TMS term). Using fewer view angles than
+        # NQuad//2 UNDER-SAMPLES that node radiance field — it leaves retrievable
+        # information on the table (verified: thin-cloud A_top 0.25→0.39 going 3→8
+        # views at NQuad=16; DESIGN_DECISIONS.md §11b). Pick the angles freely, but
+        # use at least NQuad//2 of them.
+        if self.n_view < NQuad // 2:
+            import warnings
+            warnings.warn(
+                f"n_view={self.n_view} < NQuad//2={NQuad // 2}: the {NQuad // 2} "
+                f"quadrature-node radiances are under-sampled, leaving retrievable "
+                f"information unused. Use >= NQuad//2 view angles (DESIGN §11b).",
+                stacklevel=2)
         if BDRF_bands is None:
             BDRF_bands = [()] * self.n_bands
         self.setups = [
@@ -829,23 +842,32 @@ class Posterior:
     error: np.ndarray          # √diag(S_hat) — retrieval 1σ error per node
     A: np.ndarray              # averaging kernel matrix
     dofs: float                # degrees of freedom for signal = tr(A)
+    sic: float                 # Shannon information content [bits] = ½ log₂|Sa Ŝ⁻¹|
     data_fraction: np.ndarray  # per-node 1 − Ŝ_ii/Sa_ii — measurement vs prior
 
 
 def posterior_diagnostics(K, Sa, Se) -> Posterior:
-    """Rodgers posterior covariance, averaging kernels, DOFS, and the per-node
+    """Rodgers posterior covariance, averaging kernels, DOFS, SIC, and the per-node
     measurement-vs-prior split.
 
     ``Ŝ = (Kᵀ Sε⁻¹ K + Sa⁻¹)⁻¹``;  ``A = Ŝ Kᵀ Sε⁻¹ K``;  ``DOFS = tr(A)``.
     The averaging-kernel rows show *where in τ* each retrieved level draws its
-    information (peaks spread through the column ⇔ vertical resolving power);
-    DOFS is the number of independent pieces of profile information.
+    information (peaks spread through the column ⇔ vertical resolving power).
+
+    **DOFS vs SIC** — two *complementary* information measures (report both):
+    ``DOFS = tr(A)`` counts the number of *independent dimensions* the measurement
+    constrains (how many features), thresholding each direction near 0/1. ``SIC =
+    ½ log₂|Sa Ŝ⁻¹|`` (bits) is the total Shannon information — the *magnitude* of
+    the variance reduction across all directions (a direction reduced 100× adds
+    more bits than one reduced 2×). They can diverge: a thin cloud has *few* DOF
+    (little depth to vary) yet each is sharply measured (high SIC per DOF), while a
+    thick cloud has *more* DOF but diffusion caps the per-stream information (lower
+    SIC per DOF). DOFS alone hides this; SIC exposes it.
 
     ``data_fraction[i] = 1 − Ŝ_ii / Sa_ii`` is the **fractional variance
     reduction** at node i — how much of that node's value the *measurement*
     pinned down versus what it inherited from the prior (0 = pure prior, 1 = fully
-    measured). It is the plain-language, per-node companion to the (scalar) DOFS
-    and the (matrix) averaging kernel: a labelled "x% measured / (1−x)% prior" bar.
+    measured); the plain-language per-node companion to the (scalar) DOFS/SIC.
     """
     K = np.asarray(K, float)
     Sa = np.asarray(Sa, float)
@@ -855,8 +877,12 @@ def posterior_diagnostics(K, Sa, Se) -> Posterior:
     S_hat = np.linalg.inv(KtSeK + Sa_inv)
     A = S_hat @ KtSeK
     data_fraction = 1.0 - np.diag(S_hat) / np.diag(Sa)
+    # Shannon information content (Rodgers eq. 2.80): H = ½ log₂(|Sa|/|Ŝ|) [bits].
+    _, logdet_Sa = np.linalg.slogdet(Sa)
+    _, logdet_Shat = np.linalg.slogdet(S_hat)
+    sic = float(0.5 * (logdet_Sa - logdet_Shat) / np.log(2.0))
     return Posterior(S_hat=S_hat, error=np.sqrt(np.diag(S_hat)), A=A,
-                     dofs=float(np.trace(A)), data_fraction=data_fraction)
+                     dofs=float(np.trace(A)), sic=sic, data_fraction=data_fraction)
 
 
 def dofs_by_component(post, n_nodes, *, retrieve_r_base=False,
