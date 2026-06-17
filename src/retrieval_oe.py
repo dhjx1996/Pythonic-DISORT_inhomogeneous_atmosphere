@@ -677,7 +677,7 @@ def _gn_inner(fwd, y, tau_nodes, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
 def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     n_outer=1, k_active=None, prior_builder=None,
-                    r_top_prior=None):
+                    r_top_prior=None, remesh_if_chi2_red_gt=None):
     """Optimal estimation with optional **lagged re-meshing** (outer loop).
 
     Inner loop: Rodgers Gauss–Newton on a fixed grid. Outer loop (``n_outer>1``):
@@ -689,9 +689,21 @@ def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
 
     ``prior_builder(tau_nodes) -> (x_a, Sa)`` is required when ``n_outer>1`` to
     rebuild the prior on each new grid.
+
+    **Adaptive re-meshing (SO2b).** ``n_outer`` is an *upper bound*; the outer loop
+    already stops when the grid stabilises. Passing ``remesh_if_chi2_red_gt`` adds a
+    structural-misfit gate: re-meshing is attempted only while the reduced χ²
+    ``‖y−F‖²_{Se⁻¹} / m`` exceeds the threshold (a "persistently high loss ⇒ the
+    node placement / parameterisation may be wrong" signal). Once the fit reaches the
+    noise floor (χ²_red ≲ threshold, e.g. ~1–2), re-meshing is skipped — the prior is
+    adequate and re-pivoting the correlated node basis would only churn placement
+    (OUTSTANDING §G "re-mesh instability"). ``None`` ⇒ always re-mesh up to
+    ``n_outer`` (legacy behaviour).
     """
     tau_nodes = np.asarray(tau_nodes, float)
     x = np.asarray(x_a, float) if x0 is None else np.asarray(x0, float)
+    Se_inv = np.linalg.inv(np.asarray(Se, float))
+    m = len(np.asarray(y, float))
 
     x, K, Fx, hist, conv = _gn_inner(fwd, y, tau_nodes, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol)
@@ -700,6 +712,13 @@ def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
     for _ in range(max(0, n_outer - 1)):
         if k_active is None or prior_builder is None:
             break
+        # SO2b structural-misfit gate: skip re-meshing once the fit is at the noise
+        # floor (re-pivoting a well-fit, correlated node basis only churns placement).
+        if remesh_if_chi2_red_gt is not None:
+            r0 = np.asarray(y, float) - np.asarray(Fx, float)
+            chi2_red = float(r0 @ Se_inv @ r0) / max(m, 1)
+            if chi2_red <= remesh_if_chi2_red_gt:
+                break
         # current r_e(τ) via the forward's own parameterisation (the lever) so the
         # re-mesh re-mapping mirrors F(x) exactly — not an independent interpolation.
         cur_x, cur_nodes = np.asarray(x, float), tau_nodes

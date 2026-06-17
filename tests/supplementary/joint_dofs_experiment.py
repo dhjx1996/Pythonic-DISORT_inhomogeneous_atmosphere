@@ -2,9 +2,12 @@
 and the choice of prior — change the DOFS?
 
 For each (cloud, band-set) config this builds ONE joint forward, selects a QRCP
-retrieval grid at the leak-free first guess, evaluates the joint Jacobian
-K = ∂y/∂[r_e nodes, r_base, τ_bot] at the prior mean ONCE, then reuses it for
-three prior configurations (the DOFS is cheap host linear algebra once K exists):
+retrieval grid AT THE TRUTH SCENE, evaluates the joint Jacobian
+K = ∂y/∂[r_e nodes, r_base, τ_bot] at the truth state ONCE (the standard OSSE
+information-content linearization — achievable info for this cloud; NOT a
+retrieval leak, since only the linearization point uses truth while the priors
+below stay leak-free), then reuses K for three prior configurations (the DOFS is
+cheap host linear algebra once K exists):
 
   A. fixed-anchor baseline  — τ_bot, r_base KNOWN (the legacy retrieval): the
      r_e-node column block of K + the r_e prior block. DOFS_A.
@@ -61,6 +64,12 @@ CONFIGS = [
 _precomp = mie_legendre_precompute(max_nstop=512, NLeg=NLeg_all)
 
 
+def truth_state(truth, tau_nodes):
+    """Joint state [r_e(tau_nodes), r_base, tau_bot] sampled from the truth profile."""
+    re = np.interp(tau_nodes, truth.tau, truth.r_e)
+    return np.concatenate([re, [truth.r_base, truth.tau_bot]])
+
+
 def _save(record):
     data = json.loads(OUT.read_text()) if OUT.exists() else {}
     data[record["label"]] = record
@@ -83,10 +92,16 @@ def run_config(label, target_tau, restrict_flight, bands, k_active):
     opt_bands = [select_channel(build_re_table(bands, 2.0, 25.0, 32, v_eff,
                                                _precomp, n_radii=600), i)
                  for i in range(len(bands))]
-    # JOINT forward; first guess (fwd.tau_bot/r_base) = climatology, NOT truth
+    # The DOFS is the *information-content* diagnostic, so the Jacobian and the
+    # QRCP grid are evaluated **at the truth scene** (standard OSSE practice: it
+    # gives the achievable info content for this cloud, and the grid spans the true
+    # [0, τ_bot]). This is NOT a retrieval leak — only the linearization point uses
+    # truth; the PRIORS (Sa, below) stay leak-free (broad / LOO climatology). The
+    # leak-free *retrieval* (first guess from climatology, GN finds τ_bot) is the
+    # companion joint_osse_retrieval.py, which reports DOFS at the retrieved state.
     fwd = roe.RetrievalForward(
         opt_bands, NQuad=NQuad, mu0=mu0, I0=I0, phi0=phi0,
-        tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],
+        tau_bot=truth.tau_bot, r_base=truth.r_base,
         view_mu=view_mu, view_phi=view_phi, BDRF_bands=[[ALBEDO]] * len(bands),
         NLeg_all=NLeg_all, NFourier=NFourier,
         retrieve_tau_bot=True, retrieve_r_base=True)
@@ -96,30 +111,27 @@ def run_config(label, target_tau, restrict_flight, bands, k_active):
     Se = np.diag((0.03 * np.maximum(np.abs(y), 0.02)) ** 2)
     sigma_tau_broad = 0.5 * clim["tau_bot_mean"]
 
-    # S_eps azimuthal-mode count at the broad first guess on a coarse grid
-    tau_ref = np.linspace(0.0, clim["tau_bot_mean"], 5)[:-1]
-    x_ref, _ = roe.make_joint_prior(tau_ref, tau_bot_prior=clim["tau_bot_mean"],
-                                    sigma_tau_bot=sigma_tau_broad, **BROAD)
-    Kmodes = roe.select_num_modes(fwd, x_ref, tau_ref, Se)
+    # S_eps azimuthal-mode count at the truth scene on a coarse grid
+    tau_ref = np.linspace(0.0, truth.tau_bot, 5)[:-1]
+    Kmodes = roe.select_num_modes(fwd, truth_state(truth, tau_ref), tau_ref, Se)
     print(f"    obs m={fwd.m}, S_eps modes K={Kmodes}, "
           f"setup {time.perf_counter()-t0:.0f}s")
 
-    # QRCP retrieval grid at the broad first guess (joint state)
-    tau_coarse = np.linspace(0.0, clim["tau_bot_mean"], 6)[:-1]
-    x_fg, _ = roe.make_joint_prior(tau_coarse, tau_bot_prior=clim["tau_bot_mean"],
-                                   sigma_tau_bot=sigma_tau_broad, **BROAD)
+    # QRCP retrieval grid at the truth scene (joint truth state)
+    tau_coarse = np.linspace(0.0, truth.tau_bot, 6)[:-1]
     t1 = time.perf_counter()
-    tau_grid, _, _ = roe.select_retrieval_grid(fwd, x_fg, tau_coarse, k_active)
+    tau_grid, _, _ = roe.select_retrieval_grid(
+        fwd, truth_state(truth, tau_coarse), tau_coarse, k_active)
     k = len(tau_grid)
     print(f"    QRCP grid ({k}): tau={np.round(tau_grid,2)}  "
           f"[{time.perf_counter()-t1:.0f}s]")
 
-    # joint prior on the selected grid + the ONE Jacobian at its mean
+    # leak-free joint prior on the grid + the ONE Jacobian AT THE TRUTH STATE
     x_a_broad, Sa_broad = roe.make_joint_prior(
         tau_grid, tau_bot_prior=clim["tau_bot_mean"],
         sigma_tau_bot=sigma_tau_broad, **BROAD)
     t2 = time.perf_counter()
-    Kjac = np.asarray(fwd.jacobian(x_a_broad, tau_grid))      # (m, k+2)
+    Kjac = np.asarray(fwd.jacobian(truth_state(truth, tau_grid), tau_grid))  # (m,k+2)
     print(f"    Jacobian {Kjac.shape} [{time.perf_counter()-t2:.0f}s]")
 
     # --- A: fixed-anchor baseline (drop r_base, τ_bot columns + r_e prior block)
