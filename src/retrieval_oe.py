@@ -67,7 +67,8 @@ class RetrievalForward:
     def __init__(self, opt_bands, *, NQuad, mu0, I0, phi0, tau_bot, r_base,
                  view_mu, view_phi, BDRF_bands=None, NLeg_all=128, NFourier=8,
                  tol=1e-3, re_class="re5-linear",
-                 retrieve_tau_bot=False, retrieve_r_base=False):
+                 retrieve_tau_bot=False, retrieve_r_base=False,
+                 re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0)):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
         # (the joint retrieval, PO). When True the corresponding quantity is read
@@ -105,6 +106,10 @@ class RetrievalForward:
         self.re_class = re_class             # profile parameterisation lever (§B′)
         self.retrieve_tau_bot = bool(retrieve_tau_bot)
         self.retrieve_r_base = bool(retrieve_r_base)
+        # physical/table bounds for clamping GN iterates (DESIGN §8 bounded-state
+        # forward): r_e to the optics-table support, τ_bot to a marine-Sc range.
+        self.re_min, self.re_max = float(re_bounds[0]), float(re_bounds[1])
+        self.tau_min, self.tau_max = float(tau_bounds[0]), float(tau_bounds[1])
         self.view_mu = jnp.asarray(view_mu, dtype=float)
         self.view_phi = jnp.asarray(view_phi, dtype=float)
         self.n_view = int(self.view_mu.shape[0])
@@ -128,19 +133,19 @@ class RetrievalForward:
         """Number of trailing state entries beyond the r_e nodes (0, 1, or 2)."""
         return int(self.retrieve_r_base) + int(self.retrieve_tau_bot)
 
-    def _split_state(self, x, tau_nodes):
+    def _split_state(self, x, s_nodes):
         """Decode the joint state ``x`` → ``(r_nodes, r_base, τ_bot)``.
 
-        ``r_nodes`` are the first ``len(tau_nodes)`` entries (r_e at the free
-        nodes, incl. cloud top τ=0). ``r_base`` / ``τ_bot`` are read from the
-        trailing entries when retrieved (the joint retrieval, PO), else fall back
-        to the fixed constructor values ``self.r_base`` / ``self.tau_bot``. The
-        returned ``r_base`` / ``τ_bot`` are **traced scalars** in joint mode, so
-        ``∂y/∂r_base`` and ``∂y/∂τ_bot`` flow through autodiff (τ_bot is a traced
-        ``riccati_solve`` arg by construction, DESIGN §7).
+        ``r_nodes`` are the first ``len(s_nodes)`` entries (r_e at the free nodes at
+        normalized depth ``s∈[0,1)``, incl. cloud top s=0). ``r_base`` / ``τ_bot``
+        are read from the trailing entries when retrieved (the joint retrieval, PO),
+        else fall back to the fixed constructor values ``self.r_base`` /
+        ``self.tau_bot``. The returned ``r_base`` / ``τ_bot`` are **traced scalars**
+        in joint mode, so ``∂y/∂r_base`` and ``∂y/∂τ_bot`` flow through autodiff
+        (τ_bot is a traced ``riccati_solve`` arg by construction, DESIGN §7).
         """
         x = jnp.asarray(x, float)
-        k = int(jnp.asarray(tau_nodes).shape[0])     # static (shape known at trace)
+        k = int(jnp.asarray(s_nodes).shape[0])       # static (shape known at trace)
         r_nodes = x[:k]
         idx = k
         if self.retrieve_r_base:
@@ -154,96 +159,108 @@ class RetrievalForward:
             tau_bot = self.tau_bot
         return r_nodes, r_base, tau_bot
 
-    # -- r_e(τ) interpolant knots: free nodes + base anchor at τ_bot ----------
-    def _knots_vals(self, x, tau_nodes):
-        """Interpolation knots/values + the (safeguarded) base optical depth.
+    def _clamp_state(self, x, s_nodes):
+        """Project a (host-side) state onto the physical/table bounds.
 
-        Returns ``(knots, vals, τ_bot)``: r_e at ``[tau_nodes, τ_bot]``, with
-        ``τ_bot`` floored to just below... above the deepest free node so the
-        ``jnp.interp`` abscissa stays strictly sorted even when the retrieved
-        ``τ_bot`` is traced. The floor is a numerical guard only — a sensible
-        ``τ_bot`` prior keeps it inactive (it would activate only if the retrieval
-        drove τ_bot beneath an interior node, the pathological crossing case).
+        Clamps the r_e nodes (and retrieved ``r_base``) to the optics-table support
+        ``[re_min, re_max]`` and retrieved ``τ_bot`` to ``[tau_min, tau_max]``. Used
+        between Gauss-Newton steps (projected GN) so an overshoot cannot drive the
+        optics out of the table or ``τ_bot`` negative — the failure that hit the
+        absolute-τ / unclamped retrieval (out-of-table r_e, τ_bot < 0, and the
+        Kvaerno5 "max steps" controller error from the resulting stiff optics).
         """
-        r_nodes, r_base, tau_bot = self._split_state(x, tau_nodes)
-        tau_nodes = jnp.asarray(tau_nodes, float)
+        x = np.asarray(x, float).copy()
+        k = int(np.asarray(s_nodes).shape[0])
+        x[:k] = np.clip(x[:k], self.re_min, self.re_max)         # r_e nodes
+        idx = k
+        if self.retrieve_r_base:
+            x[idx] = np.clip(x[idx], self.re_min, self.re_max)
+            idx += 1
+        if self.retrieve_tau_bot:
+            x[idx] = np.clip(x[idx], self.tau_min, self.tau_max)
+        return x
+
+    # -- r_e(s) interpolant knots in normalized depth s=τ/τ_bot ---------------
+    def _knots_vals(self, x, s_nodes):
+        """Interpolation knots/values (in normalized depth) + the base optical depth.
+
+        Returns ``(s_knots, vals, τ_bot)``: r_e node values at normalized depths
+        ``s_knots = [s_nodes, 1.0]`` (free nodes in ``s∈[0,1)`` plus the base anchor
+        at ``s=1``), and the (traced in joint mode) ``τ_bot``. No monotonicity guard
+        is needed — ``s_knots`` are fixed in ``[0,1]`` regardless of the retrieved
+        ``τ_bot`` (that is the whole point of the normalized-depth parameterisation;
+        see :meth:`_re_of_tau`).
+        """
+        r_nodes, r_base, tau_bot = self._split_state(x, s_nodes)
+        s_nodes = jnp.asarray(s_nodes, float)
         tau_bot = jnp.asarray(tau_bot, float)
-        if tau_nodes.shape[0] > 0:
-            tau_bot = jnp.maximum(tau_bot, tau_nodes[-1] + 1e-6)
-        knots = jnp.concatenate([tau_nodes, jnp.reshape(tau_bot, (1,))])
+        s_knots = jnp.concatenate([s_nodes, jnp.ones((1,))])
         vals = jnp.concatenate([jnp.asarray(r_nodes, float),
                                 jnp.reshape(jnp.asarray(r_base, float), (1,))])
-        return knots, vals, tau_bot
+        return s_knots, vals, tau_bot
 
-    def _re_of_tau(self, tau, knots, vals):
-        """The profile parameterisation r_e(τ) from the node values — **the
-        function-class lever** (OUTSTANDING §B′; DESIGN §3d).
+    def _re_of_tau(self, tau, s_knots, vals, tau_bot):
+        """r_e at optical depth ``tau`` from node values at **normalized depth**
+        ``s = τ/τ_bot ∈ [0,1]`` — the function-class lever (OUTSTANDING §B′; DESIGN §3d).
 
-        This is NOT a post-hoc / cosmetic interpolation: it is *inside* the forward
-        map F(x), so it defines what is retrieved and what every solve integrates.
-        Plot the result with :meth:`profile`, which routes through here so the
-        display mirrors F(x).
+        **Normalized depth (not absolute τ) is the key to joint τ_bot retrieval.** The
+        nodes live at fixed ``s∈[0,1]`` and the base at ``s=1``; multiplying by the
+        retrieved ``τ_bot`` gives the absolute positions, so the nodes **stretch /
+        compress with τ_bot** and never fall past the cloud base. The absolute-τ
+        parameterisation breaks here: a grid placed at a thick first-guess τ_bot puts
+        nodes below a thin cloud's base, and retrieving τ_bot downward then drives a
+        node past τ_bot (the crossing that made the absolute-τ GN diverge / hit
+        max-solver-steps). In ``s`` there is no crossing and no monotonicity guard.
 
-        **Default: r_e⁵-linear (adiabatic).** The adiabatic effective radius grows as
-        r_e ∝ τ^(1/5) in optical depth: r_e³ ∝ LWC ∝ geometric height z, and the
-        extinction β ∝ r_e² ∝ z^(2/3) makes τ = ∫β dz ∝ z^(5/3), so LWC ∝ τ^(3/5) and
-        r_e ∝ τ^(1/5) (equivalently the canonical adiabatic N_d ∝ τ^(1/2) r_e^(-5/2)).
-        So r_e⁵ is what is linear in τ: it is interpolated linearly and 5th-rooted.
-        This (i) is the adiabatic class, (ii) is coherent with the adiabatic prior
-        (same 1/5 law ⇒ represents ``x_a`` exactly), and (iii) gets per-segment
-        curvature from the two endpoint values, so it has **no grid-size coupling**.
-        It is C⁰ (kinked at nodes); with finite ``r_base`` the slope at base stays
-        finite (no root cusp).
+        This is NOT a post-hoc interpolation — it is *inside* F(x); :meth:`profile`
+        routes through here so the display mirrors the forward.
 
-        The class is the ``re_class`` constructor lever, switched **here and only
-        here** so it propagates through forward / mode-amplitudes / ODE-grid /
-        Jacobian / re-meshing / display by construction::
-
-            "re5-linear" (default, adiabatic): jnp.interp(tau,knots,vals**5)**(1/5)
-            "linear" (impute-nothing baseline):  jnp.interp(tau, knots, vals)
-            PCHIP (C¹):  not wired in — needs ≥3 nodes, couples to node count, so its
-                         curvature is an FD artifact at low DOF; the clean class test
-                         is model comparison (linear vs adiabatic fit χ²), §B′.
-
-        "Which class" is an inverse-problem bias–variance decision (OUTSTANDING §B′),
-        bounded above by the integrator order (~C⁶, §1) and far more tightly by DOFS.
+        **Default: r_e⁵-linear (adiabatic).** r_e ∝ τ^(1/5) (r_e³∝LWC∝z, β∝r_e²∝z^(2/3)
+        ⇒ τ∝z^(5/3) ⇒ r_e∝τ^(1/5)). Since ``s`` is just a linear rescale of τ,
+        **r_e⁵-linear in s ≡ r_e⁵-linear in τ** — the adiabatic law is unchanged by the
+        normalization. C⁰; finite base slope. ``re_class`` switches the class here and
+        only here so it propagates to forward / modes / ODE-grid / Jacobian / display.
         """
+        s = tau / tau_bot                                  # absolute τ → normalized depth
         if self.re_class == "linear":
-            return jnp.interp(tau, knots, vals)
-        return jnp.interp(tau, knots, vals ** 5) ** (1.0 / 5.0)   # re5-linear (adiabatic)
+            return jnp.interp(s, s_knots, vals)
+        return jnp.interp(s, s_knots, vals ** 5) ** (1.0 / 5.0)   # re5-linear (adiabatic)
 
-    def profile(self, x, tau_nodes, tau):
-        """Evaluate the retrieved r_e(τ) **exactly as the forward integrates it**.
+    def profile(self, x, s_nodes, tau):
+        """Evaluate the retrieved r_e at **absolute** optical depths ``tau`` exactly
+        as the forward integrates it (the node grid ``s_nodes`` is normalized depth).
 
-        Free nodes ``x`` at ``tau_nodes`` plus the fixed base anchor ``(τ_bot,
-        r_base)``, through :meth:`_re_of_tau`. Use this for plotting / downstream so
-        the displayed curve mirrors F(x) by construction — the interpolation is part
-        of the retrieval, not an independent post-hoc choice.
+        Free node values ``x`` at normalized depths ``s_nodes`` plus the base anchor
+        at ``s=1``, through :meth:`_re_of_tau` (which maps the queried absolute ``tau``
+        to ``s=τ/τ_bot``). Use this for plotting / downstream so the displayed curve
+        mirrors F(x) by construction. ``tau`` are absolute optical depths (e.g.
+        ``linspace(0, retrieved_τ_bot, …)``).
         """
-        knots, vals, _ = self._knots_vals(x, tau_nodes)
-        return np.asarray(self._re_of_tau(jnp.asarray(tau, float), knots, vals))
+        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
+        return np.asarray(self._re_of_tau(jnp.asarray(tau, float), s_knots, vals,
+                                          tau_bot))
 
-    def _band_reflectance(self, opt, setup, K, knots, vals, tau_bot):
+    def _band_reflectance(self, opt, setup, K, s_knots, vals, tau_bot):
         def om(tau):
-            return table_lookup(opt, self._re_of_tau(tau, knots, vals))[0]
+            return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
 
         def leg(tau):
-            return table_lookup(opt, self._re_of_tau(tau, knots, vals))[1]
+            return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
 
         res = riccati_solve(setup, om, leg, tau_bot, num_modes=K)
         u = jnp.stack([eval_radiance(setup, res, self.view_mu[i], self.view_phi[i])
                        for i in range(self.n_view)])           # (n_view,)
         return jnp.pi * u / (self.mu0 * self.I0)
 
-    def _forward_raw(self, x, tau_nodes):
-        knots, vals, tau_bot = self._knots_vals(x, tau_nodes)
+    def _forward_raw(self, x, s_nodes):
+        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
         return jnp.concatenate([
-            self._band_reflectance(opt, setup, K, knots, vals, tau_bot)
+            self._band_reflectance(opt, setup, K, s_knots, vals, tau_bot)
             for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
         ])                                                     # (n_bands*n_view,)
 
     # -- per-mode reflectance amplitudes (drives the S_ε mode selector) -------
-    def mode_amplitudes(self, x_ref, tau_nodes):
+    def mode_amplitudes(self, x_ref, s_nodes):
         """Per-band, per-mode ToA-reflectance amplitude at a reference state.
 
         For each band runs ONE full-``NFourier`` solve and decomposes the ToA
@@ -259,14 +276,14 @@ class RetrievalForward:
         :func:`select_num_modes`; the *absolute* per-mode amplitude (not a relative
         partial sum) is the meaningful quantity to compare against the noise floor.
         """
-        knots, vals, tau_bot = self._knots_vals(x_ref, tau_nodes)
+        s_knots, vals, tau_bot = self._knots_vals(x_ref, s_nodes)
         amps = []
         for opt, setup in zip(self.opt_bands, self.setups):
             def om(tau, opt=opt):
-                return table_lookup(opt, self._re_of_tau(tau, knots, vals))[0]
+                return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
 
             def leg(tau, opt=opt):
-                return table_lookup(opt, self._re_of_tau(tau, knots, vals))[1]
+                return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
 
             res = riccati_solve(setup, om, leg, tau_bot)        # all NFourier
             u_modes = res.u_modes                               # (NFourier, N)
@@ -282,55 +299,56 @@ class RetrievalForward:
         return np.stack(amps)                                   # (n_bands, NF)
 
     # -- jitted forward + Jacobian (compiled once, cached) -------------------
-    def forward(self, x, tau_nodes):
+    def forward(self, x, s_nodes):
         if self._fwd_jit is None:
             self._fwd_jit = jax.jit(self._forward_raw)
-        return self._fwd_jit(jnp.asarray(x, float), jnp.asarray(tau_nodes, float))
+        return self._fwd_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
 
-    def jacobian(self, x, tau_nodes):
+    def jacobian(self, x, s_nodes):
         """K = ∂y/∂x  (m × p), reverse-mode through the jitted seam."""
         if self._jac_jit is None:
             self._jac_jit = jax.jit(jax.jacrev(self._forward_raw, argnums=0))
-        return self._jac_jit(jnp.asarray(x, float), jnp.asarray(tau_nodes, float))
+        return self._jac_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
 
     # -- ODE grid (adaptive candidate pool, DESIGN §3) -----------------------
-    def ode_grid(self, x, tau_nodes):
-        """Adaptive Kvaerno5 τ-grid at the given state (first band, offline).
+    def ode_grid(self, x, s_nodes):
+        """Adaptive Kvaerno5 **absolute-τ** grid at the given state (first band).
 
         Integrates to the **current** ``τ_bot`` (the retrieved value in joint mode,
         decoded from ``x``), so the candidate pool tracks the estimated cloud depth.
+        Returns absolute optical depths (the caller normalizes by ``τ_bot``).
         """
-        knots, vals, tau_bot = self._knots_vals(x, tau_nodes)
+        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
         opt = self.opt_bands[0]
-        om = lambda tau: table_lookup(opt, self._re_of_tau(tau, knots, vals))[0]
-        leg = lambda tau: table_lookup(opt, self._re_of_tau(tau, knots, vals))[1]
+        om = lambda tau: table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
+        leg = lambda tau: table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
         *_, tau_grid = pydisort_riccati_jax(
             float(tau_bot), om, leg, self.setups[0].NQuad, self.mu0, self.I0,
             self.setups[0].phi0, delta_M_scaling=True, NT_cor=True,
             NLeg_all=self.opt_bands[0]["leg"].shape[-1])
         return np.asarray(tau_grid, float)
 
-    # -- pool sensitivity (parameterise r_e on an arbitrary τ-grid) ----------
-    def jacobian_on_grid(self, re_vals, tau_grid, tau_bot=None):
-        """K_pool = ∂y/∂r_e(τ_j) at the pool nodes ``tau_grid`` (m × len).
+    # -- pool sensitivity (parameterise r_e on a normalized-depth pool grid) --
+    def jacobian_on_grid(self, re_vals, s_grid, tau_bot=None):
+        """K_pool = ∂y/∂r_e(s_j) at the pool nodes ``s_grid`` (normalized depth; m×len).
 
-        ``tau_grid`` and ``tau_bot`` are **traced** arguments, so re-selections at a
+        ``s_grid`` and ``tau_bot`` are **traced** arguments, so re-selections at a
         stable ODE-grid size reuse the compiled Jacobian (recompile-free lagged
-        re-meshing); a new pool size compiles once and caches. ``tau_bot`` is the
-        integration limit (the current/retrieved cloud base); defaults to the fixed
-        ``self.tau_bot`` for the non-joint path.
+        re-meshing); a new pool size compiles once and caches. ``s_grid`` are the
+        pool nodes in normalized depth ``s=τ/τ_bot``; ``tau_bot`` is the integration
+        limit (the current/retrieved cloud base; defaults to ``self.tau_bot``).
         """
         if tau_bot is None:
             tau_bot = self.tau_bot
         if self._jac_grid_jit is None:
-            def fwd(rv, tg, tb):
+            def fwd(rv, sg, tb):
                 return jnp.concatenate([
-                    self._band_reflectance(opt, setup, K, tg, rv, tb)
+                    self._band_reflectance(opt, setup, K, sg, rv, tb)
                     for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
                 ])
             self._jac_grid_jit = jax.jit(jax.jacrev(fwd, argnums=0))
         return np.asarray(self._jac_grid_jit(jnp.asarray(re_vals, float),
-                                             jnp.asarray(tau_grid, float),
+                                             jnp.asarray(s_grid, float),
                                              jnp.asarray(tau_bot, float)))
 
 
@@ -342,7 +360,7 @@ def build_forward(*args, **kw):
 # ============================================================================
 # 1b. Azimuthal mode-count selector (S_ε, replaces the relative Cauchy test)
 # ============================================================================
-def select_num_modes(fwd: RetrievalForward, x_ref, tau_nodes, Se, *, frac=1/3.0):
+def select_num_modes(fwd: RetrievalForward, x_ref, s_nodes, Se, *, frac=1/3.0):
     """Pick the per-band Fourier mode count ``K`` from the **measurement noise**.
 
     The old in-solver relative Cauchy test (STWLE2000 p.89) was removed with the
@@ -363,15 +381,15 @@ def select_num_modes(fwd: RetrievalForward, x_ref, tau_nodes, Se, *, frac=1/3.0)
     Parameters
     ----------
     fwd : RetrievalForward
-    x_ref, tau_nodes : reference state at which to measure the mode amplitudes
-        (the mode spectrum is weakly state-dependent — pick a representative
-        first-guess profile, e.g. the prior mean).
+    x_ref, s_nodes : reference state (joint, on a normalized-depth grid) at which to
+        measure the mode amplitudes (the mode spectrum is weakly state-dependent —
+        pick a representative first-guess profile, e.g. the prior mean).
     Se : (m, m) array — observation error covariance (reflectance²).
     frac : float — keep-threshold as a fraction of the minimum observation σ_ε.
     """
     sigma_eps = np.sqrt(np.diag(np.asarray(Se, float)))
     thresh = float(frac) * float(np.min(sigma_eps))
-    amps = fwd.mode_amplitudes(x_ref, tau_nodes)               # (n_bands, NFourier)
+    amps = fwd.mode_amplitudes(x_ref, s_nodes)                 # (n_bands, NFourier)
     K_list = []
     for amp in amps:
         sig = np.where(amp >= thresh)[0]            # modes above the noise floor
@@ -385,50 +403,51 @@ def select_num_modes(fwd: RetrievalForward, x_ref, tau_nodes, Se, *, frac=1/3.0)
 # ============================================================================
 # 2. Retrieval-grid selection: QRCP-trimmed subset of the adaptive ODE grid
 # ============================================================================
-def select_retrieval_grid(fwd: RetrievalForward, x, tau_nodes, k_active, *,
+def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active, *,
                           re_of_tau=None, k_pool=20):
-    """Sensitivity-select ``k_active`` τ-nodes from the adaptive ODE pool.
+    """Sensitivity-select ``k_active`` **normalized-depth** nodes from the ODE pool.
 
-    1. Run the adaptive solve at the current state → ODE τ-grid (candidate pool,
-       a trustworthy *superset* of the informative points, DESIGN §3a).
-    2. Form the ToA Jacobian ``∂y/∂r_e(τ_j)`` on that pool (autodiff).
-    3. QR-with-column-pivoting (QRCP) on the (scaled) Jacobian ranks the nodes by
-       independent information; keep the top ``k_active`` — always including the
-       cloud-top node τ=0 (most informative) — and return them sorted.
+    1. Run the adaptive solve at the current state → ODE absolute-τ grid (candidate
+       pool, a trustworthy *superset* of the informative points, DESIGN §3a), and
+       normalize to ``s = τ/τ_bot ∈ [0,1]``.
+    2. Form the ToA Jacobian ``∂y/∂r_e(s_j)`` on that pool (autodiff).
+    3. QR-with-column-pivoting ranks the nodes by independent information; keep the
+       top ``k_active`` — always including cloud-top ``s=0`` (most informative) —
+       and return them as **normalized-depth** ``s_sel`` (the grid the forward uses).
 
     Parameters
     ----------
     re_of_tau : callable or None
-        Maps the pool τ to current r_e (to evaluate the pool's r_e values). If
-        None, uses the interpolant of ``(tau_nodes, x)`` + base anchor.
+        Maps an **absolute** τ to current r_e (to evaluate the pool's r_e values).
+        If None, uses the forward's own interpolant of ``(s_nodes, x)``.
     """
     # current cloud base (retrieved value in joint mode, else the fixed anchor)
-    cur_tau_bot = float(fwd._split_state(x, tau_nodes)[2])
-    tau_pool = fwd.ode_grid(x, tau_nodes)
-    tau_pool = np.unique(np.clip(tau_pool, 0.0, cur_tau_bot))
-    # Resample the adaptive ODE grid to a FIXED cardinality (preserving its
-    # density — uniform in node-index) so the pool Jacobian compiles once and
-    # every lagged re-selection is recompile-free (tau_pool is a traced arg).
-    if k_pool is not None and tau_pool.size != k_pool and tau_pool.size > 1:
-        tau_pool = np.interp(np.linspace(0.0, tau_pool.size - 1, k_pool),
-                             np.arange(tau_pool.size), tau_pool)
+    cur_tau_bot = float(fwd._split_state(x, s_nodes)[2])
+    tau_pool = fwd.ode_grid(x, s_nodes)                        # absolute τ
+    s_pool = np.unique(np.clip(tau_pool / cur_tau_bot, 0.0, 1.0))   # normalized
+    # Resample to a FIXED cardinality (uniform in node-index) so the pool Jacobian
+    # compiles once and every lagged re-selection is recompile-free.
+    if k_pool is not None and s_pool.size != k_pool and s_pool.size > 1:
+        s_pool = np.interp(np.linspace(0.0, s_pool.size - 1, k_pool),
+                           np.arange(s_pool.size), s_pool)
+    tau_pool_abs = s_pool * cur_tau_bot                        # absolute τ of pool
     if re_of_tau is None:
-        re_pool = fwd.profile(x, tau_nodes, tau_pool)   # same class as the forward
+        re_pool = fwd.profile(x, s_nodes, tau_pool_abs)        # same class as forward
     else:
-        re_pool = np.asarray([float(re_of_tau(t)) for t in tau_pool])
+        re_pool = np.asarray([float(re_of_tau(t)) for t in tau_pool_abs])
 
-    K_pool = fwd.jacobian_on_grid(re_pool, tau_pool, cur_tau_bot)   # (m, P)
+    K_pool = fwd.jacobian_on_grid(re_pool, s_pool, cur_tau_bot)    # (m, P)
 
-    # Column pivoting on the sensitivity matrix: rank τ-nodes by independent info.
+    # Column pivoting on the sensitivity matrix: rank nodes by independent info.
     from scipy.linalg import qr
     _, _, piv = qr(K_pool, mode="economic", pivoting=True)
 
-    # Candidate set = interior nodes only (the fixed base anchor τ_bot is appended
-    # by the forward, not retrieved). Always include the cloud-top node (τ≈0, most
-    # informative). Return EXACTLY k_active nodes so the retrieval-grid size is
-    # constant across lagged re-selections ⇒ r-refinement is recompile-free.
-    interior = tau_pool < cur_tau_bot - 1e-6
-    top_idx = int(np.argmin(tau_pool))
+    # Candidate set = interior nodes only (the base anchor s=1 is appended by the
+    # forward, not retrieved). Always include cloud-top (s≈0, most informative).
+    # Return EXACTLY k_active nodes so the retrieval-grid size is constant across
+    # lagged re-selections ⇒ r-refinement is recompile-free.
+    interior = s_pool < 1.0 - 1e-6
+    top_idx = int(np.argmin(s_pool))
     chosen = [top_idx]
     for p in piv:                                              # QRCP order
         if len(chosen) >= k_active:
@@ -436,15 +455,15 @@ def select_retrieval_grid(fwd: RetrievalForward, x, tau_nodes, k_active, *,
         if int(p) != top_idx and interior[p]:
             chosen.append(int(p))
     if len(chosen) < k_active:                                 # degenerate pool: pad by depth
-        for j in np.argsort(tau_pool):
+        for j in np.argsort(s_pool):
             if len(chosen) >= k_active:
                 break
             if j not in chosen and interior[j]:
                 chosen.append(int(j))
-    chosen = sorted(set(chosen), key=lambda j: tau_pool[j])
-    tau_sel = tau_pool[chosen]
+    chosen = sorted(set(chosen), key=lambda j: s_pool[j])
+    s_sel = s_pool[chosen]
     re_sel = re_pool[chosen]
-    return tau_sel, re_sel, dict(tau_pool=tau_pool, K_pool=K_pool, piv=piv)
+    return s_sel, re_sel, dict(s_pool=s_pool, K_pool=K_pool, piv=piv)
 
 
 # ----------------------------------------------------------------------------
@@ -565,35 +584,36 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
     return x_a, Sa
 
 
-def make_joint_prior(tau_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
+def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
                      retrieve_r_base=True, retrieve_tau_bot=True,
                      sigma_top=5.0, sigma_base=8.0, sigma_tau_bot=None,
                      corr_length=None, strength=1.0):
     """Joint prior over the retrieved state ``x = [r_e nodes, (r_base), (τ_bot)]``.
 
-    The r_e nodes — *and* ``r_base``, which **is** r_e at the base, so it joins the
-    block as the deepest r_e node at ``τ_bot_prior`` — form one correlated,
-    depth-increasing-σ adiabatic block (:func:`make_adiabatic_prior`). ``τ_bot`` is
-    appended as an **independent broad scalar** dimension (block-diagonal: cloud
-    geometric/optical depth is a different physical quantity from droplet size,
-    coupled only weakly, so we do not assert a cross-correlation in the prior).
+    The r_e nodes live at **normalized depth** ``s∈[0,1)`` — *and* ``r_base``, which
+    **is** r_e at the base, so it joins the block as the deepest node at ``s=1`` —
+    forming one correlated, depth-increasing-σ adiabatic block
+    (:func:`make_adiabatic_prior` evaluated in normalized depth, i.e. with unit
+    ``τ_bot`` so the adiabatic mean ``r_e∝s^(1/5)`` is τ_bot-independent). ``τ_bot``
+    is appended as an **independent broad scalar** dimension (block-diagonal: cloud
+    optical depth is a different physical quantity from droplet size, coupled only
+    weakly, so we do not assert a cross-correlation in the prior).
 
     All means are **leak-free** — generic/climatological ``r_top_prior``,
     ``r_base_prior``, ``tau_bot_prior``, *never* the truth. Broad σ's make it the
-    **weakly-informative (Option 2)** headline prior: the data sets ``τ_bot`` (a
-    conservative band measures optical thickness directly) and the upper-cloud
-    r_e, while the prior fills the radiatively shielded base. The ``retrieve_*``
-    flags must match the :class:`RetrievalForward` they will be used with, so the
-    state layout (and Sa block structure) line up.
+    **weakly-informative (Option 2)** headline prior: the data sets ``τ_bot`` (the
+    measurement constrains optical thickness directly) and the upper-cloud r_e,
+    while the prior fills the radiatively shielded base. The ``retrieve_*`` flags
+    must match the :class:`RetrievalForward` they will be used with.
 
-    ``sigma_tau_bot`` defaults to ``0.5·τ_bot_prior`` (~50 % relative — broad).
+    ``sigma_tau_bot`` defaults to ``0.5·τ_bot_prior`` (~50 % relative — broad);
+    ``corr_length`` is in normalized-depth units (default 0.5).
     """
-    tau_nodes = np.asarray(tau_nodes, float)
-    # r_e block: extend the free nodes with the base node at τ_bot when r_base is
-    # retrieved (make_adiabatic_prior's frac=0 there ⇒ its mean = r_base_prior).
-    nodes_aug = np.append(tau_nodes, tau_bot_prior) if retrieve_r_base else tau_nodes
+    s_nodes = np.asarray(s_nodes, float)
+    # r_e block in NORMALIZED depth: base node at s=1; unit τ_bot ⇒ frac=1−s.
+    nodes_aug = np.append(s_nodes, 1.0) if retrieve_r_base else s_nodes
     x_a, Sa = make_adiabatic_prior(
-        nodes_aug, tau_bot_prior, r_base_prior, r_top_prior,
+        nodes_aug, 1.0, r_base_prior, r_top_prior,
         sigma_top=sigma_top, sigma_base=sigma_base,
         corr_length=corr_length, strength=strength)
     if retrieve_tau_bot:
@@ -608,7 +628,7 @@ def make_joint_prior(tau_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
     return x_a, Sa
 
 
-def make_climatology_prior(tau_nodes, clim, *, retrieve_r_base=True,
+def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
                            retrieve_tau_bot=True, corr_length=None, strength=1.0):
     """Leave-one-flight-out VOCALS-REx climatological prior (Option 1, *fallback*).
 
@@ -622,7 +642,7 @@ def make_climatology_prior(tau_nodes, clim, *, retrieve_r_base=True,
     information-content profiling would use.
     """
     return make_joint_prior(
-        tau_nodes, tau_bot_prior=clim["tau_bot_mean"],
+        s_nodes, tau_bot_prior=clim["tau_bot_mean"],
         r_top_prior=clim["r_top_mean"], r_base_prior=clim["r_base_mean"],
         retrieve_r_base=retrieve_r_base, retrieve_tau_bot=retrieve_tau_bot,
         sigma_top=clim["r_top_std"], sigma_base=clim["r_base_std"],
@@ -635,8 +655,8 @@ def make_climatology_prior(tau_nodes, clim, *, retrieve_r_base=True,
 # ============================================================================
 @dataclass
 class OEResult:
-    x: np.ndarray              # retrieved r_e at the (final) grid nodes
-    tau_nodes: np.ndarray      # final retrieval-grid τ
+    x: np.ndarray              # retrieved joint state [r_e nodes, (r_base), (τ_bot)]
+    tau_nodes: np.ndarray      # final retrieval grid in NORMALIZED depth s=τ/τ_bot ∈[0,1)
     x_a: np.ndarray            # prior mean on the final grid
     Sa: np.ndarray             # prior covariance on the final grid
     Se: np.ndarray             # observation error covariance
@@ -647,17 +667,22 @@ class OEResult:
     converged: bool = False
 
 
-def _gn_inner(fwd, y, tau_nodes, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
-    """Inner Gauss–Newton on a fixed retrieval grid (Rodgers n-form)."""
+def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
+    """Inner Gauss–Newton on a fixed (normalized-depth) retrieval grid (Rodgers n-form).
+
+    ``s_nodes`` is the retrieval grid in normalized depth s=τ/τ_bot. Each iterate is
+    projected onto the physical/table bounds (:meth:`RetrievalForward._clamp_state`)
+    so an overshoot cannot drive the optics out of the table or τ_bot ≤ 0.
+    """
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
     y = np.asarray(y, float)
-    x = np.asarray(x0, float).copy()
+    x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
     history = []
     converged = False
     for _ in range(n_iter):
-        Fx = np.asarray(fwd.forward(x, tau_nodes), float)
-        K = np.asarray(fwd.jacobian(x, tau_nodes), float)     # (m, p)
+        Fx = np.asarray(fwd.forward(x, s_nodes), float)
+        K = np.asarray(fwd.jacobian(x, s_nodes), float)       # (m, p)
         # cost J = ½‖y-F‖²_{Se⁻¹} + ½‖x-x_a‖²_{Sa⁻¹}
         r = y - Fx
         J = 0.5 * r @ Se_inv @ r + 0.5 * (x - x_a) @ Sa_inv @ (x - x_a)
@@ -665,29 +690,31 @@ def _gn_inner(fwd, y, tau_nodes, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
         lhs = K.T @ Se_inv @ K + (1.0 + lm) * Sa_inv
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
         dx = np.linalg.solve(lhs, rhs)
-        x = x + dx
+        x = fwd._clamp_state(x + dx, s_nodes)                 # projected GN step
         if np.linalg.norm(dx) < xtol * (np.linalg.norm(x) + xtol):
             converged = True
             break
-    Fx = np.asarray(fwd.forward(x, tau_nodes), float)
-    K = np.asarray(fwd.jacobian(x, tau_nodes), float)
+    Fx = np.asarray(fwd.forward(x, s_nodes), float)
+    K = np.asarray(fwd.jacobian(x, s_nodes), float)
     return x, K, Fx, history, converged
 
 
-def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
+def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     n_outer=1, k_active=None, prior_builder=None,
                     r_top_prior=None, remesh_if_chi2_red_gt=None):
     """Optimal estimation with optional **lagged re-meshing** (outer loop).
 
-    Inner loop: Rodgers Gauss–Newton on a fixed grid. Outer loop (``n_outer>1``):
-    after each inner solve, re-select the retrieval grid by QRCP at the *current*
-    estimate (``select_retrieval_grid``), re-map the state (current ``r_e(τ)``
-    sampled at the new nodes) and rebuild the prior on the new nodes
-    (``prior_builder``), then re-run the inner GN. This corrects the first-guess
-    node-placement bias (OUTSTANDING B). ``n_outer=1`` ⇒ select-once.
+    The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
+    retrieving τ_bot never moves a node past the base — see
+    :meth:`RetrievalForward._re_of_tau`). Inner loop: Rodgers Gauss–Newton on a
+    fixed grid, projected onto physical bounds each step. Outer loop (``n_outer>1``):
+    after each inner solve, re-select the grid by QRCP at the *current* estimate
+    (``select_retrieval_grid``), re-map the r_e-node block onto the new s-grid and
+    rebuild the prior, then re-run. Corrects first-guess node placement (OUTSTANDING
+    B). ``n_outer=1`` ⇒ select-once.
 
-    ``prior_builder(tau_nodes) -> (x_a, Sa)`` is required when ``n_outer>1`` to
+    ``prior_builder(s_nodes) -> (x_a, Sa)`` is required when ``n_outer>1`` to
     rebuild the prior on each new grid.
 
     **Adaptive re-meshing (SO2b).** ``n_outer`` is an *upper bound*; the outer loop
@@ -700,12 +727,12 @@ def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
     (OUTSTANDING §G "re-mesh instability"). ``None`` ⇒ always re-mesh up to
     ``n_outer`` (legacy behaviour).
     """
-    tau_nodes = np.asarray(tau_nodes, float)
+    s_nodes = np.asarray(s_nodes, float)
     x = np.asarray(x_a, float) if x0 is None else np.asarray(x0, float)
     Se_inv = np.linalg.inv(np.asarray(Se, float))
     m = len(np.asarray(y, float))
 
-    x, K, Fx, hist, conv = _gn_inner(fwd, y, tau_nodes, x, x_a, Sa, Se,
+    x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol)
     full_hist = list(hist)
 
@@ -719,32 +746,33 @@ def gauss_newton_oe(fwd: RetrievalForward, y, tau_nodes, x_a, Sa, Se, *,
             chi2_red = float(r0 @ Se_inv @ r0) / max(m, 1)
             if chi2_red <= remesh_if_chi2_red_gt:
                 break
-        # current r_e(τ) via the forward's own parameterisation (the lever) so the
-        # re-mesh re-mapping mirrors F(x) exactly — not an independent interpolation.
-        cur_x, cur_nodes = np.asarray(x, float), tau_nodes
-        re_of_tau = lambda t: fwd.profile(cur_x, cur_nodes, t)
-        new_tau, new_re, _ = select_retrieval_grid(
-            fwd, x, tau_nodes, k_active, re_of_tau=re_of_tau)
-        if (len(new_tau) == len(tau_nodes)
-                and np.allclose(new_tau, tau_nodes, atol=1e-3)):
-            break                                              # grid stabilised
-        # re-map the r_e-node block onto the new grid (same parameterisation),
-        # carrying the current retrieved base/τ_bot estimates into the trailing
-        # joint-state entries (the grid re-selection touches only the r_e nodes).
+        # current r_e via the forward's parameterisation (mirrors F(x)); re_of_tau
+        # maps an ABSOLUTE τ to r_e (select_retrieval_grid evaluates the pool there).
+        cur_x, cur_nodes = np.asarray(x, float), s_nodes
         _, cur_rbase, cur_taubot = fwd._split_state(cur_x, cur_nodes)
-        x = np.asarray(fwd.profile(cur_x, cur_nodes, new_tau), float)
+        cur_taubot = float(cur_taubot)
+        re_of_tau = lambda t: fwd.profile(cur_x, cur_nodes, t)
+        new_s, _, _ = select_retrieval_grid(
+            fwd, x, s_nodes, k_active, re_of_tau=re_of_tau)
+        if (len(new_s) == len(s_nodes)
+                and np.allclose(new_s, s_nodes, atol=1e-3)):
+            break                                              # grid stabilised
+        # re-map the r_e-node block onto the new normalized grid (evaluate the
+        # current profile at the new s-nodes ⇒ absolute τ = s·τ_bot), carrying the
+        # current retrieved base/τ_bot estimates into the trailing joint-state entries.
+        x = np.asarray(fwd.profile(cur_x, cur_nodes, new_s * cur_taubot), float)
         if fwd.retrieve_r_base:
             x = np.append(x, float(cur_rbase))
         if fwd.retrieve_tau_bot:
-            x = np.append(x, float(cur_taubot))
-        x_a, Sa = prior_builder(new_tau)
-        tau_nodes = new_tau
+            x = np.append(x, cur_taubot)
+        x_a, Sa = prior_builder(new_s)
+        s_nodes = new_s
         # K may change size ⇒ recompiles once for this new k (rare).
-        x, K, Fx, hist, conv = _gn_inner(fwd, y, tau_nodes, x, x_a, Sa, Se,
+        x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                          n_iter=n_iter, lm=lm, xtol=xtol)
         full_hist += hist
 
-    return OEResult(x=x, tau_nodes=tau_nodes, x_a=x_a, Sa=Sa, Se=Se, K=K, y=np.asarray(y),
+    return OEResult(x=x, tau_nodes=s_nodes, x_a=x_a, Sa=Sa, Se=Se, K=K, y=np.asarray(y),
                     Fx=Fx, cost_history=full_hist, converged=conv)
 
 
@@ -819,26 +847,28 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
     """Synthetic observation ``y = F(x_true)`` from an in-situ truth profile.
 
     The truth ``r_e(τ)`` is the dense in-situ profile; it is fed to the forward
-    model directly (as the node values on its own τ-grid). In **joint** mode the
-    truth ``τ_bot`` / ``r_base`` (= the last in-situ point) are appended to the
-    state so the synthetic measurement is generated at the true cloud depth/base —
-    this is *defining the synthetic world*, not a leak (the leak would be letting
-    the *retrieval* know them, which the prior/first-guess no longer does).
-    Noiseless by default (the OSSE decision); pass ``noise`` (a per-observation σ
-    vector or scalar) to add a Gaussian realization.
+    model directly, as node values at the truth's **normalized depths**
+    ``s = τ/τ_bot``. In **joint** mode the truth ``τ_bot`` / ``r_base`` (= the last
+    in-situ point) are appended to the state so the synthetic measurement is
+    generated at the true cloud depth/base — this is *defining the synthetic world*,
+    not a leak (the leak would be letting the *retrieval* know them, which the
+    prior/first-guess no longer does). Noiseless by default (the OSSE decision);
+    pass ``noise`` (a per-observation σ vector or scalar) for a Gaussian realization.
     """
     tau_truth = np.asarray(tau_truth, float)
     re_truth = np.asarray(re_truth, float)
     tau_bot_truth = float(tau_truth[-1])
     r_base_truth = float(re_truth[-1])
-    # interior truth nodes (exclude the base point — appended via the state/anchor)
+    # interior truth nodes (exclude the base point — appended via the state/anchor),
+    # expressed in normalized depth s=τ/τ_bot to match the forward parameterisation.
     interior = tau_truth < tau_bot_truth - 1e-9
+    s_truth = tau_truth[interior] / tau_bot_truth
     x = re_truth[interior]
     if fwd.retrieve_r_base:
         x = np.append(x, r_base_truth)
     if fwd.retrieve_tau_bot:
         x = np.append(x, tau_bot_truth)
-    y = np.asarray(fwd.forward(x, tau_truth[interior]), float)
+    y = np.asarray(fwd.forward(x, s_truth), float)
     if noise is not None:
         rng = np.random.default_rng(seed)
         y = y + rng.normal(0.0, 1.0, size=y.shape) * np.asarray(noise)

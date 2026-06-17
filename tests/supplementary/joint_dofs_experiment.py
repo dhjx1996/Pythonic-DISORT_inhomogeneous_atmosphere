@@ -64,9 +64,13 @@ CONFIGS = [
 _precomp = mie_legendre_precompute(max_nstop=512, NLeg=NLeg_all)
 
 
-def truth_state(truth, tau_nodes):
-    """Joint state [r_e(tau_nodes), r_base, tau_bot] sampled from the truth profile."""
-    re = np.interp(tau_nodes, truth.tau, truth.r_e)
+def truth_state(truth, s_nodes):
+    """Joint state [r_e at normalized depths s_nodes, r_base, tau_bot] from truth.
+
+    The grid is normalized depth s=τ/τ_bot, so r_e is sampled at absolute
+    τ = s·τ_bot_truth.
+    """
+    re = np.interp(np.asarray(s_nodes) * truth.tau_bot, truth.tau, truth.r_e)
     return np.concatenate([re, [truth.r_base, truth.tau_bot]])
 
 
@@ -111,27 +115,27 @@ def run_config(label, target_tau, restrict_flight, bands, k_active):
     Se = np.diag((0.03 * np.maximum(np.abs(y), 0.02)) ** 2)
     sigma_tau_broad = 0.5 * clim["tau_bot_mean"]
 
-    # S_eps azimuthal-mode count at the truth scene on a coarse grid
-    tau_ref = np.linspace(0.0, truth.tau_bot, 5)[:-1]
-    Kmodes = roe.select_num_modes(fwd, truth_state(truth, tau_ref), tau_ref, Se)
+    # S_eps azimuthal-mode count at the truth scene (grids in normalized depth s)
+    s_ref = np.linspace(0.0, 1.0, 5)[:-1]
+    Kmodes = roe.select_num_modes(fwd, truth_state(truth, s_ref), s_ref, Se)
     print(f"    obs m={fwd.m}, S_eps modes K={Kmodes}, "
           f"setup {time.perf_counter()-t0:.0f}s")
 
-    # QRCP retrieval grid at the truth scene (joint truth state)
-    tau_coarse = np.linspace(0.0, truth.tau_bot, 6)[:-1]
+    # QRCP retrieval grid at the truth scene (joint truth state), returned in s
+    s_coarse = np.linspace(0.0, 1.0, 6)[:-1]
     t1 = time.perf_counter()
-    tau_grid, _, _ = roe.select_retrieval_grid(
-        fwd, truth_state(truth, tau_coarse), tau_coarse, k_active)
-    k = len(tau_grid)
-    print(f"    QRCP grid ({k}): tau={np.round(tau_grid,2)}  "
-          f"[{time.perf_counter()-t1:.0f}s]")
+    s_grid, _, _ = roe.select_retrieval_grid(
+        fwd, truth_state(truth, s_coarse), s_coarse, k_active)
+    k = len(s_grid)
+    print(f"    QRCP grid ({k}) in s: {np.round(s_grid,3)} "
+          f"(τ≈{np.round(s_grid*truth.tau_bot,2)})  [{time.perf_counter()-t1:.0f}s]")
 
     # leak-free joint prior on the grid + the ONE Jacobian AT THE TRUTH STATE
     x_a_broad, Sa_broad = roe.make_joint_prior(
-        tau_grid, tau_bot_prior=clim["tau_bot_mean"],
+        s_grid, tau_bot_prior=clim["tau_bot_mean"],
         sigma_tau_bot=sigma_tau_broad, **BROAD)
     t2 = time.perf_counter()
-    Kjac = np.asarray(fwd.jacobian(truth_state(truth, tau_grid), tau_grid))  # (m,k+2)
+    Kjac = np.asarray(fwd.jacobian(truth_state(truth, s_grid), s_grid))     # (m,k+2)
     print(f"    Jacobian {Kjac.shape} [{time.perf_counter()-t2:.0f}s]")
 
     # --- A: fixed-anchor baseline (drop r_base, τ_bot columns + r_e prior block)
@@ -141,7 +145,7 @@ def run_config(label, target_tau, restrict_flight, bands, k_active):
 
     # --- B: joint + broad ; C: joint + climatology -------------------------
     post_broad = roe.posterior_diagnostics(Kjac, Sa_broad, Se)
-    x_a_clim, Sa_clim = roe.make_climatology_prior(tau_grid, clim)
+    x_a_clim, Sa_clim = roe.make_climatology_prior(s_grid, clim)
     post_clim = roe.posterior_diagnostics(Kjac, Sa_clim, Se)
 
     def summary(post, Sa, joint):
@@ -160,7 +164,8 @@ def run_config(label, target_tau, restrict_flight, bands, k_active):
 
     rec = dict(
         label=label, flight=truth.flight, bands=bands, k_active=k,
-        tau_grid=tau_grid.tolist(), m=fwd.m, K_modes=list(map(int, Kmodes)),
+        s_grid=s_grid.tolist(), tau_grid=(s_grid * truth.tau_bot).tolist(),
+        m=fwd.m, K_modes=list(map(int, Kmodes)),
         truth=dict(tau_bot=truth.tau_bot, r_top=truth.r_top, r_base=truth.r_base),
         clim={k_: clim[k_] for k_ in ("r_top_mean", "r_top_std", "r_base_mean",
                                       "r_base_std", "tau_bot_mean", "tau_bot_std", "n")},

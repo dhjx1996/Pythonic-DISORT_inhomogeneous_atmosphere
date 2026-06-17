@@ -46,12 +46,13 @@ ALBEDO = 0.06
 BROAD = dict(r_top_prior=10.0, r_base_prior=12.0, sigma_top=5.0, sigma_base=8.0)
 
 # label, target_tau, restrict, bands, k_active, re_class, n_outer
+# (thin_re5_n1 first: the key normalized-depth fix validation in the real config)
 VARIANTS = [
-    ("thin_re5_n2",    1.0, None, [1.24, 2.13], 4, "re5-linear", 2),  # PO headline
-    ("thin_re5_n1",    1.0, None, [1.24, 2.13], 4, "re5-linear", 1),  # SO2b
-    ("thin_linear_n1", 1.0, None, [1.24, 2.13], 4, "linear",     1),  # SO2a
-    ("thick_re5_n1",  23.3, "RF03", [1.24, 1.64, 2.13], 5, "re5-linear", 1),  # PO
-    ("thick_linear_n1", 23.3, "RF03", [1.24, 1.64, 2.13], 5, "linear",  1),  # SO2a
+    ("thin_re5_n1",    1.0, None, [1.24, 2.13], 4, "re5-linear", 1),  # PO headline thin
+    ("thick_re5_n1",  23.3, "RF03", [1.24, 1.64, 2.13], 5, "re5-linear", 1),  # PO headline thick
+    ("thin_re5_n2",    1.0, None, [1.24, 2.13], 4, "re5-linear", 2),  # SO2b (vs thin_re5_n1)
+    ("thin_linear_n1", 1.0, None, [1.24, 2.13], 4, "linear",     1),  # SO2a thin
+    ("thick_linear_n1", 23.3, "RF03", [1.24, 1.64, 2.13], 5, "linear",  1),  # SO2a thick
 ]
 _precomp = mie_legendre_precompute(max_nstop=512, NLeg=NLeg_all)
 
@@ -87,21 +88,21 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
     y = roe.osse_observation(fwd, truth.tau, truth.r_e)
     Se = np.diag((0.03 * np.maximum(np.abs(y), 0.02)) ** 2)
 
-    # mode count + QRCP grid at the broad first guess
-    tau_ref = np.linspace(0.0, clim["tau_bot_mean"], 5)[:-1]
-    x_ref, _ = roe.make_joint_prior(tau_ref, tau_bot_prior=clim["tau_bot_mean"],
+    # mode count + QRCP grid at the broad first guess (grids in NORMALIZED depth s)
+    s_ref = np.linspace(0.0, 1.0, 5)[:-1]
+    x_ref, _ = roe.make_joint_prior(s_ref, tau_bot_prior=clim["tau_bot_mean"],
                                     sigma_tau_bot=sig_tau, **BROAD)
-    roe.select_num_modes(fwd, x_ref, tau_ref, Se)
-    tau_coarse = np.linspace(0.0, clim["tau_bot_mean"], 6)[:-1]
-    x_fg, _ = roe.make_joint_prior(tau_coarse, tau_bot_prior=clim["tau_bot_mean"],
+    roe.select_num_modes(fwd, x_ref, s_ref, Se)
+    s_coarse = np.linspace(0.0, 1.0, 6)[:-1]
+    x_fg, _ = roe.make_joint_prior(s_coarse, tau_bot_prior=clim["tau_bot_mean"],
                                    sigma_tau_bot=sig_tau, **BROAD)
-    tau_grid, _, info = roe.select_retrieval_grid(fwd, x_fg, tau_coarse, k_active)
-    k = len(tau_grid)
-    print(f"    QRCP grid({k}): {np.round(tau_grid,2)}; modes K={fwd.K_list}",
+    s_grid, _, info = roe.select_retrieval_grid(fwd, x_fg, s_coarse, k_active)
+    k = len(s_grid)
+    print(f"    QRCP grid({k}) in s: {np.round(s_grid,3)}; modes K={fwd.K_list}",
           flush=True)
 
-    # SO1: what would auto_k_active pick? (pool Jacobian already computed)
-    Sa_pool = roe.make_adiabatic_prior(info["tau_pool"], clim["tau_bot_mean"],
+    # SO1: what would auto_k_active pick? (pool Jacobian already computed; pool in s)
+    Sa_pool = roe.make_adiabatic_prior(info["s_pool"], 1.0,
                                        clim["r_base_mean"], BROAD["r_top_prior"],
                                        sigma_top=BROAD["sigma_top"],
                                        sigma_base=BROAD["sigma_base"])[1]
@@ -112,12 +113,12 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
           f"n_data={if_f['n_data_dominated']}), dofs->{k_dofs} "
           f"(DOFS={if_d['dofs']:.2f}); used k={k}", flush=True)
 
-    # joint prior on the grid + GN
-    prior_builder = (lambda tn: roe.make_joint_prior(
-        tn, tau_bot_prior=clim["tau_bot_mean"], sigma_tau_bot=sig_tau, **BROAD))
-    x_a, Sa = prior_builder(tau_grid)
+    # joint prior on the grid + GN (prior_builder takes normalized s-nodes)
+    prior_builder = (lambda sn: roe.make_joint_prior(
+        sn, tau_bot_prior=clim["tau_bot_mean"], sigma_tau_bot=sig_tau, **BROAD))
+    x_a, Sa = prior_builder(s_grid)
     t1 = time.perf_counter()
-    res = roe.gauss_newton_oe(fwd, y, tau_grid, x_a, Sa, Se, n_iter=12, lm=1e-2,
+    res = roe.gauss_newton_oe(fwd, y, s_grid, x_a, Sa, Se, n_iter=12, lm=1e-2,
                               xtol=2e-3, n_outer=n_outer, k_active=k_active,
                               prior_builder=prior_builder)
     post = roe.posterior_diagnostics(res.K, res.Sa, res.Se)
@@ -130,7 +131,9 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
     kk = len(res.tau_nodes)
     re_ret = res.x[:kk]
     r_base_ret, tau_bot_ret = float(res.x[kk]), float(res.x[kk + 1])
-    truth_at = np.interp(res.tau_nodes, truth.tau, truth.r_e)
+    # truth on the retrieved grid: r_e at absolute τ = s · retrieved τ_bot
+    s_grid_final = np.asarray(res.tau_nodes)
+    truth_at = np.interp(s_grid_final * tau_bot_ret, truth.tau, truth.r_e)
     prof_rmse = float(np.sqrt(np.mean((re_ret - truth_at) ** 2)))
     print(f"    PROFILE  ret={np.round(re_ret,2)} truth={np.round(truth_at,2)} "
           f"RMSE={prof_rmse:.2f} um", flush=True)
@@ -147,7 +150,8 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
         label=label, flight=truth.flight, re_class=re_class, n_outer=n_outer,
         bands=bands, k_active_used=kk, k_filter=k_filter, k_dofs=k_dofs,
         so1=dict(filter=if_f, dofs=if_d),
-        tau_grid=res.tau_nodes.tolist(),
+        s_grid=s_grid_final.tolist(),
+        tau_grid=(s_grid_final * tau_bot_ret).tolist(),    # absolute τ of the nodes
         truth=dict(tau_bot=truth.tau_bot, r_top=truth.r_top, r_base=truth.r_base),
         clim={k_: clim[k_] for k_ in ("r_top_mean", "r_base_mean", "tau_bot_mean")},
         retrieved=dict(profile=re_ret.tolist(), r_base=r_base_ret,

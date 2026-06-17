@@ -57,15 +57,15 @@ view_phi = np.array([pi])
 BDRF = [[0.06]]
 print(f"setup+table {time.perf_counter()-t0:.1f}s")
 
-# coarse retrieval grid (3 free nodes incl. top); first-guess r_e from climatology
-tau_nodes = np.linspace(0.0, clim["tau_bot_mean"], 4)[:-1]
-k = tau_nodes.size
+# coarse retrieval grid in NORMALIZED depth s=τ/τ_bot (3 free nodes incl. top s=0)
+s_nodes = np.linspace(0.0, 1.0, 4)[:-1]
+k = s_nodes.size
 
 # --- (2) joint priors --------------------------------------------------------
 x_broad, Sa_broad = roe.make_joint_prior(
-    tau_nodes, tau_bot_prior=clim["tau_bot_mean"], r_top_prior=10.0,
+    s_nodes, tau_bot_prior=clim["tau_bot_mean"], r_top_prior=10.0,
     r_base_prior=12.0, sigma_tau_bot=0.5 * clim["tau_bot_mean"])
-x_clim, Sa_clim = roe.make_climatology_prior(tau_nodes, clim)
+x_clim, Sa_clim = roe.make_climatology_prior(s_nodes, clim)
 assert x_broad.shape == (k + 2,) and Sa_broad.shape == (k + 2, k + 2)
 assert x_clim.shape == (k + 2,) and Sa_clim.shape == (k + 2, k + 2)
 assert np.all(np.linalg.eigvalsh(Sa_broad) > 0), "broad Sa not SPD"
@@ -82,7 +82,7 @@ fwd = roe.RetrievalForward(
 
 # --- (3) _split_state decode -------------------------------------------------
 x_test = np.array([9.0, 10.0, 11.0, 12.5, 7.3])     # [3 nodes, r_base, tau_bot]
-rn, rb, tb = fwd._split_state(x_test, tau_nodes)     # float32 in the venv
+rn, rb, tb = fwd._split_state(x_test, s_nodes)       # float32 in the venv
 assert np.allclose(np.asarray(rn), [9.0, 10.0, 11.0], atol=1e-4)
 assert np.isclose(float(rb), 12.5, atol=1e-4) and np.isclose(float(tb), 7.3, atol=1e-4)
 print(f"[3] _split_state OK: r_nodes={np.asarray(rn)}, r_base={float(rb)}, "
@@ -99,13 +99,17 @@ fwd_fix = roe.RetrievalForward(
     NFourier=NFourier)                                       # legacy fixed-anchor
 y_fix = roe.osse_observation(fwd_fix, thin.tau, thin.r_e)
 rel = np.abs(y_joint - y_fix) / np.abs(y_fix)
-assert np.all(rel < 1e-4), f"joint != fixed at truth: rel={rel}"
-print(f"[4] joint-at-truth == fixed-anchor: y={np.round(y_joint,5)}, "
-      f"max rel diff {rel.max():.2e}")
+# float32 solver-parity tolerance: the joint (traced τ_bot) and fixed (constant
+# τ_bot) paths compile the τ/τ_bot division differently ⇒ adaptive-step noise at
+# the solver's float32 tol≈1e-3 level (DESIGN §4); not bit-identical like the old
+# absolute-τ forward, but equal to within solver tolerance.
+assert np.all(rel < 2e-3), f"joint != fixed at truth beyond solver tol: rel={rel}"
+print(f"[4] joint-at-truth == fixed-anchor (float32 solver tol): "
+      f"y={np.round(y_joint,5)}, max rel diff {rel.max():.2e}")
 
 # --- (5) gradient flows to r_base and τ_bot ----------------------------------
 t2 = time.perf_counter()
-K = np.asarray(fwd.jacobian(x_broad, tau_nodes))             # (m, k+2)
+K = np.asarray(fwd.jacobian(x_broad, s_nodes))               # (m, k+2)
 print(f"    jacobian compile+run {time.perf_counter()-t2:.1f}s")
 assert K.shape == (fwd.m, k + 2)
 col_rbase, col_taubot = K[:, k], K[:, k + 1]
@@ -116,10 +120,29 @@ print(f"[5] gradient flow OK: ||∂y/∂r_base||={np.linalg.norm(col_rbase):.3e}
       f"||∂y/∂τ_bot||={np.linalg.norm(col_taubot):.3e}")
 
 # --- DOFS decomposition smoke (uses the broad-prior Jacobian) ----------------
-Se = (0.03 * np.maximum(np.abs(y_broad := fwd.forward(x_broad, tau_nodes)),
-                        0.02)) ** 2
-post = roe.posterior_diagnostics(K, Sa_broad, np.diag(np.asarray(Se)))
+y_broad = fwd.forward(x_broad, s_nodes)
+Se_d = np.diag((0.03 * np.maximum(np.abs(y_broad), 0.02)) ** 2)
+post = roe.posterior_diagnostics(K, Sa_broad, Se_d)
 dby = roe.dofs_by_component(post, k, retrieve_r_base=True, retrieve_tau_bot=True)
 print(f"[+] DOFS={post.dofs:.2f}  profile={dby['profile']:.2f} "
       f"r_base={dby['r_base']:.2f} tau_bot={dby['tau_bot']:.2f}")
+
+# --- (6) GN CONVERGENCE from a far first guess (the normalized-depth + clamp fix)
+# Thin truth τ_bot=1.21 but the climatology first guess is τ_bot≈10.6 — exactly the
+# case the absolute-τ parameterisation could not retrieve (nodes stranded below the
+# thin base ⇒ crossing / max-solver-steps). In normalized s the nodes track τ_bot.
+t3 = time.perf_counter()
+Se_obs = np.diag((0.03 * np.maximum(np.abs(y_joint), 0.02)) ** 2)
+res = roe.gauss_newton_oe(fwd, y_joint, s_nodes, x_broad, Sa_broad, Se_obs,
+                          n_iter=8, lm=1e-2, xtol=2e-3, n_outer=1)
+tb_ret = float(res.x[k + 1])
+assert np.all(np.isfinite(res.x)), "GN produced non-finite state"
+assert res.cost_history[-1] <= res.cost_history[0], "GN did not reduce cost"
+assert tb_ret > 0, f"τ_bot went unphysical: {tb_ret}"
+# τ_bot should head DOWN from the thick first guess (10.6) toward the thin truth (1.21)
+assert tb_ret < clim["tau_bot_mean"], (
+    f"τ_bot did not move toward thin truth: {tb_ret} vs prior {clim['tau_bot_mean']:.1f}")
+print(f"[6] GN converges from far guess [{time.perf_counter()-t3:.1f}s]: "
+      f"τ_bot {clim['tau_bot_mean']:.1f}(prior)->{tb_ret:.2f}(ret), truth {thin.tau_bot:.2f}; "
+      f"cost {res.cost_history[0]:.2e}->{res.cost_history[-1]:.2e}, finite & physical")
 print(f"\nALL JOINT-REFACTOR SMOKE CHECKS PASSED ({time.perf_counter()-t0:.0f}s)")
