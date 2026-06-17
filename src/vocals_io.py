@@ -205,3 +205,47 @@ def pick_profile(profiles: list[CloudProfile], target_tau: float
                  ) -> CloudProfile:
     """Return the profile whose ``τ_bot`` is closest to ``target_tau``."""
     return min(profiles, key=lambda p: abs(p.tau_bot - target_tau))
+
+
+def vocals_climatology(profiles: list[CloudProfile], *,
+                       exclude_flight: str | None = None,
+                       tau_bot_range: tuple[float, float] = (0.3, 60.0)) -> dict:
+    """Robust cloud-top/base/depth climatology from an ensemble (for the prior).
+
+    Returns the ensemble **median** location and a **robust** spread
+    (1.4826·MAD ≈ Gaussian-equivalent σ) of ``r_top``, ``r_base`` and ``τ_bot``,
+    optionally **excluding one flight** (``exclude_flight``) — the
+    leave-one-flight-out discipline that keeps the prior leak-free in an OSSE: the
+    prior never sees a statistic derived from the truth profile or any profile from
+    its own flight. Feeds :func:`retrieval_oe.make_climatology_prior`.
+
+    **Robust by necessity.** The CDP τ-integration produces a handful of
+    non-physical ``τ_bot`` (drizzle / mis-segmented penetrations — up to ~1585 in
+    this dataset) that wreck mean/σ (mean 26, σ 140 vs median 9.4). So the stats
+    (i) drop profiles outside ``tau_bot_range`` (a generous marine-Sc band that
+    removes only the artifacts, not legitimately thick clouds) and (ii) use
+    median + MAD, which ignore the residual heavy tail. r_top/r_base are
+    well-behaved (mean≈median) but get the same treatment for consistency. σ's
+    carry a small physical floor so the prior stays usefully SPD.
+    """
+    held = [p for p in profiles
+            if exclude_flight is None or p.flight != exclude_flight]
+    lo, hi = tau_bot_range
+    held = [p for p in held if lo <= p.tau_bot <= hi]
+    if not held:
+        raise ValueError(f"no physical profiles after excluding {exclude_flight!r}")
+
+    def robust(vals):
+        a = np.asarray(vals, float)
+        med = float(np.median(a))
+        return med, float(1.4826 * np.median(np.abs(a - med)))
+
+    r_top_m, r_top_s = robust([p.r_top for p in held])
+    r_base_m, r_base_s = robust([p.r_base for p in held])
+    tau_m, tau_s = robust([p.tau_bot for p in held])
+    return dict(
+        n=len(held), flights=sorted({p.flight for p in held}),
+        r_top_mean=r_top_m, r_top_std=max(r_top_s, 0.5),
+        r_base_mean=r_base_m, r_base_std=max(r_base_s, 0.5),
+        tau_bot_mean=tau_m, tau_bot_std=max(tau_s, 1.0),
+    )
