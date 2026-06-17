@@ -650,6 +650,50 @@ def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
         strength=strength)
 
 
+def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.65,
+                         sigma_top=2.5, sigma_base=1.5, sigma_tau_bot=None,
+                         retrieve_r_base=True, retrieve_tau_bot=True,
+                         corr_length=None, strength=1.0):
+    """Generic marine-Sc joint prior, grounded in VOCALS-REx data + literature.
+
+    Replaces the earlier hand-picked (and inadvertently *inverted*, r_base>r_top)
+    broad prior. The structure follows the optimal-estimation principle revealed by
+    the prior-sensitivity study (``tests/supplementary/prior_investigation.py``;
+    DESIGN_DECISIONS.md §11): **make the prior tight exactly where the measurement
+    is blind, loose where it is strong.**
+
+    * **r_top** — observable (averaging-kernel A_top≈1 for thick cloud), so its prior
+      barely matters: a *moderate* ``sigma_top`` (≈ the VOCALS MAD 2.3 µm). Effective
+      range ~6–15 µm (data p5–p95 6.7–14; the ~14–15 µm drizzle threshold is the
+      physical upper bound — bigger droplets precipitate out). Pass a climatological
+      or MODIS-retrieved ``r_top_prior``.
+    * **r_base** — radiatively **shielded** for thick cloud (A_base≈0.06, ~80 %
+      prior-dominated), so the prior *is* the answer there. We therefore make it
+      **tight and adiabatic-coupled**, not vague: mean ``r_base = r_base_ratio·r_top``
+      (the adiabatic ratio; VOCALS median 0.60, King/Vukićević AMT-2025 ≈0.70 — default
+      0.65), **clipped < r_top** (the adiabatic constraint, satisfied by 95 % of VOCALS
+      profiles and enforced as a hard bound in that literature), with a tight
+      ``sigma_base`` ≈ the VOCALS robust core (MAD 1.4 µm). Sub-saturation /
+      re-evaporation profiles are the rare heavy tail (std 2.0 ≫ MAD 1.4); we do not
+      try to capture them in the prior — recovering one is a bonus (notebook §13).
+    * **tau_bot** — fully data-determined from the bands (A≈1.00, prior irrelevant), and
+      "average cloud thickness" is not a meaningful quantity (VOCALS MAD≈median), so the
+      prior is deliberately **uninformative**: ``sigma_tau_bot`` defaults to
+      ``tau_bot_prior`` (~100 % relative).
+
+    All means are leak-free (climatological/generic, never the truth).
+    """
+    r_base_prior = min(float(r_base_ratio) * float(r_top_prior),
+                       float(r_top_prior) - 0.5)      # adiabatic bound r_base < r_top
+    if sigma_tau_bot is None:
+        sigma_tau_bot = float(tau_bot_prior)          # uninformative (~100 % relative)
+    return make_joint_prior(
+        s_nodes, tau_bot_prior=tau_bot_prior, r_top_prior=r_top_prior,
+        r_base_prior=r_base_prior, sigma_top=sigma_top, sigma_base=sigma_base,
+        sigma_tau_bot=sigma_tau_bot, retrieve_r_base=retrieve_r_base,
+        retrieve_tau_bot=retrieve_tau_bot, corr_length=corr_length, strength=strength)
+
+
 # ============================================================================
 # 4. Gauss–Newton optimal estimation (Rodgers n-form) + lagged re-meshing
 # ============================================================================

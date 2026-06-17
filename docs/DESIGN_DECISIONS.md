@@ -549,3 +549,56 @@ well-fit but correlated node basis just churns placement (the "re-mesh instabili
 policy: **re-mesh only on a persistently high loss (structural misfit), freeze the grid otherwise.**
 For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1, matching the SO2b
 "disable if it destabilises / only re-mesh on high loss" rule.
+
+---
+
+## 11. Prior design — grounded in VOCALS-REx data + literature + information content  [SETTLED]
+
+The earlier broad prior was hand-picked and **inverted** (r_top=10 < r_base=12 — the
+*converse* of an adiabatic profile, where r_e is largest at the top). Replaced by
+`retrieval_oe.make_marine_sc_prior`, designed from a prior-sensitivity study
+(`tests/supplementary/prior_investigation.py` → `docs/prior_investigation_results.json`)
+plus the VOCALS-REx empirical distributions and the King/Vukićević retrieval literature
+(AMT 18, 5299, 2025; the same 3-parameter r_top/r_base/τ adiabatic model we use).
+
+**(a) Verified mechanism — how a shielded r_base still moves (resolves the "§12 is
+suspiciously good" puzzle).** Linearized at truth, the retrieval is
+`x̂ = x_a + A·(x_truth − x_a)` (A = averaging kernel). For thick RF03, A_base = **0.06**
+(≈ no *direct* information), yet r_base moves off its prior. The driver is the **prior
+off-diagonal correlation**, not measurement: with the same inverted prior (base=12), a
+**diagonal** prior pins r_base at **11.44** (A_base→0.01), while the **correlated** prior
+moves it to 9.72 — r_base is reconstructed by smooth extrapolation from the well-measured
+upper-cloud nodes. So DOFS_base being ~0 yet r_base "retrieved well" is not measurement;
+it is the prior's smoothness transferring the observable r_top downward. Its honest
+posterior σ stays ≈ the prior σ. *Consequence:* §12's good r_base is luck (RF03's base
+continues the visible trend); a true near-base anomaly would be missed (RF05, §13).
+
+**(b) The three observability findings (averaging kernel at truth; thin RF11 / thick RF03).**
+
+| param | A (thick) | prior-following | verdict |
+|---|---|---|---|
+| **r_top** | **0.98** | ~0 (x̂_top=11.4 for prior 8→16) | observable ⇒ prior barely matters |
+| **r_base** | **0.06** | ~0.8 (x̂_base 3.6→8.4 for prior 4→10) | shielded ⇒ prior *is* the answer |
+| **τ_bot** | **1.00** | 0 (x̂=23.2 for prior mean 5→25, σ 2→40) | fully measured ⇒ prior irrelevant |
+
+(Thin RF11: r_top only ~0.23 / ~30 %-prior-following — *information-starved thin cloud*,
+**and possibly a discrete-ordinate resolution artefact**: near-top sensitivity is
+single-scattering-dominated and oblique-angle / high-moment sensitive, so it needs more
+streams; see `thin_top_resolution.py`. τ_bot and r_base behave as for thick.)
+
+**(c) VOCALS-REx empirical distributions (n=125, τ_bot∈[0.3,60]).** r_top 9.5 ± 2.3 µm
+(MAD; p95 14.0 — the ~14–15 µm **drizzle threshold** is the physical upper bound, big drops
+fall out); r_base 5.7 ± **1.4** µm (MAD) — *narrower in absolute terms* than r_top, with a
+tight robust core but a heavy tail (std 2.0 ≫ MAD 1.4 = the sub-saturation/drizzle
+exceptions); τ_bot median 9.6, **MAD 9.5 ≈ median** (uninformative). 95 % of profiles have
+r_top > r_base (adiabatic direction); corr(r_top, r_base) = 0.58; median ratio
+r_base/r_top = 0.60 (literature 0.70).
+
+**(d) The design — tight where the measurement is blind, loose where it is strong**
+(`make_marine_sc_prior`): r_base **tight** (σ≈1.4, the microphysical core) and
+**adiabatic-coupled** (mean = 0.65·r_top, clipped < r_top) — because it is prior-dominated,
+a vague r_base prior would give a vague/wrong r_base; r_top **moderate** (σ≈2.3, effective
+≲15 drizzle cap) — observable, so loose is fine; τ_bot **uninformative** (σ≈mean) — fully
+data-determined. This is the optimal-estimation-principled prior and it is what the data,
+literature, and sensitivity experiments jointly support. Sub-saturation profiles are the
+rare tail we deliberately do not encode (capturing one is a bonus, §13).
