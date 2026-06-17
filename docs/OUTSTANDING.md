@@ -136,7 +136,19 @@ the r_e signal is mostly phase-function-borne (ω carries ~1% of the thin-cloud 
 the table slope is the *better* ∂ω/∂r_e. See `DESIGN_DECISIONS.md` §8 (decision) and
 `docs/jacobian_decomposition.ipynb` (the full diagnostic).
 
-### B′. The r_e(τ) profile parameterisation — the inter-node interpolation lever  [OPEN — explore]
+### B′. The r_e(τ) profile parameterisation — the inter-node interpolation lever  [PARTIALLY ADDRESSED — re5≈linear on 2 profiles; multi-profile study still open]
+
+**Update 2026-06-17 (SO2a model comparison).** The clean test below — retrieve the *same* data
+under {linear, r_e⁵-linear} on the same grid — was run for thin (RF11) and thick (RF03) in
+`joint_osse_retrieval.py` (→ `docs/joint_osse_results.json`). **Verdict: second-order lever.**
+re5-linear wins the profile RMSE in both regimes (thin 0.53 vs 0.60 µm; thick 0.87 vs 0.96 µm) but
+by **< 0.1 µm**, inside the retrieval's own uncertainty; fit ‖y−F‖ is comparable (thin re5 better,
+thick linear marginally better). So the data **cannot strongly distinguish the two shapes** at
+DOFS≈2–3 — re5-linear is kept as default on physical grounds (adiabatic `r_e ∝ τ^{1/5}` ⇒ linear in
+the natural variable) and the small accuracy edge, *not* because the data demand it. This confirms
+the user's SO2a intuition that for reasonable low-order monotonic interpolants the choice is
+insignificant. The **multi-profile** study (one profile is not definitive; PCHIP/EOF still
+unexplored) remains open. See `DESIGN_DECISIONS.md` §10g.
 
 *Distinct from the optics-table axis above:* this is how the retrieval state (r_e at the few grid
 nodes) becomes the continuous **profile** r_e(τ) the solver integrates. It is **one localised
@@ -282,11 +294,18 @@ delivers the latency hiding.
 
 ---
 
-## E. Retrieval loop not yet implemented  [DEFERRED]
+## E. Retrieval loop — implemented  [RESOLVED]
 
-The cost function `J(θ)`, Gauss–Newton/LM iteration, and r_e(τ) profile parameterisation
-(report §"Toward Retrieval") are not built. Forward-mode preferred for small p (≤~15 params),
-reverse-mode for large p (crossover p≈15–20 at m=10 observations).
+**Implemented** in `src/retrieval_oe.py`: the cost `J(θ)`, Rodgers Gauss–Newton/LM iteration
+(`gauss_newton_oe`, reverse-mode Jacobian via the jitted seam), the r_e(τ) profile
+parameterisation (normalized-depth `_re_of_tau`, the §B′ lever), Bayesian-Tikhonov prior
+(`make_adiabatic_prior`/`make_joint_prior`), QRCP retrieval-grid selection
+(`select_retrieval_grid`), posterior UQ/DOFS (`posterior_diagnostics`, `dofs_by_component`), and
+the OSSE harness (`osse_observation`). It is a **joint** retrieval of `[r_e(s-nodes), r_base, τ_bot]`
+— the cloud base is retrieved, not fixed from truth — with leak-free priors; see
+`DESIGN_DECISIONS.md` §10. (forward-mode for small p is still the documented optimisation; reverse
+is used for a single robust adjoint path.) Demonstrated on thin (RF11) and thick (RF03) VOCALS
+truths in `docs/riccati_solver_VOCALS_retrieval.ipynb`.
 
 ## F. Other deferred forward-model features  [DEFERRED]
 
@@ -386,7 +405,20 @@ angular-channel set. **Prerequisite:** retain the per-mode grids (and per-mode `
 sensitivities) in the offline `return_grid=True` path (currently discarded). Implementation
 deferred; this records the design so the retrieval-grid work can pick it up.
 
-### Re-mesh instability ⇒ the node basis is correlated  [OPEN — flagged 2026-06, revisit soon]
+### Re-mesh instability ⇒ the node basis is correlated  [PARTIALLY ADDRESSED — SO2b gate added]
+
+**Update 2026-06-17 (SO2b).** `gauss_newton_oe(remesh_if_chi2_red_gt=…)` now gates re-meshing on a
+**structural-misfit** signal: `n_outer` is an upper bound and re-meshing is *skipped* once the
+reduced χ² `‖y−F‖²_{Se⁻¹}/m` falls to the noise floor — i.e. re-mesh only on a persistently high
+loss (placement/parameterisation likely wrong), not on a well-fit but correlated basis where
+re-pivoting just churns placement. The **normalized-depth** parameterisation (DESIGN §10a) also
+relieves the worst coupling, since the deepest node no longer has the wide-`r_e⁵`-segment leverage
+that misled placement. The "leave the node basis for orthogonal shape modes (EOF)" cure below
+remains the deeper fix (still open). **Empirical n_outer=1-vs-2 (thin RF11): re-meshing did not
+help** — it moved the deepest node (s 0.49→0.37) but profile RMSE got *worse* (0.53→0.70 µm) at
+unchanged fit, i.e. it churned a well-fit correlated basis. So the χ²-gate correctly keeps n_outer
+effectively 1 here; re-mesh would only earn its keep on a structurally misfit (high-χ²) profile.
+See `DESIGN_DECISIONS.md` §10h.
 
 *Surfaced building the thick-cloud (RF03, τ≈23) retrieval. Recorded for the upcoming retrieval-grid
 / parameterisation work; the demo sidesteps it with `n_outer=1` (select-once).*
@@ -440,7 +472,27 @@ unstable. So `n_outer=1` (freeze the grid) is a legitimate fix for the figure, n
   "leave interpolation behind, fit a low-dim shape/EOF basis." **The flapping re-mesh is empirical
   motivation for that architecture**, not just a nuisance.
 
-### Planned change — auto-select the node count `k_active` from a QRCP threshold  [TODO, record only]
+### Auto-select the node count `k_active` from a QRCP threshold  [IMPLEMENTED — SO1]
+
+**Implemented 2026-06-17 (SO1) as `retrieval_oe.auto_k_active`.** Two estimators, computed once at
+the first guess: (i) the user's `k = round(factor·DOFS)` (`method="dofs"`, factor≥1 keeps a
+prior-filled margin); (ii) the **preferred noise-aware** `method="filter"` (not via DOFS) — whiten
+`K̃ = Se^(−1/2)·K_pool·diag(σ_prior)`, QRCP → pivoted R-diagonal `r_i`, keep the data-dominated
+directions (filter factor `f_i=r_i²/(1+r_i²)≥½ ⇔ r_i≥1`) + a fixed margin. `Σf_i ≈ DOFS` is a
+**built-in cross-check** between the two and a DOFS-robustness probe. Reported next to the used `k`
+in `joint_osse_retrieval.py`; the choose-once-and-freeze design (mirroring `select_num_modes`) and
+the original rationale are below.
+
+**OSSE verdict 2026-06-17.** `Σf_i` tracks DOFS to ≈5 % (thin 3.01 vs 2.88; thick 2.53 vs 2.39) ⇒
+**DOFS is an accurate, robust info measure here** — not an artefact of one estimator. The counts
+agree on thin (filter→4, dofs→4) and differ by one on thick (filter→3, dofs→4); the **filter count
+is the more conservative under saturation** (a thick cloud's deeper nodes are redundant, `f_i`
+collapses 0.97/0.87/0.47/0.21/…). Both auto values are ≤ the hardcoded production `k_active` (4/5),
+so the manual grids slightly over-resolve — harmless (extra nodes are prior-pulled into the shielded
+base) but **switch the production default to `method="filter"`** (no arbitrary `factor`, integer
+count, saturation-aware). See `DESIGN_DECISIONS.md` §10f.
+
+The original design note (retained):
 
 Today `k_active` is a **hardcoded hyperparameter** (4 thin / 5 thick); `select_retrieval_grid`
 QRCP-*ranks* the pool but the *count* is manual. Replace it with a **data-driven threshold**, computed

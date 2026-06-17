@@ -421,3 +421,131 @@ passed `[ρ/π]` throughout — i.e. surfaces **π× too dark** than labeled (no
 fed to both the Riccati solver and pydisort ⇒ the solver-vs-reference comparison still holds) and
 never biased a retrieval (surface applied consistently in truth + forward) — only the *nominal
 physical albedo* was wrong. The retrieval/OSSE surface (the notebook) is now corrected to `[0.06]`.
+
+---
+
+## 10. Joint retrieval of r_e(τ) **and** the cloud base (τ_bot, r_base); normalized-depth grid  [SETTLED]
+
+The VOCALS r_e(τ) retrieval previously fixed the cloud base `(τ_bot, r_base)` from the truth — a
+threefold information leak (τ_bot, r_base, **and** the prior mean of the top radius r_top). It is
+now a **joint** retrieval of the state `θ = [r_e(s-nodes…), r_base, τ_bot]` with all three made
+leak-free. (`src/retrieval_oe.py`; `tests/supplementary/joint_dofs_experiment.py`,
+`joint_osse_retrieval.py`, `smoke_joint_retrieval.py`.)
+
+**(a) Normalized-depth parameterisation `s = τ/τ_bot ∈ [0,1]`  [SETTLED — INVARIANT for joint τ_bot].**
+The r_e nodes live at fixed *normalized* depths `s`, base at `s=1`; absolute positions `s·τ_bot`
+**stretch/compress with the retrieved τ_bot**. This is required for joint τ_bot retrieval:
+absolute-τ nodes placed at a (thick) first-guess τ_bot strand below a thin cloud's base, and a
+monotonicity guard then forbids τ_bot from dropping past them — the GN diverged (τ_bot→−5) or hit
+the Kvaerno5 max-steps controller error on out-of-range optics. In `s` there is no crossing and no
+guard. `re5-linear` in `s` ≡ in `τ` (linear rescale), so the adiabatic prior/lever is unchanged.
+The single lever `RetrievalForward._re_of_tau` does the `τ→s` map; the grid (`OEResult.tau_nodes`,
+`select_retrieval_grid`) is in `s`. **GN iterates are clamped** to the optics-table support and
+physical τ_bot bounds (`_clamp_state`, projected GN; DESIGN §8 bounded-state forward). Verified
+(smoke): the thin retrieval now converges from the climatology guess τ_bot 10.6→1.42 (truth 1.21),
+the case that previously blew up.
+
+**(b) Leak-free priors — broad (Option 2) headline, LOO climatology (Option 1) fallback  [SETTLED].**
+The first guess and prior means come from a **leave-one-flight-out** VOCALS climatology
+(`vocals_io.vocals_climatology`, robust median+MAD with a physical τ_bot filter — the CDP
+integration yields artefact τ_bot up to ~1585 that wreck mean/σ) — never the target profile or its
+flight. Headline prior = **broad weakly-informative** (`make_joint_prior` with generic marine-Sc
+means r_top≈10, r_base≈12, τ_bot prior σ≈0.5·mean): the data sets τ_bot and the upper-cloud r_e,
+the prior fills the shielded base. Fallback = the tighter LOO climatology
+(`make_climatology_prior`) if the broad prior degrades the fit. Operationally: Option 2 needs no
+scene-specific stats (generalises to any new scene); Option 1's analogue is a pre-built
+regional/seasonal climatology that excludes the current observation. `r_base` joins the correlated
+r_e block as the deepest node (it *is* r_e at the base); τ_bot is an independent broad scalar dim.
+
+**(c) Information content — DOFS (linearized at truth; `joint_dofs_results.json`)  [SETTLED].**
+Per-component `DOFS = tr(A) = Σ diag(A)` (`dofs_by_component`):
+
+| cloud | bands | fixed-anchor | joint broad (prof/rbase/τbot) | joint clim |
+|---|---|---|---|---|
+| thin RF11 τ=1.2 | 1.24,2.13 | 1.49 | 2.59 (1.30/0.28/**1.00**) | 2.11 |
+| thick RF03 τ=23 | 1.24,1.64,2.13 | 2.94 | 3.90 (2.85/0.09/**0.96**) | 2.96 |
+
+- **τ_bot is essentially fully measured** (DOFS≈0.9–1.0; 1σ collapses prior~5 → post 0.06–0.07 thin,
+  ~1–2 thick) and making it unknown costs the *profile* very little (1.49→1.30 thin, 2.94→2.85
+  thick). **r_base is strongly depth-dependent** (NOT uniformly shielded): for the *thin* cloud the
+  base is optically visible and the full-OSSE posterior removes ~90 % of its prior variance (DOFS
+  ≈0.85, σ 8→2.6 µm, the retrieval pulls it well off the prior); for the *thick* cloud it is
+  radiatively **shielded** (only ~30 % removed, DOFS ≈0.17, posterior ≈ prior). The at-truth DOFS
+  experiment (0.28 thin / 0.09 thick) understates the thin case vs the at-retrieval posterior — the
+  Jacobian ∂y/∂r_base is larger off the truth — but both agree thin ≫ thick. See the blind-spot
+  bullet below.
+- **DOFS is prior-dependent**: broad > climatology always (2.59>2.11, 3.90>2.96) — the tighter prior
+  pre-supplies information, lowering the measurement's *marginal* DOFS. Report DOFS vs prior, not a
+  single number.
+- **The shielded base is a physical blind spot, not just a method limit.** A *sub-adiabatic* base
+  (r_base **below** the upper-cloud r_e — the adiabatic prior assumes the opposite, r_base>r_top,
+  since r_e∝τ^{1/5} grows downward) is the microphysical signature of sub-saturation /
+  **re-evaporation** near cloud base (sub-cloud drizzle evaporation, entrainment mixing down). It is
+  exactly the signal a reflected-sunlight retrieval cannot see for thick cloud: r_base DOFS collapses
+  with optical thickness (0.28 thin → **0.09** thick here; 0.85→0.33 in the full OSSE), so for thick
+  Sc the base radius — and any evaporation signature — is **unfalsifiable from reflectance** (you get
+  the prior back). Marginally detectable only for optically thin cloud where photons reach the base.
+  *Consequence:* base re-evaporation needs an active complement (cloud radar/lidar) or thin scenes;
+  and the r_base *prior* should not be assumed adiabatic for scenes where evaporation is plausible —
+  though for thick cloud that prior choice is, by construction, untestable by the measurement.
+  **Empirical confirmation** (`subadiabatic_thin_retrieval.py` → notebook §13): starting from an
+  adiabatic prior (r_base mean 12 > r_top), the joint retrieval **recovers a sub-adiabatic downturn
+  only where the cloud is optically visible** — RF14 (τ≈2.5, decline through the upper cloud)
+  captured 48 % of the true 3.4 µm drop (r_base 12→7.6, truth 6.0); RF05 (τ≈2.9, drop confined to the
+  bottom ~40 %) **missed entirely** (r_base pushed to 9.6), despite near-equal τ. The discriminator
+  is *where the structure sits relative to photon penetration*, not τ alone. The VOCALS cleaned-data
+  floor is τ≈1.21 (RF11; the §11 headline, where r_base was pulled 12→7.7 toward truth 6.3, ~90 %
+  measured), so τ≲1 — where a near-bottom drop might be fully recoverable — cannot be tested here.
+
+**(d) Band reassessment — keep the weak-absorber, a conservative band is NOT worth it  [SETTLED].**
+Swapping 1.24 µm (weak absorber) → 0.86 µm (conservative) *hurts*: thick τ_bot 1σ nearly doubles
+(0.99→1.87) because a conservative band **saturates** for thick clouds (∂R/∂τ→0 as τ→∞) whereas a
+weak absorber stays τ-sensitive, and 0.86 carries no r_e-gradient information that 1.24 has. The
+bispectral "conservative band for τ" intuition does not pay because the joint inversion already
+nails τ_bot. Keep `[1.24, (1.64), 2.13]`.
+
+**(e) Joint > two-stage  [SETTLED — joint headline].** Because the joint inversion already
+determines τ_bot tightly (c) **and** propagates its uncertainty into the r_e posterior, it gets the
+two-stage robustness without the unquantified stage-1→stage-2 error leak. Two-stage is kept only as
+a robustness fallback. A conservative band is *included in* the joint measurement rather than run as
+a separate stage.
+
+**(f) Adaptive node count (SO1) — DOFS *is* a robust info measure here  [SETTLED].**
+`auto_k_active` offers two estimators — `round(factor·DOFS)` and the noise-aware whitened-QRCP
+filter factor `f_i=r_i²/(1+r_i²)` (not via DOFS), with `Σf_i ≈ DOFS` as a built-in cross-check and
+DOFS-robustness probe. **OSSE verdict** (`joint_osse_results.json`, profile-only pool Jacobian at
+the first guess): the independent estimators agree — `Σf_i` tracks DOFS to ≈5 % (thin 3.01 vs 2.88;
+thick 2.53 vs 2.39), so **DOFS is an accurate, robust information measure for this problem**, not an
+artefact of one estimator. The two node counts agree on the thin case (filter→4, dofs→4) and differ
+by one on the thick (filter→3, dofs→4): the filter count is the more conservative — a thick cloud's
+deeper nodes are redundant (saturation), and `f_i` collapses sharply (0.97, 0.87, 0.47, 0.21, …)
+where DOFS's soft sum still counts the half-resolved 4th. Both auto values are **below** the
+hardcoded production `k_active` (4 thin / 5 thick), i.e. the manual grids slightly over-resolve;
+this is harmless because the extra nodes are prior-pulled (they land in the shielded base) but the
+filter estimator is the principled choice to switch to. **Recommendation: `method="filter"`** as the
+default (no arbitrary `factor`, integer count, conservative under saturation); keep `dofs` as the
+DOFS-proportional alternative.
+
+**(g) Interpolation lever (SO2a) — second-order; re5-linear kept  [SETTLED].**
+re5-linear vs plain-linear `_re_of_tau`, same data, same grid (model comparison):
+
+| cloud | re5-linear (RMSE / ‖y−F‖ / DOFS) | linear (RMSE / ‖y−F‖ / DOFS) |
+|---|---|---|
+| thin RF11 | 0.53 µm / 9.9e-4 / 3.64 | 0.60 µm / 2.8e-3 / 3.11 |
+| thick RF03 | 0.87 µm / 1.7e-2 / 3.43 | 0.96 µm / 1.1e-2 / 3.82 |
+
+re5-linear wins the profile RMSE in both regimes, but the gap is **< 0.1 µm** — well inside the
+retrieval's own uncertainty. **The user's intuition holds: for reasonable low-order monotonic
+interpolation the choice is a minor, second-order lever, not a re-mesh-instability driver.**
+re5-linear is kept as default — it is physically motivated (adiabatic `r_e ∝ τ^{1/5}`, so the
+interpolant is linear in the natural variable) and marginally more accurate; the difference does not
+warrant the extra machinery of a higher-order scheme.
+
+**(h) Re-meshing (SO2b) — n_outer=1 is the right default; re-mesh did not help  [SETTLED].**
+On the thin case, lagged re-meshing (`n_outer=2`) moved the deepest node (s 0.49→0.37) but the
+profile RMSE got *worse* (0.53→0.70 µm) while the fit was unchanged (‖y−F‖≈1e-3) — re-pivoting a
+well-fit but correlated node basis just churns placement (the "re-mesh instability" of OUTSTANDING
+§G, now mild under normalized depth). The χ²-gate (`remesh_if_chi2_red_gt`) is therefore the correct
+policy: **re-mesh only on a persistently high loss (structural misfit), freeze the grid otherwise.**
+For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1, matching the SO2b
+"disable if it destabilises / only re-mesh on high loss" rule.
