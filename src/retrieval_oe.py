@@ -66,7 +66,7 @@ class RetrievalForward:
 
     def __init__(self, opt_bands, *, NQuad, mu0, I0, phi0, tau_bot, r_base,
                  view_mu, view_phi, BDRF_bands=None, NLeg_all=128, NFourier=8,
-                 tol=1e-3, re_class="re5-linear",
+                 tol=1e-3, re_class="re5-linear", jac_mode="rev",
                  retrieve_tau_bot=False, retrieve_r_base=False,
                  re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0)):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
@@ -129,10 +129,25 @@ class RetrievalForward:
                 stacklevel=2)
         if BDRF_bands is None:
             BDRF_bands = [()] * self.n_bands
+        # Jacobian AD mode. The retrieval state p (~6-7) is smaller than the
+        # observation count m = n_bands*n_view (~16-24), so forward-mode (one tangent
+        # solve per input, INDEPENDENT of n_view — the sensitivity funnels through the
+        # NQuad//2 quadrature nodes) is cheaper than reverse (one adjoint solve per
+        # output) AND makes dense view angles ~free. Forward-mode needs ForwardMode()
+        # setups (diffrax's reverse default is a custom_vjp that cannot be
+        # forward-differentiated). Default 'rev' keeps the legacy adjoint path.
+        if jac_mode not in ("rev", "fwd"):
+            raise ValueError(f"jac_mode must be 'rev' or 'fwd', got {jac_mode!r}")
+        self.jac_mode = jac_mode
+        _adjoint = None
+        if jac_mode == "fwd":
+            import diffrax
+            _adjoint = diffrax.ForwardMode()
         self.setups = [
             riccati_setup(NQuad, I0, phi0, mu0, NFourier=NFourier,
                           NLeg_all=NLeg_all, BDRF_Fourier_modes=bdrf,
-                          delta_M_scaling=True, NT_cor=True, tol=tol)
+                          delta_M_scaling=True, NT_cor=True, tol=tol,
+                          adjoint=_adjoint)
             for bdrf in BDRF_bands
         ]
         self.K_list = [s.NFourier for s in self.setups]
@@ -318,9 +333,12 @@ class RetrievalForward:
         return self._fwd_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
 
     def jacobian(self, x, s_nodes):
-        """K = ∂y/∂x  (m × p), reverse-mode through the jitted seam."""
+        """K = ∂y/∂x  (m × p) through the jitted seam. ``jac_mode='fwd'`` uses
+        forward-mode (``jax.jacfwd``, p tangent solves — cheaper and n_view-
+        independent when p < m); ``'rev'`` uses reverse-mode (``jax.jacrev``)."""
         if self._jac_jit is None:
-            self._jac_jit = jax.jit(jax.jacrev(self._forward_raw, argnums=0))
+            _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
+            self._jac_jit = jax.jit(_jac(self._forward_raw, argnums=0))
         return self._jac_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
 
     # -- ODE grid (adaptive candidate pool, DESIGN §3) -----------------------
@@ -359,7 +377,8 @@ class RetrievalForward:
                     self._band_reflectance(opt, setup, K, sg, rv, tb)
                     for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
                 ])
-            self._jac_grid_jit = jax.jit(jax.jacrev(fwd, argnums=0))
+            _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
+            self._jac_grid_jit = jax.jit(_jac(fwd, argnums=0))
         return np.asarray(self._jac_grid_jit(jnp.asarray(re_vals, float),
                                              jnp.asarray(s_grid, float),
                                              jnp.asarray(tau_bot, float)))
