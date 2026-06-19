@@ -8,6 +8,11 @@ default from the printed table: the most conservative (lowest threshold / most n
 that does not worsen RMSE — a node is not useless just because <50 % of its information is
 expected from the prior.
 
+NOTE (2026-06-20): this script uses the old hand-picked **3 %** Se and is **superseded** by
+``sweep_threshold_2pct.py``, which re-ran the sweep at the grounded PACE-OCI **2 %** noise and set
+the production default ``filter_threshold=0.5`` (Rodgers data/prior crossover; DESIGN §10f). Kept
+for the historical 3 %-noise comparison only.
+
     /tmp/jaxve/bin/python tests/supplementary/tune_filter_threshold.py
 """
 import sys

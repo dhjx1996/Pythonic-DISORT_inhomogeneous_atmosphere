@@ -524,20 +524,37 @@ hardcoded production `k_active` (4 thin / 5 thick), i.e. the manual grids slight
 this is harmless because the extra nodes are prior-pulled (they land in the shielded base) but the
 filter estimator is the principled choice.
 
-**Implemented 2026-06-19 (filter wired in; threshold tuned).** `auto_k_active` is now
-**filter-only** (the `dofs` estimator and `factor` removed); `select_retrieval_grid(k_active=None)`
-sets the count from the **full ODE grid** (the 20-node resample — which *manufactured* collinear
-pool columns for thin clouds — is gone); and the cut is exposed as `filter_threshold` in
-data-fraction units. A follow-up VOCALS thin/thick sweep (`tests/supplementary/tune_filter_threshold.py`,
-`thick_sweep2.py`) set the **default `filter_threshold=0.25`** — *lower* (more conservative) than the
-0.5 data/prior crossover, so the count is thin→5 / thick→4 (vs →4/→3 at 0.5). Rationale: the
-borderline `f≈0.29` upper node *helps* a structured thick cloud (RF08: under-resolving it cost
-+51 % RMSE) more than it over-fits a flat one (RF03: +18 %), and 0.25 stays *below* the deeper
-over-fit cliff (the `f≈0.07–0.12` node, whose inclusion blew RF03 up +98 % with τ_bot drift). DOFS
-**left the selection path entirely** — it is now an information-content diagnostic only
-(`src/info_content.py`, full ODE grid; `posterior_diagnostics` keeps per-retrieval DOFS+SIC). A
-SIC-peak selector (SIC, not DOFS, peaks at the RMSE-optimal k) was explored and set aside for the
-simpler fixed threshold.
+**Implemented 2026-06-19 (filter wired in); threshold = Rodgers crossover 0.5 (updated 2026-06-20).**
+`auto_k_active` is now **filter-only** (the `dofs` estimator and `factor` removed);
+`select_retrieval_grid(k_active=None)` sets the count from the **full ODE grid** (the 20-node
+resample — which *manufactured* collinear pool columns for thin clouds — is gone); the cut is exposed
+as `filter_threshold` in data-fraction units. **Default `filter_threshold=0.5`** — Rodgers' **data/prior
+crossover**: `f_i ≥ 0.5 ⇔ r_i ≥ 1 ⇔ SNR ≥ 1` on the noise-whitened Jacobian
+`K̃ = Se^(−1/2)·K·diag(σ_prior)`, the boundary above which a direction is *measured* rather than
+prior-dominated (Rodgers 2000 §2.4, `d_s = tr(A) = Σ λ_i²/(1+λ_i²)`; the filter factor is the
+per-direction "fraction from data" — EODG retrieval-theory notes §8.5.2). Two reasons it is the right
+default, *both* reinforcing the conservatism goal: **(i)** it keeps deviation-from-the-adiabatic-prior
+to what the **data** license — a sub-0.5 node's "deviation" is prior/noise-driven (the §13
+sub-adiabatic **overfit**), not a detection, so 0.5 protects the *credibility* of the method's
+distinguishing feature rather than blunting it; **(ii)** being the SNR=1 crossover it is **invariant to
+the noise level** (no re-tune when `Se` changes), unlike a tuned absolute cut.
+
+**Supersedes the old `0.25`** (a *3 %*-noise tune). When the measurement noise was grounded to the
+PACE-OCI **2 %** model (§12), 0.25 over-resolved → severe §13 overfit. A 0.25-vs-0.5 sweep at 2 %
+(`tests/supplementary/sweep_threshold_2pct.py`) settled it: **thin unchanged** (k=5 both); **the
+shielded RF10 §13 overfit fixed** (drop-cap 172 %→58 %, RMSE 0.69→0.52 — the culprit node `f=0.482`
+is prior-dominated); **thick costs only +0.1 µm** (RMSE 0.81→0.91, *both* χ²≪1 ⇒ well-fit, no
+structural under-resolution, and the dropped node sits *at* `f≈0.48`). That +0.1 µm is within the
+retrieval's own uncertainty and comes from a coin-flip-at-the-crossover node — **not** "strong evidence
+to deviate" from the principled default, so **no SIC escalation**. The old +51 %-RMSE RF08 concern that
+motivated 0.25 was a 3 %-noise artefact; at 2 % the borderline node's `f` rises and the cost collapses.
+(`tune_filter_threshold.py`/`thick_sweep2.py` were the superseded 3 %-noise sweeps.)
+
+DOFS **left the selection path entirely** — it is now an information-content diagnostic only
+(`src/info_content.py`, full ODE grid; `posterior_diagnostics` keeps per-retrieval DOFS+SIC). The
+**SIC-peak selector** (SIC peaks at the RMSE-optimal k) is the documented **escalation** — used only if
+a genuinely structured cloud is ever shown to be *structurally* under-resolved at 0.5 (χ² above the
+noise floor), paid for then rather than by default.
 
 **(g) Interpolation lever (SO2a) — second-order; re5-linear kept  [SETTLED].**
 re5-linear vs plain-linear `_re_of_tau`, same data, same grid (model comparison):
@@ -560,6 +577,24 @@ profile RMSE got *worse* (0.53→0.70 µm) while the fit was unchanged (‖y−F
 well-fit but correlated node basis just churns placement (the "re-mesh instability" of OUTSTANDING
 §G, now mild under normalized depth). The χ²-gate (`remesh_if_chi2_red_gt`) is therefore the correct
 policy: **re-mesh only on a persistently high loss (structural misfit), freeze the grid otherwise.**
+
+*Why "noise floor" ⇔ "well-fit" (the χ²-gate rationale, derived).* The gated quantity is the
+**whitened** data misfit `χ²_red = ‖y−F(x̂)‖²_{Se⁻¹}/m = (1/m)·Σ_i (y_i−F_i)²/σ_{ε,i}²` — every
+residual measured in units of *its own* measurement-noise σ. If the fit has captured all the
+*systematic* signal, the residual is just noise, `r = y−F(x̂) ≈ ε ∼ N(0,Se)`; whitening gives
+`Se^(−1/2)·r ∼ N(0,I_m)`, a sum of m squared unit-normals, so `E[‖r‖²_{Se⁻¹}] ≈ m` (≈ m−n for n
+fitted parameters) and hence **`χ²_red ≈ 1`**. So `χ²_red ≲ 1` means the residuals are statistically
+indistinguishable from noise — *nothing systematic is left for any node placement to explain*, which
+is exactly what "well-fit" means (re-meshing cannot help, so freeze the grid); `χ²_red ≫ thr` (=2.0)
+means the residual is many σ beyond what noise explains ⇒ a genuine **structural misfit** the current
+parameterisation cannot reproduce ⇒ re-mesh. **Caveat for our OSSE:** `osse_observation` is
+**noiseless** by default, so the residual floor is *not* a noise draw but **representation error**
+(the few nodes + r_e⁵-interpolant vs the dense continuous truth), scored against the *assumed*
+`Se=(0.03·R)²`. `χ²_red ≤ thr` then reads "the node model reproduces the synthetic data to within the
+instrument's ~3 % precision" — the same gate, floored by parameterisation rather than a noise
+realisation. *(Standard Rodgers OE goodness-of-fit; recorded here because the inline policy uses
+"noise floor"/"structural misfit" as shorthand without the derivation.)*
+
 For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1, matching the SO2b
 "disable if it destabilises / only re-mesh on high loss" rule.
 
@@ -650,3 +685,110 @@ a vague r_base prior would give a vague/wrong r_base; r_top **moderate** (σ≈2
 data-determined. This is the optimal-estimation-principled prior and it is what the data,
 literature, and sensitivity experiments jointly support. Sub-saturation profiles are the
 rare tail we deliberately do not encode (capturing one is a bonus, §13).
+
+---
+
+## 12. Measurement-noise model — three-term σ(ρ), OCI-SWIR calibration-relative; default noiseless  [SETTLED — shot term + HARP2/polarized open in OUTSTANDING K]
+
+**What "noise" means here (the conceptual fix).** The retrieval noise is **measurement noise
+on the ToA radiances** — the instrument noise of the spaceborne radiometer — **not** uncertainty
+in the VOCALS-REx in-situ truth. VOCALS is only the *ground-truth state* (it could equally be a
+synthetic or GCM profile); what is noisy is the simulated reflectance the instrument would report.
+So the noise model is grounded in the **PACE instrument specs**, not in the VOCALS distributions
+(those ground the *prior*, §11 — a different object). The observable is the bidirectional
+reflectance factor `ρ = π u / (μ0 I0)` (`RetrievalForward.forward`).
+
+**The three-term σ(ρ) (general form).** Three independent error sources added in quadrature:
+
+```
+σ(ρ) = sqrt( (k_cal·ρ)²            # calibration / radiometric accuracy — flat-relative, does NOT average down
+             + ρ·ρ_ref / SNR_ref²  # photon shot noise ∝ √ρ — relative size √(ρ_ref/ρ)/SNR_ref shrinks as ρ↑
+             + floor² )            # read/dark/quantization — additive, signal-independent (dark pixels only)
+```
+
+`k_cal·ρ` is a *relative* gain uncertainty (a 2 % error is 2 % on any pixel); the shot term is
+anchored at an instrument SNR_ref quoted at a reference reflectance ρ_ref (the L_typ analogue),
+with `SNR(ρ) = SNR_ref·√(ρ/ρ_ref)`; the floor dominates only near zero signal.
+
+**OCI-SWIR population = "Option B" (calibration-relative); shot term wired-but-off = "Option A"
+deferred.** For our bands (1.24/1.64/2.13 µm = OCI SWIR) clouds are *bright*, so SNR is high and the
+budget is **calibration-dominated** — the shot term is a small correction and A ≈ B in regime. We set
+`k_cal` from the documented OCI/HARP2 **radiometric accuracy 1–3 %** (PACE MRD §3.7 absolute-gain
+uncertainty; `oci_swir` default 0.02) and leave the shot term **off** (`snr_ref=∞`) because OCI's
+SNR-at-L_typ table could not be cleanly sourced (the MRD tables are embedded *images*; the SNR spec is
+in an external `.xlsx`; the conversion to reflectance further needs per-band F₀ + geometry). The
+function keeps the shot coefficients exposed, so dropping in verified `snr_ref`/`ρ_ref` switches A on
+with **no refactor** — tracked in [OUTSTANDING K](./OUTSTANDING.md).
+
+**Honest caveat — calibration error is systematic, not random.** The `k_cal·ρ` term models absolute
+gain uncertainty, which is *correlated across pixels in a scene* (a bias), whereas a diagonal `Se`
+treats it as independent per-observation noise. For the **single-column** OSSE this is the standard
+pragmatic choice (it sets the believable misfit scale and the χ²-gate floor, §10h); a multi-pixel /
+scene retrieval should revisit it (off-diagonal `Se`) — see OUTSTANDING K.
+
+**Default NOISELESS; the model is still used for `Se`.** `osse_observation(..., noise=None)` adds
+nothing (the OSSE decision, §10b). A noise *realization* is opt-in: pass a `NoiseModel` (drawn via
+`sample`, band-major over `fwd.n_bands`) or an explicit per-σ. Independently, the *assumed* covariance
+the retrieval inverts is `Se = diag(σ²)` built by `make_Se(fwd, y, model)` — needed for weighting and
+the χ²-gate **even with no perturbation**. The grounded `oci_swir()` model is the intended replacement
+for the historical hand-picked `Se = diag((0.03·max(|y|,0.02))²)` (kept reproducible as
+`generic_relative`).
+
+**Scope (user-set 2026-06-19): OCI-SWIR intensity only.** HARP2 (VIS 0.44–0.87 µm multi-angle; its
+headline **0.5 % DoLP** spec) cannot measure the SWIR retrieval bands; HARP2 and **polarized / DoLP
+noise** belong to the polarized-cloudbow observable and are deferred (OUTSTANDING §I, §K).
+
+**Posterior uncertainty budget — what `Ŝ` captures (transparency; deliberately *not* an OUTSTANDING
+item).** The reported posterior 1σ is the Rodgers `Ŝ = (KᵀSe⁻¹K + Sa⁻¹)⁻¹` (`posterior_diagnostics`),
+a function of only `Sa` (prior, §11) and `Se` (this section). It **captures** measurement noise, the
+prior, and the finite-resolution *variance* — under-determined directions relax to prior σ, so a
+shielded node honestly reports ≈prior σ. It does **not** capture two *bias* classes (sources of
+uncertainty are endless; these are out of scope for a 1D OSSE and not viable with current
+capabilities, so they are recorded here for honesty, not tracked as open work):
+- **Imposed-shape bias (representation/state):** the adiabatic `r_e∝τ^{1/5}` inter-node interpolant
+  (`_re_of_tau`), the adiabatic prior *mean* on unresolved directions, and the monotone basis's
+  inability to express non-monotone structure (drizzle minimum, decoupled layers). A bias where
+  reality is non-adiabatic, invisible to σ — exactly what §13 exercises. (The node *placement* is
+  physics-driven via the ODE grid, so this is minimised by design; what remains is the fill-shape and
+  the prior lean.)
+- **Forward-model / physics error:** 1D-vs-3D (independent-pixel / plane-parallel bias), the Mie
+  size-distribution idealization (single-mode gamma, fixed v_e), neglected gas/aerosol, the Lambertian
+  ocean (§9), and numerical truncation (NQuad / NFourier / NLeg / float32). **All cancel in the OSSE by
+  inverse crime** — the same forward generates and inverts the synthetic radiance — so they contribute
+  **zero here** and switch on only against *real* OCI/HARP2 radiances. VOCALS-REx in-situ error is
+  likewise out: the profile is the OSSE *truth* (exact by definition), and where it feeds the prior its
+  instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §11b.
+
+*(Implemented in `src/noise_model.py` — `NoiseModel` (three-term `sigma`/`Se`/`sample`), presets
+`oci_swir` / `generic_relative` — and wired in `src/retrieval_oe.py` (`osse_observation` NoiseModel
+dispatch, `make_Se`). Verified: `tests/supplementary/check_noise_model.py` (shot-off↔B, shot
+calibration, per-band band-major coeffs, Se=diag(σ²), sample statistics, bright-cloud shot
+subdominance, legacy match).)*
+
+---
+
+## 13. Performance — single-column latency-bound; batch columns on the GPU  [NOTE — empirical, 2026-06-08]
+
+Cached *single-column* execution is dominated by **many sequential tiny matmuls** (NFourier modes × 2
+sweeps × ~35 adaptive steps × 5 ESDIRK stages on N×N, N ≤ 8/16) — kernel-launch-latency-bound, so the
+GPU is **not** faster than CPU per column (warm single-mode solve: CPU 2.1 ms vs GPU 28.9 ms — ~14×
+*slower* on a T4). The analysis is **GPU-agnostic**: the binding costs (host-side XLA compile,
+per-kernel launch latency) are set off-device.
+
+**The retrieval is embarrassingly parallel across columns**, so `jax.vmap` over a batch turns the tiny
+matmuls into device-filling batched matmuls. Warm per-column time vs batch size B (µs/column,
+`tests/supplementary/batch_columns.py`):
+
+| B | 1 | 16 | 64 | 256 | 1024 | 4096 |
+|---|---|---|---|---|---|---|
+| **GPU** | 30592 | 2233 | **555** | 155 | 50 | **16** |
+| **CPU** | 1908 | 1021 | **959** | 854 | 829 | 846 |
+
+CPU per-column is ~flat (limited parallelism); GPU collapses ~1900× once a batch hides the latency.
+**Crossover at B≈64; at B=4096 the GPU is ~53× faster per column.** So "GPU is not a lever" holds *per
+single column*, but the right retrieval architecture is **jit (§7) + vmap a batch of columns onto the
+GPU** — the batch, not the device, delivers the latency hiding. Real speed levers: fewer Fourier modes,
+fewer adaptive steps (looser `tol`), and column batching — not the device itself.
+
+*(Relocated from the former OUTSTANDING §D — empirical detail in `tests/supplementary/profile_solver.py`
+and `batch_columns.py`, 2026-06-08, Tesla T4 vs CPU.)*

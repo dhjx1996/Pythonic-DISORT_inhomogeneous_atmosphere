@@ -6,7 +6,7 @@ Greenstein asymmetry parameter g changes continuously with optical depth.
 Also tests combined tau-variation of both omega and g, and the BDRF path
 with tau-varying optical properties.
 
-Verification strategy: multi-layer pydisort (50 / 500 layers, 10x refinement)
+Verification strategy: multi-layer pydisort (100 / 1000 layers, 10x refinement)
 must converge to the Riccati reference (tol=1e-8) at O(h^2).
 Theoretical convergence ratio for 10x refinement: 100.
 """
@@ -37,7 +37,7 @@ def _u_phi(func, *args):
 def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
                     b_pos=0, b_neg=0, BDRF_Fourier_modes=()):
     """
-    Run Riccati@tol=1e-8 (reference), pydisort@50 (coarse), pydisort@500 (fine).
+    Run Riccati@tol=1e-8 (reference), pydisort@100 (coarse), pydisort@1000 (fine).
     Both omega and g are treated as tau-varying.
     """
     def Leg_coeffs_func(tau):
@@ -51,11 +51,11 @@ def _ref_and_layers(tau_bot, omega_func, g_func, mu0, I0, phi0,
     )
 
     _, _, uf_c = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 50, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 100, NQuad, NLeg, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
     _, _, uf_f = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 500, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 1000, NQuad, NLeg, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 
@@ -76,7 +76,7 @@ def test_7a():
     u_ref, u_coarse, u_fine = _ref_and_layers(
         tau_bot, omega_func, g_func, mu0, I0, phi0
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 def test_7b():
@@ -90,7 +90,7 @@ def test_7b():
     u_ref, u_coarse, u_fine = _ref_and_layers(
         tau_bot, omega_func, g_func, mu0, I0, phi0
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 def test_7c():
@@ -107,4 +107,4 @@ def test_7c():
         tau_bot, omega_func, g_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)

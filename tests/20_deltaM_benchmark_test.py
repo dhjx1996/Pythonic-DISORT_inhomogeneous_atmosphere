@@ -54,7 +54,7 @@ def _u_phi(func, *args):
 # ---------------------------------------------------------------------------
 
 def test_20a_tau_varying_convergence_design_A():
-    """Multilayer pydisort (50/500 layers) converges toward the Riccati
+    """Multilayer pydisort (100/1000 layers) converges toward the Riccati
     reference (tol=1e-8) with delta-M + TMS active on both sides."""
     print("\n--- Test 20a: Design-A convergence, delta-M + TMS ---")
     tau_bot = 10.0
@@ -69,23 +69,23 @@ def test_20a_tau_varying_convergence_design_A():
         delta_M_scaling=True, NLeg_all=NLeg_all, NT_cor=True,
     )
     _, _, uf_c = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 50, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 100, NQuad, NLeg, mu0, I0, phi0,
         delta_M_scaling=True, NT_cor=True,
     )
     _, _, uf_f = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 500, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 1000, NQuad, NLeg, mu0, I0, phi0,
         delta_M_scaling=True, NT_cor=True,
     )
 
     u_ref = _u_phi(u_ToA_func)
     u_coarse = _u_phi(uf_c, 0)
     u_fine = _u_phi(uf_f, 0)
-    # Design-A structure (rate-based, 10x refinement, abs_tol=1e-3). min_ratio is
-    # relaxed from 10_key's 50 to 30 because the TMS integrand is sampled at layer
-    # midpoints alongside (omega, g); its O(h^2) constant is larger, so the
-    # measured ratio sits below the pure multiple-scattering case while remaining
-    # clean second-order. (Documented Design-A threshold adjustment.)
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=30, abs_tol=1e-3)
+    # Design-A structure (rate-based, 10x refinement, abs_tol=1e-3). Measured ratio at 100/1000
+    # is 82 (pure O(h^2) -> 100); the shortfall is the sub-leading O(h) term (not fully asymptotic
+    # at 100 layers), NOT a TMS-quadrature floor: err keeps dropping cleanly to 4.8e-7 at 3000
+    # layers (ratio 1000/3000 = 13 > 9), so no Riccati-vs-pydisort model-difference floor is hit
+    # (and a constant O(h^2) prefactor would cancel in the ratio anyway).
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +93,8 @@ def test_20a_tau_varying_convergence_design_A():
 # ---------------------------------------------------------------------------
 
 def _stream_convergence_case(tau_bot, omega, g, NLa, mu0, I0, phi0,
-                             improve_factor, abs_tol):
-    """raw(NQuad=16) vs corrected(NQuad=16) vs truth(NQuad=64), single layer."""
+                             improve_factor, abs_tol, NQuad=NQuad):
+    """raw(NQuad) vs corrected(NQuad) vs truth(NQuad=64), single layer."""
     from PythonicDISORT import subroutines
 
     Leg_full = g ** np.arange(NLa)
@@ -159,6 +159,7 @@ def test_20b_stream_convergence_cloud():
     _stream_convergence_case(
         tau_bot=10.0, omega=0.99, g=0.85, NLa=64,
         mu0=0.6, I0=1.0, phi0=0.0, improve_factor=3.0, abs_tol=5e-2,
+        NQuad=20,
     )
 
 

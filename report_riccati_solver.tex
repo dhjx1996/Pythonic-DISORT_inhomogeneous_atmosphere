@@ -27,31 +27,33 @@
 with Continuously $\tau$-Varying Optical Properties}
 \author{Technical Report --- Extension to the Pythonic-DISORT\\
 Comprehensive Documentation}
-\date{March 2026}
+\date{June 2026}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This report documents the Riccati forward solver implemented in
-\texttt{pydisort\_riccati\_jax}, an alternative entry point to PythonicDISORT
-for atmospheres where the single-scattering albedo $\omega(\tau)$ and
-phase function vary continuously with optical depth.  Instead of
-per-layer eigendecomposition, the solver integrates the
-invariant-imbedding Riccati ODE for reflection and transmission
-operators using diffrax's Kvaerno5 method~\cite{kidger2022neural}
-(5-stage ESDIRK, L-stable, order~5) with PIDController adaptive
-step-size control, running on JAX~\cite{jax2018github} for automatic
-differentiability.  All terms in the ODE have positive sign---no growing
-exponentials appear anywhere in the computation, guaranteeing
-unconditional numerical stability for arbitrary optical depth.  We
-derive the complete system of ODEs (reflection~$\mat{R}$,
-transmission~$\mat{T}$, beam source~$\vect{s}$) for both forward and
-backward sweeps, present the boundary-condition solve, and discuss the
-Kvaerno5 integration via JAX and diffrax.  This report extends
+This report documents \texttt{pydisort\_riccati\_jax}, a differentiable
+forward solver for radiative transfer in atmospheres where the
+single-scattering albedo $\omega(\tau)$ and phase function vary
+continuously with optical depth.  Instead of per-layer eigendecomposition,
+the solver integrates the invariant-imbedding Riccati ODE for reflection and
+transmission operators using diffrax's Kvaerno5 method~\cite{kidger2022neural}
+(5-stage ESDIRK, L-stable, order~5) with PIDController adaptive step-size
+control, running on JAX~\cite{jax2018github} for automatic differentiability.
+All terms in the ODE have positive sign---no growing exponentials appear
+anywhere in the computation, guaranteeing unconditional numerical stability
+for arbitrary optical depth.  We derive the complete system of ODEs
+(reflection~$\mat{R}$, transmission~$\mat{T}$, beam source~$\vect{s}$) for
+both forward and backward sweeps, present the boundary-condition solve, and
+discuss the Kvaerno5 integration via JAX and diffrax.  The forward solver is
+composed with a differentiable Mie lookup table (\texttt{miejax\_lite}) and a
+Rodgers optimal-estimation retrieval loop, forming a complete end-to-end
+differentiable pipeline for retrieving effective-radius profiles $r_e(\tau)$
+from multi-band, multi-angle ToA radiance observations; the retrieval is
+validated on VOCALS-REx marine stratocumulus profiles.  This report extends
 Sections~3--4 of the Pythonic-DISORT Comprehensive
-Documentation~\cite{HP2024doc} and assumes familiarity with that
-document.
+Documentation~\cite{HP2024doc} and assumes familiarity with that document.
 \end{abstract}
 
 \tableofcontents
@@ -980,19 +982,47 @@ efficient (step count nearly independent of $\texttt{NQuad}$), and
 fully JAX-traceable (enabling automatic differentiation for
 gradient-based retrieval; see \cref{sec:retrieval}).
 
+\paragraph{Delta-$M$ scaling and Nakajima--Tanaka TMS correction.}
+For forward-peaked phase functions (e.g.\ Mie scattering with
+$g\!\gtrsim\!0.8$), the truncated Legendre expansion introduces a
+negative-radiance artifact in the single-scattering field.  The solver
+implements Wiscombe's delta-$M$ scaling~\cite{Wiscombe1977} (replacing
+the forward peak with a delta-function transport term) and the
+Nakajima--Tanaka TMS correction (replacing the truncated
+single-scattering source with the exact phase function), both opt-in via
+\texttt{delta\_M\_scaling=True, NT\_cor=True}.  IMS (intensity correction
+for the \emph{downward} field) is omitted by design, since only the
+upwelling ToA field is the retrieval observable.
+
+\paragraph{Composable seam for jit-able retrieval.}
+The forward model exposes a three-function composable seam for use inside
+the retrieval loop:
+\begin{enumerate}[nosep]
+  \item \texttt{riccati\_setup(NQuad, I0, phi0, mu0, \ldots)}
+    --- host-side, run once per solar geometry; returns a frozen
+    \texttt{setup} struct.
+  \item \texttt{riccati\_solve(setup, omega\_func, leg\_func, tau\_bot, \ldots)}
+    --- JAX-traceable; runs all Fourier modes under \texttt{lax.scan}.
+  \item \texttt{eval\_radiance(setup, result, mu\_obs, phi\_obs)}
+    --- assembles the observable.
+\end{enumerate}
+The \texttt{lax.scan} over Fourier modes compiles the mode body
+\emph{once} with $O(1)$ memory in the mode count, resolving an earlier
+OOM at \texttt{NQuad}$\geq 24$ when the modes were unrolled.  $\mu_0$
+(cosine of solar zenith angle) is static: it enters the Legendre
+products and beam source and is fixed at setup time; changing solar
+geometry requires rebuilding the setup struct (one cheap recompile).
+
 %======================================================================
-\section{Toward Retrieval: Discrete Adjoints via JAX}\label{sec:retrieval}
+\section{Retrieval: Discrete Adjoints via JAX}\label{sec:retrieval}
 %======================================================================
 
-The ultimate goal of \texttt{pydisort\_riccati\_jax} is to serve as the
-forward model inside an iterative retrieval of the effective radius
-profile $r_e(\tau)$ from top-of-atmosphere radiance observations.  This
-section discusses the automatic-differentiation infrastructure that
-motivates the JAX implementation and the open questions that remain.
-
-\emph{This section describes work in progress.  The forward solver
-(\cref{sec:riccati}--\cref{sec:summary}) is complete and verified; the
-retrieval components described below are not yet implemented.}
+The forward solver serves as the differentiable core of an iterative
+retrieval of the effective-radius profile $r_e(\tau)$ from
+top-of-atmosphere radiance observations.  This section describes the
+automatic-differentiation infrastructure, the retrieval-grid analysis,
+the profile parameterisation, and the implemented optimal-estimation
+loop.
 
 %----------------------------------------------------------------------
 \subsection{The Retrieval Problem}\label{sec:retrieval-problem}
@@ -1071,40 +1101,28 @@ requires.  Two cases arise in the retrieval setting
     is preferred when $p > m$; forward mode when $p < m$.}
 \end{enumerate}
 
-\subsubsection{Concrete example: adiabatic cloud retrieval}
+\subsubsection{Concrete example: VOCALS marine stratocumulus retrieval}
 
-Consider the adiabatic cloud benchmark of \cref{sec:stability}
-($\tbot = 30$, $\omega$ varying 0.85--0.96) with $K \approx 50$
-Kvaerno5 steps across both sweeps.  Suppose $m = 10$ observations
-(multi-angle or multi-spectral) and let $C_{\mathrm{fwd}}$ denote the
-cost of one forward evaluation of \texttt{pydisort\_riccati\_jax},
-which scales linearly with~$K$.  Each forward-mode pass costs
-$c_f \, C_{\mathrm{fwd}}$ (typically $c_f \approx 2$--$3$); each
-reverse-mode pass with checkpointing costs
-$c_r \, C_{\mathrm{fwd}}$ ($c_r \approx 3$--$5$, due to segment
-recomputation).  The total cost for the full Jacobian is then:
-\begin{center}
-\begin{tabular}{lcc}
-\toprule
-Parameterisation & $p$ & Preferred mode \\
-\midrule
-NN decoder / EOF basis  & 3--5   & forward ($\approx 10\,C_{\mathrm{fwd}}$
-                                      vs.\ $\approx 40\,C_{\mathrm{fwd}}$) \\
-B-spline basis          & 8--15  & forward or comparable \\
-Level-by-level + Tikhonov & 30--50 & reverse ($\approx 40\,C_{\mathrm{fwd}}$
-                                      vs.\ $\approx 100\,C_{\mathrm{fwd}}$) \\
-\bottomrule
-\end{tabular}
-\end{center}
-The crossover occurs at roughly $p \approx (c_r / c_f)\, m \approx
-15$--$20$ for $m = 10$.  In all cases, $C_{\mathrm{fwd}} \propto K$,
-so minimising the integration step count (\cref{sec:stability})
-directly reduces the cost of every Jacobian computation regardless of
-the AD mode chosen.  Each Gauss--Newton iteration requires one Jacobian
-plus one forward evaluation; a typical retrieval converges in 5--15
-iterations, giving a total cost of $\sim\!10 \times (p\,c_f + 1)
-\times C_{\mathrm{fwd}}$ in forward mode or
-$\sim\!10 \times (m\,c_r + 1) \times C_{\mathrm{fwd}}$ in reverse.
+The implemented retrieval uses $p = 4$--$7$ parameters (effective-radius
+values at QRCP-selected $\tau$-nodes, plus $\tau_{\mathrm{bot}}$ and
+$r_{\mathrm{base}}$; see \cref{sec:parameterisation}) and $m \approx 6$--$9$
+observations (3 bands $\times$ 2--3 viewing angles).  With $K \approx 50$
+Kvaerno5 steps and forward-mode cost $c_f \approx 2$--$3$, the full
+$m \times p$ Jacobian via \texttt{jax.jacfwd} costs
+$\approx p\,c_f\,C_{\mathrm{fwd}} \approx 20\,C_{\mathrm{fwd}}$.  The
+reverse-mode alternative (\texttt{RecursiveCheckpointAdjoint}) would cost
+$\approx m\,c_r\,C_{\mathrm{fwd}} \approx 30$--$45\,C_{\mathrm{fwd}}$ due
+to segment recomputation.  \textbf{Forward mode is preferred} for
+$p < m$ or $p \approx m$, which is the case for the node-based
+parameterisation; the crossover at roughly
+$p \approx (c_r / c_f)\, m \approx 15$--$20$ is well above the
+implemented parameter count.
+
+In all cases, $C_{\mathrm{fwd}} \propto K$, so minimising the
+integration step count (\cref{sec:stability}) directly reduces the cost
+of every Jacobian computation.  Each Gauss--Newton iteration requires one
+Jacobian plus one forward evaluation; the retrieval typically converges in
+3--8 iterations.
 
 \subsubsection{JAX traceability}
 
@@ -1240,10 +1258,13 @@ for the Riccati solver are:
     \texttt{RecursiveCheckpointAdjoint} also gives low memory usage,
     [it] is essentially always preferred.''
 
-  \item[\texttt{ForwardMode}]
-    Forward-mode AD through the solver (\texttt{jax.jvp}).  Useful
-    when $p \ll m$ (few parameters, many outputs), but for the
-    retrieval setting ($p > m$), reverse mode is more efficient.
+  \item[\texttt{ForwardMode}~(used for the retrieval)]
+    Forward-mode AD through the solver (\texttt{jax.jvp}).  Preferred
+    when $p \leq m$ (few parameters), which is the case for the
+    implemented node-based retrieval ($p = 4$--$7$, $m = 6$--$9$).
+    Requires \texttt{riccati\_setup(\ldots, adjoint=diffrax.ForwardMode())}
+    since the default \texttt{RecursiveCheckpointAdjoint} registers a
+    \texttt{custom\_vjp} that cannot be forward-differentiated.
 
   \item[\texttt{DirectAdjoint}]
     Both forward and reverse support, but cost scales with
@@ -1292,12 +1313,12 @@ are:
     verification for the specific Riccati system is warranted.
 \end{enumerate}
 
-A recommended validation experiment, prior to implementing the full
-retrieval, is to compute $\nabla_{\!\vect{x}} J$ via
-\texttt{jax.grad} through \texttt{pydisort\_riccati\_jax} for a
-synthetic $r_e(\tau)$ profile and verify agreement with finite-difference
-gradients.  This would confirm both the correctness of the AD pipeline
-and the absence of numerical pathologies in the backward pass.
+This validation has been performed: $\nabla_{\!\vect{x}} J$ computed via
+\texttt{jax.grad} through \texttt{pydisort\_riccati\_jax} for a synthetic
+$r_e(\tau)$ profile agrees with centred finite-difference gradients to a
+relative error of ${\sim}2\times 10^{-10}$ (float64, step size
+$h = 10^{-5}$), confirming both the correctness of the AD pipeline and
+the absence of numerical pathologies in the backward pass.
 
 %----------------------------------------------------------------------
 \subsection{The Retrieval Grid and Its Relation to the ODE Grid}\label{sec:retrieval-grid}
@@ -1519,96 +1540,117 @@ not settle it here.
 \subsection{Profile Parameterisation}\label{sec:parameterisation}
 %----------------------------------------------------------------------
 
-The retrieval requires a finite-dimensional parameterisation of the
-continuous profile $r_e(\tau)$.  The choice of parameterisation affects
-both the conditioning of the inverse problem and the number of
-parameters~$p$, which in turn determines whether reverse-mode or
-forward-mode AD is more efficient.
+The retrieval parameterises $r_e(\tau)$ as a piecewise function of
+\emph{normalised optical depth} $s = \tau / \tau_{\mathrm{bot}}$
+($s \in [0,1]$, cloud-top to cloud-base), with the internal
+representation in $r_e^5$ (fifth power of effective radius) for
+physical consistency with the adiabatic growth law.
 
-Several approaches have been used in the atmospheric retrieval
-literature:
+\subsubsection{$r_e^5$-linear parameterisation}
 
-\begin{description}[style=nextline, leftmargin=2em]
-  \item[Level-by-level with smoothness regularisation]
-    The profile is retrieved at each of $p$ discrete $\tau$-levels,
-    with a Tikhonov penalty on the first or second derivative to
-    suppress oscillatory solutions~\cite{steck2002,dubovik2000}.
-    This gives the most general parameterisation but produces the
-    largest state vector and the most ill-conditioned $\mat{K}$.
+In a strictly adiabatic liquid cloud, $r_e^5(s) = r_{e,\mathrm{base}}^5
+\cdot s$ (linear in normalised depth).  This motivates representing the
+profile as piecewise linear in $(s, r_e^5)$ space: the state vector
+\begin{equation}\label{eq:state}
+  \vect{x} = \bigl[\,r_{e,1},\; r_{e,2},\; \ldots,\; r_{e,K},\;
+  r_{\mathrm{base}},\; \tau_{\mathrm{bot}}\,\bigr]
+\end{equation}
+contains $r_e$ values at $K$ QRCP-selected $s$-nodes (the
+sensitivity-selected subset of the ODE pool described in
+\cref{sec:retrieval-grid}), plus the cloud-base effective radius
+$r_{\mathrm{base}}$ and the total cloud optical depth
+$\tau_{\mathrm{bot}}$.  The profile is reconstructed by
+piecewise-linear interpolation of $r_e^5$ between nodes, with
+extrapolation below the deepest node using the adiabatic slope; the
+$r_e^5 \to r_e$ transformation is applied pointwise.  The normalised
+depth ensures that the node positions adapt automatically when
+$\tau_{\mathrm{bot}}$ changes during the iteration.
 
-  \item[Basis-function expansion]
-    The profile is expanded in a set of $p$ smooth basis functions
-    (e.g.\ B-splines, wavelets, or piecewise-linear hat functions on
-    a coarse grid~\cite{bowman2006}).  The state vector consists of
-    the $p$ expansion coefficients, typically $p = 5$--$20$, which
-    dramatically reduces the dimension relative to the full
-    level-by-level approach while enforcing smoothness by construction.
+\subsubsection{Grounded prior}
 
-  \item[EOF / PCA basis from climatological data]
-    Principal components of $r_e$ profiles from a climatological
-    ensemble define a data-driven reduced basis~\cite{masiello2012}.
-    If the first $k$ EOFs capture $>95\%$ of profile variance, the
-    state vector is $k$-dimensional (typically $k = 3$--$10$), with
-    the regularisation encoded implicitly by the truncation.
+The \emph{a~priori} state $\vect{x}_a$ and covariance $\mat{S}_a$ are
+designed for marine stratocumulus following Rodgers~\cite{rodgers2000}:
+\begin{itemize}[nosep]
+  \item The prior profile follows the adiabatic $r_e^5$-linear law with
+    a climatological $r_{\mathrm{base}}$.
+  \item $\mat{S}_a$ is tight where the observable is blind (deep nodes,
+    $r_{\mathrm{base}}$) and loose where it is sensitive (near-ToA nodes),
+    reflecting the depth-dependent information content of
+    \cref{sec:retrieval-grid}.
+  \item $\tau_{\mathrm{bot}}$ has a separate, relatively tight prior
+    informed by the broadband constraint.
+\end{itemize}
+The asymmetric prior structure ensures the retrieval is anchored at
+cloud base (where the data provide essentially no constraint for thick
+clouds) while allowing the near-ToA profile to depart freely from the
+adiabatic assumption.
 
-  \item[Neural-network profile generator]
-    A neural network maps a low-dimensional latent vector
-    ($p = 2$--$5$) to a full profile, trained on a climatology of
-    physically consistent profiles.  This differentiable decoder is
-    used \emph{inside} the physics-based forward model during the
-    retrieval~\cite{gebhard2024}.  Advantages include very low $p$
-    (easing ill-conditioning) and the ability to encode physical
-    constraints (e.g.\ monotonicity, positivity) in the network
-    architecture.
+\subsubsection{Joint retrieval and the Jacobian decomposition}
 
-  \item[Optimal estimation with \emph{a~priori} covariance]
-    The standard Rodgers~\cite{rodgers2000} framework uses a Gaussian
-    prior $\mathcal{N}(\vect{x}_a, \mat{S}_a)$ on the profile,
-    retrieved at all levels.  The \emph{a~priori} covariance
-    $\mat{S}_a$ acts as a smoothness constraint.  This is
-    mathematically equivalent to a Gaussian process prior with a
-    specific kernel and is the most widely used approach in operational
-    retrievals.
-\end{description}
+The state vector~\eqref{eq:state} is jointly retrieved via
+Gauss--Newton optimal estimation~\cite{rodgers2000} with the full
+$m \times p$ Jacobian computed by \texttt{jax.jacfwd} (forward mode;
+\cref{sec:ad}).  The differentiable chain is
+$r_e(\tau) \xrightarrow{\texttt{miejax\_lite}} (\omega, g_\ell)
+\xrightarrow{\texttt{riccati\_solve}} u^+(\mathrm{ToA})$, where
+\texttt{miejax\_lite} provides a JAX-traceable Mie lookup table
+$r_e \to (\omega, g_\ell)$.
 
-The parameter count $p$ chosen here sets the preferred AD mode via the
-crossover of \cref{sec:ad}: forward-mode for the small-$p$ bases
-(EOF, NN, B-spline), reverse-mode for level-by-level.  An L-BFGS
-retrieval instead needs only the scalar-gradient reverse pass regardless
-of $p$ --- at the cost of the averaging-kernel and degrees-of-freedom
-diagnostics that require the full Jacobian~$\mat{K}$.
+A Jacobian decomposition experiment separating the $\omega$ and $g_\ell$
+channels (by freezing one while tracing the other) reveals that the
+$r_e$ signal in the ToA radiance is \emph{predominantly carried by the
+phase function} (asymmetry parameter $g$), not by $\omega$, across all
+tested cloud thicknesses.  This is the opposite of the common
+``absorption retrieval'' intuition and has implications for the choice of
+Legendre truncation (\texttt{NLeg\_all}).
+
+\subsubsection{Posterior diagnostics}
+
+The averaging kernel $\mat{A} = (\mat{K}^\top \mat{S}_\epsilon^{-1}
+\mat{K} + \mat{S}_a^{-1})^{-1} \mat{K}^\top \mat{S}_\epsilon^{-1}
+\mat{K}$ and its trace (degrees of freedom for signal, DOFS) characterise
+the information content of the retrieval.  Shannon information content
+(SIC) $= \tfrac{1}{2}\ln|\mat{A}| + \mathrm{const}$ provides a
+complementary scalar measure; it is more sensitive to the \emph{number}
+of independently constrained parameters, while DOFS is more sensitive
+to the \emph{strength} of each constraint.  Both are computed from the
+autodiff Jacobian at each iteration.
 
 %----------------------------------------------------------------------
-\subsection{Remaining Steps}\label{sec:remaining}
+\subsection{Implementation Status}\label{sec:status}
 %----------------------------------------------------------------------
 
-The following components are needed to complete the differentiable
-retrieval pipeline:
+All components of the differentiable retrieval pipeline are implemented
+and validated:
 
-\begin{enumerate}
-  \item \textbf{Differentiable lookup table.}  The mapping
-    $r_e(\tau) \to \bigl(\omega(\tau),\, g_\ell(\tau)\bigr)$ via Mie
-    theory or a pre-computed table must be JAX-traceable.
-    Differentiable interpolation (e.g.\ \texttt{jnp.interp} or a
-    spline in JAX) would suffice for a pre-computed table; direct Mie
-    computation in JAX is also possible but more involved.
+\begin{enumerate}[nosep]
+  \item \textbf{Differentiable Mie lookup table} (\texttt{miejax\_lite}).
+    A JAX-traceable table mapping $r_e \to (\omega, g_\ell)$ via
+    pre-computed Mie coefficients with differentiable interpolation.
 
-  \item \textbf{End-to-end gradient validation.}  Compute
+  \item \textbf{End-to-end gradient validation.}
     $\nabla_{\!\vect{x}} J$ via \texttt{jax.grad} through the full
-    forward model (lookup $\to$ Riccati ODE $\to$ BC solve $\to$
-    Fourier synthesis $\to$ cost) and verify against finite-difference
-    gradients for a synthetic $r_e(\tau)$ profile.
+    pipeline (lookup $\to$ Riccati ODE $\to$ BC solve $\to$ Fourier
+    synthesis $\to$ cost) agrees with centred finite-difference
+    gradients to ${\sim}2\times 10^{-10}$ relative error (float64).
 
-  \item \textbf{Adjoint strategy selection.}  Benchmark
-    \texttt{RecursiveCheckpointAdjoint} against \texttt{ForwardMode}
-    for the expected parameter count to determine the optimal AD mode.
+  \item \textbf{AD mode.}  Forward mode (\texttt{jax.jacfwd} with
+    \texttt{diffrax.ForwardMode}) is used for the implemented
+    $p = 4$--$7$ parameter retrieval.
 
-  \item \textbf{Retrieval experiments.}  Implement the Gauss--Newton /
-    Levenberg--Marquardt iteration with the AD-computed Jacobian,
-    test convergence on synthetic retrievals with known $r_e(\tau)$
-    profiles, and characterise the posterior error via averaging
-    kernels.
+  \item \textbf{Retrieval loop.}  Gauss--Newton optimal estimation
+    with autodiff Jacobians, QRCP grid selection, and posterior
+    diagnostics (averaging kernels, DOFS, SIC).  Validated on
+    VOCALS-REx marine stratocumulus profiles (thin and thick clouds,
+    adiabatic and non-adiabatic).
 \end{enumerate}
+
+Open items tracked in the design documents include: sub-adiabatic
+cloud-base detection (anchoring the $r_e^5$-linear extrapolation),
+further investigation of the QRCP re-mesh instability (correlated
+node basis at high $K$), the orthogonal shape/EOF basis alternative
+to the ODE-pool route (\cref{sec:retrieval-grid}), and extension to
+polarised observations (cloudbow geometry).
 
 %======================================================================
 % References
@@ -1755,42 +1797,6 @@ retrieval pipeline:
   discrete ordinate radiative transfer models for use in remote sensing
   retrieval problems,''
   in \emph{Light Scattering Reviews~3}, Springer, 2008, pp.~229--275.
-
-% ── Profile parameterisation ─────────────────────────────────────────
-\bibitem{steck2002}
-  T.~Steck,
-  ``Methods for determining regularization for atmospheric retrieval
-  problems,''
-  \emph{Appl.\ Opt.}, vol.~41, no.~9, pp.~1788--1797, 2002.
-
-\bibitem{dubovik2000}
-  O.~Dubovik and M.~D.~King,
-  ``A flexible inversion algorithm for retrieval of aerosol optical
-  properties from Sun and sky radiance measurements,''
-  \emph{J.\ Geophys.\ Res.}, vol.~105, pp.~20\,673--20\,696, 2000.
-
-\bibitem{bowman2006}
-  K.~W.~Bowman, C.~D.~Rodgers, S.~S.~Kulawik, J.~Worden,
-  E.~Sarkissian, L.~Osterman, T.~Steck, M.~Luo, A.~Eldering,
-  M.~W.~Shephard, H.~Worden, M.~Lampel, S.~Clough, P.~Brown,
-  C.~Rinsland, M.~Gunson, and R.~Beer,
-  ``Tropospheric emission spectrometer: retrieval method and error
-  analysis,''
-  \emph{IEEE Trans.\ Geosci.\ Remote Sens.}, vol.~44, no.~5,
-  pp.~1297--1307, 2006.
-
-\bibitem{masiello2012}
-  G.~Masiello and C.~Serio,
-  ``Inversion for atmospheric thermodynamical parameters of IASI data
-  in the principal components space,''
-  \emph{Q.~J.~R.\ Meteorol.\ Soc.}, vol.~138, pp.~103--117, 2012.
-
-\bibitem{gebhard2024}
-  T.~D.~Gebhard, D.~Angerhausen, B.~S.~Konrad, E.~Alei,
-  S.~P.~Quanz, and B.~Sch\"olkopf,
-  ``Parameterizing pressure--temperature profiles of exoplanet
-  atmospheres with neural networks,''
-  \emph{Astron.\ Astrophys.}, vol.~681, A3, 2024.
 
 \end{thebibliography}
 

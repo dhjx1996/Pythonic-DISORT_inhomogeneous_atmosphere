@@ -1,322 +1,96 @@
 # Outstanding Problems & Decisions
 
 Open items, kept deliberately prominent. Settled rationale is in
-[`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md).
+[`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md). **Resolved / out-of-scope items are collapsed to a
+one-line pointer** — the `## letter` headers are retained because both docs cross-reference them by
+letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **G** and **K**.
 
 Tags: **[BLOCKER]** must fix before retrieval works · **[DECISION]** a choice to make ·
-**[BUG]** known-wrong behaviour · **[DEFERRED]** wanted, not yet started.
+**[BUG]** known-wrong behaviour · **[DEFERRED]** wanted, not yet started ·
+**[OUT OF SCOPE]** deliberately not pursued now · **[RESOLVED]** / **[NOTE]** → folded into DESIGN.
 
 ---
 
-## A. Negative ToA radiances — forward model was physically wrong  [RESOLVED in the realistic regime]
+## A. Negative ToA radiances — delta-M + Nakajima–Tanaka TMS  [RESOLVED → DESIGN §6]
 
-**Resolved** by delta-M scaling + the Nakajima–Tanaka **TMS** correction (opt-in
-`delta_M_scaling=True, NT_cor=True`; see `DESIGN_DECISIONS.md` §6). The symptom: for a realistic
-forward-peaked cloud phase function (g₁≈0.85) the reconstructed ToA **radiance** went negative
-(the m≥1 Fourier modes rang from the truncated forward peak) even though `flux_up_ToA` and the
-m=0 mode `u0` stayed positive — the textbook finite-stream truncation artifact, which is why
-flux-based tests passed and the DYAMOND flux lookup tables never exposed it.
+Forward-peaked-Mie ToA radiance went negative (truncated forward peak ⇒ m≥1 Fourier ringing); fixed
+by opt-in delta-M scaling + the TMS single-scatter correction (`delta_M_scaling=True, NT_cor=True`).
+The `f=g_{NLeg}` derivation, the residual-at-extreme-peaks limit, the "lever is more streams" call, the
+δ-M+ deprioritisation, and IMS-omitted-by-design are all in DESIGN §6.
 
-- **Fix:** delta-M removes the forward peak from the truncated expansion (smooth, non-negative
-  multiple-scattering field); TMS adds back the single scattering computed with the exact,
-  untruncated phase function at the exact scattering angle. Correctness is verified by matching
-  PythonicDISORT's own `NT_cor` solution to ~1e-6 (`tests/20_deltaM_benchmark_test.py`, exact
-  single-layer + τ-varying), and the negative radiance is removed in the realistic regime
-  (g≈0.85, NQuad=8: raw min −0.023 → corrected +0.043; `tests/19_deltaM_test.py`).
-- **Residual at extreme peaks (known truncation limitation, not a bug).** Strict non-negativity is
-  *not* guaranteed at finite streams: for very sharp peaks under-resolved by the stream count
-  (measured g=0.9 at NQuad=16) delta-M+TMS *reduces* the negativity ~80 % (raw min −0.128 →
-  corrected −0.025) but leaves a residual — and PythonicDISORT's `NT_cor` shows the *same* residual
-  (we match it to ~1e-6), confirming it is intrinsic to the method class, not our implementation.
-- **If it ever bites, the lever is more streams.** First *measure* whether the residual matters at
-  the actual retrieval geometries/bands and an achievable NQuad (cloud retrievals observe
-  back/side-scatter, while truncation error concentrates at ≲20° forward-aureole angles — likely
-  below noise for us). If it does matter, raise **NQuad** — universal, monotone, no new failure
-  modes, and cheap for us (jit+batch makes the bigger N×N matmuls GPU-friendly). **δ-M+**
-  ([Lin & Stamnes 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC8051203/)) was examined and
-  **deprioritised**: adoption is confined to the Stamnes ecosystem (DISORT/AccuRT; not LIDORT/
-  VLIDORT/libRadtran/SHDOM), its wins are for extreme peaks (HG g=0.999, oceanic Fournier–Forand)
-  outside our regime, and its "same cost" holds for the RT solve but **not** our differentiable
-  pipeline — it replaces the trivial slice `f=g_{NLeg}` with a per-layer nonlinear (c,σ)
-  moment-matching solve that would sit inside the autodiffed hot path every retrieval iteration.
-- **IMS not implemented — and correctly so.** DISORT's IMS corrects **downward intensities only by
-  construction** (STWLE 2000 = Stamnes, Tsay, Wiscombe, Laszlo & Evans, *DISORT report*, App. A,
-  just after eq A.1: the −µ argument, "we correct only downward not upward intensities"). So there
-  is **no standard upward IMS** to apply to our ToA-upwelling observable, and the retrieval-grade
-  codes LIDORT/VLIDORT (Spurr) omit IMS too (exact single-scatter + streams, + a separate 2OS
-  model). See `DESIGN_DECISIONS.md` §6.
+### A′. Thin-cloud Mie off-nadir TMS needs many moments  [RESOLVED → DESIGN §6]
 
-### A′. Thin-cloud + Mie + off-nadir radiance needs many TMS moments  [RESOLVED — `NLeg_all` deficit]
-
-**Root cause: too few Legendre moments in the TMS single-scatter, not streams or precision.**
-Building the OSSE forward for a **thin** marine-Sc profile (RF11, τ_bot≈1.2) at the **2.13 µm Mie**
-phase function with `NLeg_all=32`, the azimuthally-resolved ToA reflectance over a (μ,φ) grid was
-**erratic, non-smooth in μ, sign-flipping** — R to +0.7…+0.9 (≈10× the physical ~0.05–0.2), and
-near-nadir (μ=0.95) swung +0.06→−0.05 across azimuth where it should be ~flat; **1.24 µm was worse**
-(|R|>1). It was **not** stream count (NQuad=16 ≈ 24, both erratic) and **not** float32 (a float64
-run reproduced it bit-for-similar). **Raising `NLeg_all` 32→128 fixes it completely**: all R
-positive (min +0.078), smooth in μ, near-nadir azimuth-flat, both bands physical, at NQuad=16.
-
-**Why.** TMS adds the exact single scatter via `p_full(cosΘ)` reconstructed as a *truncated*
-Legendre sum to `NLeg_all`. A Mie cloud phase function (size parameter x≈24 at 2.13 µm) has ≈2x+10
-≈ 60 significant moments; truncating at 31 gives a **Gibbs-oscillating, sign-changing `p_full`** —
-garbage that varies with cosΘ (hence μ,φ). **Thin clouds are single-scatter-dominated, so the bad
-`p_full` *is* most of the signal** — which is exactly why the notebook's **thick τ=12** cloud
-looked fine (+0.27: multiple-scatter dominates, TMS is a minor correction) while thin broke, and
-why **flux / m=0** stayed physical (no sharp single-scatter angular structure). PythonicDISORT's
-own NT validation (`pydisotest/5_test`) uses the **Cloud C.1 phase function with 300 moments** and
-**NQuad=48** — i.e. ~300 moments is standard for an NT-corrected cloud; our 32 was ~10× too few.
-**`NLeg_all` is cheap** — it feeds only the TMS τ-quadrature, *not* the unrolled per-mode diffuse
-solve (item H) — so 128–300 costs negligible memory (unlike NQuad). **Barycentric Gauss–Legendre
-μ-interpolation is *not* at fault** (well-conditioned, Lebesgue ~log n, unlike the cubic splines
-Sta1982 critiques); with good moments the off-node field is smooth. *(Source-function integration
-(Sta1982) — exact intensity at arbitrary μ — is **deprioritised**: unclear it beats barycentric,
-and PythonicDISORT notes the interpolation route is easier and likely cheaper. Noted, not pursued.)*
-
-**Irreducible limit — the ~10° forward (solar-aureole) exclusion.** Even at 300 moments / NQuad=48,
-PythonicDISORT must **discard intensities within ~10° of the forward-scatter / solar-aureole
-direction** (documented there and elsewhere); the truncated-`p_full` error concentrates at the
-near-forward peak and is not removable by more moments/streams. **Not a concern for our observable:**
-ToA *upwelling* with μ0=0.6 has minimum scattering angle Θ≈37° (grazing, φ=0), ≈74° at μ=μ0, →180°
-at backscatter — so a back/side-scatter envelope (μ≥0.5, φ≈π/2…π) never samples the aureole. Keep
-view geometry there; avoid near-forward (small-Θ, φ≈0, grazing-μ) directions.
-
-**Accuracy budget.** PythonicDISORT's 1% test tolerance is far tighter than our ~10–20% measurement
-noise — so `NLeg_all=128` (smooth, positive, physical) is **ample**; no need to chase 256/300 to 1%.
-
-**Resolution / settings:** use **`NLeg_all ≥ 128`** for Mie clouds with NT_cor (`retrieval_oe`
-default bumped 32→128). Keep views in the back/side-scatter envelope. Multi-angle multi-band is
-**viable** at NQuad=16 — no flux-only pivot needed.
-
-**Why the test suite missed it** (the user's question): tests `19`/`20` use **smooth analytic
-Henyey–Greenstein** (`g**l`, monotone decay) — never a structured Mie phase function whose high
-moments matter; **moderate/thick τ (5–10)** — never single-scatter-dominated thin τ≈1; assert
-non-negativity **only at quadrature nodes**; and **explicitly restrict** strict-positivity to
-g≤0.85. The pydisort comparisons assert *agreement* (`rel_tol=1e-2`), so a shared low-`NLeg_all`
-TMS artifact would pass while both are wrong. **Action (open):** add a **thin-cloud, Mie,
-off-nadir (μ,φ)-grid physical-plausibility test** (smoothness + magnitude + positivity, not just
-pydisort agreement) and an **`NLeg_all` convergence check** for NT_cor. Interacts with item H
-(NQuad/unroll ceiling) and item G (angular-DOF).
+Resolved by `NLeg_all ≥ 128` (too few moments ⇒ a Gibbs-oscillating `p_full` ⇒ erratic,
+sign-flipping thin-cloud reflectance, since thin clouds are single-scatter-dominated). **Test
+coverage added 2026-06-19** (`tests/22_thin_mie_test.py`): a structured gamma-averaged Mie phase
+function (2.13 µm, ~70 significant moments) on a thin τ=1.2 cloud, off-nadir (μ,φ) back/side-scatter
+envelope, asserting **NLeg_all convergence** (R(128)≈R(192) to 0.3 %, R(32) ~6× off) + **physical
+plausibility** (positivity, magnitude, and smoother than the under-resolved field) — the failure mode
+is reproduced at NLeg_all=32 (R∈[−1.3, 0.9]). The test asserts plausibility, not pydisort agreement
+(a shared low-NLeg_all TMS artifact would pass an agreement check while both are wrong); it was
+modelled in spirit on PythonicDISORT's many-moment `pydisotest` test 5.
 
 ---
 
-## B. Optics interpolation: τ-axis vs r_e-table  [DECISION]
+## B. Optics interpolation: τ-axis vs r_e-table  [DECISION SETTLED 2026-06-12 → DESIGN §8]
 
-**Underlying problem:** supplying the solver continuously-varying ω(τ), gₗ(τ) with **neither**
-a τ-discretization **nor** an r_e-table is too expensive — full Mie inside the ODE vector field
-never finishes compiling (see item C). So some interpolation is required. Two candidates:
+Settled: keep the `(n_re, NLeg)` Mie–Legendre **r_e-table** (`miejax_lite.table_lookup`) as the
+production optics path (profile-independent, no τ-placement problem, consistent table-slope Jacobian);
+the τ-axis + lagged re-selection is the documented fallback if the lookup-slope Jacobian ever proves
+too inexact. The hybrid traced-Mie-ω + HG variant was rejected. Rationale: DESIGN §8.
 
-1. **τ-axis** — interpolate τ → (ω, gₗ); node values = Mie(r_e(τ_node)), rebuilt each retrieval
-   iteration (~9 Mie calls/iter). Gradient = **exact Mie at nodes** + linear interp between
-   (cheapest true full-Mie backprop). Linear interp of moments is a convex combination ⇒
-   preserves phase-function non-negativity and ω∈[0,1] (cubic/barycentric can overshoot).
-   **Weakness:** node *placement* in τ depends on an a-priori profile guess; a wrong guess
-   biases the retrieval (Rodgers representation error). Rescuable by lagged mesh re-selection
-   (run X opt steps, re-mesh from the current iterate = inexact multilevel optimisation;
-   r-refinement is recompile-free, h-refinement costs one reusable recompile per node-count).
-   Distinguish *placement* error (re-meshing fixes) from *resolution* error (needs more nodes).
+### B′. The r_e(τ) profile parameterisation lever  [SETTLED second-order → DESIGN §10g; residual deferred]
 
-2. **r_e-axis table** (= paper Appendix B map B1: r_e → (ω, gₗ) on a log(r_e−3) grid) — built
-   **once** over the physical size range (~4–21 µm), profile-independent; the solver evaluates
-   r_e(τ) at its own adaptive points and looks up. **No τ-placement problem at all.** Gradient
-   = table-slope (inexact-but-consistent Mie Jacobian); fine for Gauss–Newton, whose fixed
-   point is set by forward accuracy, not the Jacobian.
-
-**Trade:** exact per-iteration Mie gradient + placement fragility (τ-axis) vs robust/simple +
-inexact-Jacobian (r_e-axis). Item 3 of `DESIGN_DECISIONS.md` (ToA-concentrated, ~rank-4,
-profile-independent retrieval grid) argues *few, sensitivity-placed* nodes suffice and favours
-robustness. **Current lean:** prototype the r_e-axis table; reserve the τ-axis + lagged
-re-selection for if the lookup-slope Jacobian proves too inexact for the final fit.
-
-**2026-06-12 — settled, and the r_e-table decision strengthened.** The hybrid simplification
-(traced-Mie ω + HG phase function, dropping the Legendre table) was tested and **rejected**:
-the r_e signal is mostly phase-function-borne (ω carries ~1% of the thin-cloud sensitivity at
-1.24 µm, ≤ 61% even in the best case), HG breaks the retrieval outright, and the traced
-`mie_avg` slope is moving-radius-grid quadrature noise that the table secant smooths over —
-the table slope is the *better* ∂ω/∂r_e. See `DESIGN_DECISIONS.md` §8 (decision) and
-`docs/jacobian_decomposition.ipynb` (the full diagnostic).
-
-### B′. The r_e(τ) profile parameterisation — the inter-node interpolation lever  [PARTIALLY ADDRESSED — re5≈linear on 2 profiles; multi-profile study still open]
-
-**Update 2026-06-17 (SO2a model comparison).** The clean test below — retrieve the *same* data
-under {linear, r_e⁵-linear} on the same grid — was run for thin (RF11) and thick (RF03) in
-`joint_osse_retrieval.py` (→ `docs/joint_osse_results.json`). **Verdict: second-order lever.**
-re5-linear wins the profile RMSE in both regimes (thin 0.53 vs 0.60 µm; thick 0.87 vs 0.96 µm) but
-by **< 0.1 µm**, inside the retrieval's own uncertainty; fit ‖y−F‖ is comparable (thin re5 better,
-thick linear marginally better). So the data **cannot strongly distinguish the two shapes** at
-DOFS≈2–3 — re5-linear is kept as default on physical grounds (adiabatic `r_e ∝ τ^{1/5}` ⇒ linear in
-the natural variable) and the small accuracy edge, *not* because the data demand it. This confirms
-the user's SO2a intuition that for reasonable low-order monotonic interpolants the choice is
-insignificant. The **multi-profile** study (one profile is not definitive; PCHIP/EOF still
-unexplored) remains open. See `DESIGN_DECISIONS.md` §10g.
-
-*Distinct from the optics-table axis above:* this is how the retrieval state (r_e at the few grid
-nodes) becomes the continuous **profile** r_e(τ) the solver integrates. It is **one localised
-lever** — `retrieval_oe.RetrievalForward._re_of_tau` (a single `jnp.interp`) — through which the
-forward, calibration, ODE-grid, Jacobian, and (via `RetrievalForward.profile`) the **display** all
-route. **Key realisation:** it is **part of the forward map F(x), not a post-hoc/independent
-choice** — it defines *what is retrieved*, so any change must (and now does) propagate to the
-displayed curve too (`profile()` mirrors it). *(We — and the user — initially mis-filed this as an
-independent downstream interpolation; corrected.)*
-
-**Current default = r_e⁵-linear (adiabatic)** `jnp.interp(τ, knots, vals**5)**(1/5)`. The adiabatic
-effective radius grows as `r_e ∝ τ^(1/5)` in optical depth: `r_e³ ∝ LWC ∝ geometric height z`, and the
-extinction `β ∝ r_e² ∝ z^(2/3)` makes `τ = ∫β dz ∝ z^(5/3)`, so `LWC ∝ τ^(3/5)` and **`r_e ∝ τ^(1/5)`**
-(≡ the canonical adiabatic `N_d ∝ τ^(1/2) r_e^(-5/2)`; verified numerically — `r_e⁵` linear in
-`(1−τ/τ_bot)` to ~1e-12). So `r_e⁵` is what is linear in τ. It **represents the adiabatic prior
-exactly**, gets per-segment curvature from the two endpoint values ⇒ **no grid-size coupling**, and
-with finite `r_base` keeps `dr_e/dτ` finite at base (no cusp). It is still C⁰ (kinked at nodes).
-Baselines saved for comparison: `docs/retrieval_baseline_linear_class.json` (thin, linear class) and
-`docs/retrieval_thick_RF03_tau23.json` (thick, re5-linear).
-
-**The candidates and the axis that separates them — node-based smoothness vs grid coupling:**
-
-- **linear** (`jnp.interp(τ, knots, vals)`) — the "impute-nothing" baseline; C⁰, no coupling.
-- **r_e⁵-linear** *(default, adiabatic)* — C⁰, no coupling, prior-coherent. Imputes the *adiabatic*
-  shape per segment (r_e ∝ τ^(1/5); consistent with the adiabatic S_a prior mean). The §B′ model
-  comparison probes it against **linear** — insensitivity ⇒ the data can't distinguish shapes (linear
-  fine by Occam); a real difference ⇒ shape info, pick by evidence.
-- **PCHIP (monotone-cubic, C¹)** — the only listed class that **de-kinks** the profile (so it would
-  de-artifact the class↔ODE-grid↔re-meshing loop below). **But it couples to grid size:** a node-based
-  C¹ class sets nodal slopes from *neighbours*, so it degrades to linear at 2 points and only gains
-  real curvature at ≥3 — and that curvature is then a finite-difference artifact, not data, at low
-  node count. So PCHIP is **deferred until the node-count/DOF supports it** (revisit candidate for the
-  **thick-cloud** retrieval, where there are more nodes and higher DOF). *(Natural/global cubic is out
-  — it overshoots, breaking positivity/monotonicity.)*
-- **C¹-without-coupling exists only by leaving interpolation behind:** prescribe nodal slopes from a
-  model (adiabatic-slope cubic Hermite) or fit a low-dim **shape/EOF basis** — but that is the
-  *parametric-basis architecture* (DESIGN §3 alternative), not a drop-in `_re_of_tau`; for DOFS≈2 it
-  may even be the more honest framing (retrieve ~2 adiabatic parameters, not 4 nodes + interpolant).
-
-**Two recorded subtleties (do not lose):**
-1. **class↔grid↔re-meshing kink-coupling.** A C⁰ profile's kinks sit at the nodes, so the ODE grid
-   (placed by the ~C⁶ error estimator) *clusters at the nodes*, and QRCP/re-meshing then re-select
-   near them — partly self-referential (also taints the *first* pool, built on the coarse first-guess
-   grid). C⁰ classes (linear, r_e⁵-linear) keep this; only a C¹ class removes it. It is **second-order**
-   (a mild step-count/selection effect), so not worth importing PCHIP's grid-coupling to fix *here*.
-2. **probe the class by model comparison, not grid stability.** "Grid doesn't move ⇒ profile near
-   prior ⇒ adiabatic class confirmed" is **confounded** — at DOFS≈2 the profile is prior-dominated
-   regardless, and the kink artifact pins the grid. The clean test is to retrieve the *same data*
-   under {linear, r_e⁵-linear, PCHIP} and compare fit χ² / posterior: insensitivity ⇒ data can't
-   distinguish shapes (linear fine by Occam); a real difference ⇒ data carry shape info, pick by
-   evidence. **One profile is not definitive** — needs a multi-profile study.
-
-**How to change:** edit `_re_of_tau` once; forward, `calibrate`, `ode_grid`, Jacobian, the re-meshing
-re-map in `gauss_newton_oe`, pool sampling in `select_retrieval_grid`, and `profile()` all follow.
-The cleanest *promotion* makes the **state itself** the new class's coefficients (e.g. node values of
-r_e⁵, or basis amplitudes) so parameterisation, prior mean, and display are coincident by construction.
+How the node values become the continuous profile the solver integrates — the single localised lever
+`RetrievalForward._re_of_tau` (part of F(x): it *defines what is retrieved*, and `profile()` mirrors it
+for display). **Settled:** for reasonable low-order monotonic interpolants the choice is a **minor,
+second-order lever** — re5-linear (adiabatic `r_e∝τ^{1/5}`) vs plain-linear differ by <0.1 µm RMSE,
+inside the retrieval's own uncertainty (DESIGN §10g model comparison); **re5-linear is the default**
+(physically motivated, marginally more accurate). **Residual (low-priority, deferred):** a multi-profile
+confirmation (re5≈linear shown on 2 profiles only) and the C¹ **PCHIP** class (deferred until the
+node-count/DOF supports it). The deeper alternative — **leave interpolation behind for a low-dim
+shape/EOF basis** (the more honest framing at DOFS≈2, and the resolution of the re-mesh instability
+above) — is logged in DESIGN §3a as the smooth-basis route, "left open."
 
 ---
 
-## C. jit-ability of the solver — the retrieval-cost lever  [RESOLVED]
+## C. jit-ability of the solver — the retrieval-cost lever  [RESOLVED → DESIGN §7]
 
-**Resolved** by a host-side **setup / traceable solve split** (the composable seam; see
-[`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §7). `riccati_setup(...)` runs all the SciPy,
-`mu0`/`tau_bot`-independent work once; `riccati_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
-mu0, num_modes=K)` is then a pure, **jit / grad / jacfwd-able** function of the traced inputs, and
-`eval_radiance(...)` is the traceable observable. The one-shot `pydisort_riccati_jax` delegates to
-the same core (5-tuple unchanged, **bit-for-bit** — test 21b). Cold→warm caching confirmed (e.g.
-NQuad=6 thin: jit forward ~42 s compile → ~0.3 s cached, no recompile across varying
-`tau_bot`/`mu0`; reverse-`grad` ~3 min compile then cached); `tests/supplementary/demo_jit_retrieval.py`
-runs the live recipe.
-
-The two host-side blockers and their fixes:
-
-1. `_kvaerno5_integrate` did `np.asarray(sol.ts)` + dynamic slicing to build `tau_grid`. Fix: a
-   `save_grid` flag — `SaveAt(t1=True)` (only the final state is needed for ToA) on the jit path,
-   no host sync, `tau_bot` may be traced; the offline grid path keeps `SaveAt(steps=True)`.
-2. `_precompute_legendre` called `scipy.special` on what become tracers. Fix: it is
-   `mu0`-independent, so it moves wholesale into `setup`. *(Originally the one `mu0`-dependent term
-   `P_l^m(−μ0)` was computed in-trace by a custom associated-Legendre recurrence so `mu0` could be
-   traced. **Superseded by §H:** `mu0` is now **static**, so that term is also precomputed host-side
-   with scipy and the in-trace recurrence was removed.)*
-
-**Mode count.** *(Originally the exact DISORT azimuthal-convergence (Cauchy) criterion, STWLE2000
-§3.7 p.89, via `calibrate_num_modes`.* **Superseded by §H:** that relative partial-sum test saturated
-at low signal and was removed; mode truncation is now the noise-aware `retrieval_oe.select_num_modes`.
-The solver default is all `NFourier` modes; `riccati_solve(..., num_modes=K)` runs exactly K.) The AD
-and static caveats still hold: reverse-`grad` (the discrete adjoint, §5) is the default; forward-`jacfwd`
-needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`; `phi0`, `I0`, `mu0`, and the boundary
-conditions are static (baked into `setup`). The old callable-BDRF-at-traced-`mu0` jit hazard is gone
-now that `mu0` is static — BDRFs are evaluated host-side at the static `mu0` in `riccati_setup`.
-
-**Single-trace `scan`+pad/mask — IMPLEMENTED (§H).** The deferred optimisation landed: the unrolled
-`for m in range(K)` is replaced by a single `lax.scan` over the **padded** `(NFourier, NLeg, N)`
-per-mode tensors (`l<m` rows zeroed). One compile serves every K, and — the actual motivation — the
-mode body compiles **once** (O(1) compile memory in mode count), which lifted the NQuad=24 / jacrev
-OOM ceiling.
-
-**Empirical history (the evidence that motivated the split; 2026-06-08, NQuad=8, T4 vs CPU; see
-`tests/supplementary/profile_solver.py`).** *Recompile-every-call:* three identical unjitted calls
-took 60.2/57.9/59.7 s on GPU and 50.9/49.4/50.3 s on CPU — **zero speedup on repeat**, confirming
-every call recompiled. *Host-side compile:* a cProfile attributed ~54 s of the ~60 s to
-`jax…trace_to_jaxpr` + `pjit._trace_for_jit` (16× = 8 modes × 2 sweeps via `diffrax.diffeqsolve`) —
-Python tracing + XLA *lowering*, not device execution; the GPU sat idle (≈18 % slower than CPU).
-*The fix prototype worked:* a jit-able single-mode forward R-solve (`SaveAt(t1=True)` + numpy GL
-nodes) compiled in ~2 s then ran cached in 2–29 ms (≈100–1000× cold→warm) — now realised in full by
-the seam above.
+Resolved by the host-side **setup / traceable-solve split** (the composable seam
+`riccati_setup`/`riccati_solve`/`eval_radiance`; the one-shot entry delegates, 5-tuple bit-for-bit).
+Cold→warm caching confirmed. The traced/static contract and the two host-side blockers (σ-grid build,
+`_precompute_legendre`) are in DESIGN §7; the `lax.scan`-over-modes follow-up is §H below.
 
 ---
 
-## D. GPU is latency-bound for this solver  [NOTE — empirically confirmed]
+## D. GPU is latency-bound (single column) — batch across columns  [NOTE → DESIGN §13]
 
-Cached execution is dominated by **many sequential tiny matmuls** (NFourier modes × 2 sweeps ×
-~35 adaptive steps × 5 ESDIRK stages on N×N, N≤8/16). This is kernel-launch-latency-bound, so the
-GPU is *not* faster than CPU per single column. Real speed levers: fewer Fourier modes, fewer
-adaptive steps (looser `tol`), and batching across columns (below) — not the device itself.
-
-**Measured (2026-06-08, `tests/supplementary/profile_solver.py`).** The results below were taken on
-a Tesla T4, but the analysis is **GPU-agnostic**: the binding costs are host-side XLA compilation
-and per-kernel launch latency, both set off-device, so the conclusions are about software structure
-and batch regime, not the specific accelerator. Cached warm execution of the jit-able single-mode
-solve: **CPU 2.1 ms vs GPU 28.9 ms — the GPU is 14× slower** (each tiny 4×4-matrix kernel launch is
-latency-bound, with no parallelism to exploit). The levers behave as claimed: NFourier 8→2 cut the
-unjitted call 62→14 s (GPU) / 51→14 s (CPU, ~linear); looser `tol` 1e-3→1e-2 cut the *cached* warm
-time 28.9→22.2 ms (GPU) / 2.1→1.6 ms (CPU) — but barely moved the unjitted call (62→61 s), because
-there compile, not step count, dominates.
-
-**Important qualifier — this is the *single-column* regime; batching across columns flips it
-(`tests/supplementary/batch_columns.py`).** Per-column launch/dispatch latency is set off-device,
-so the single-column result is a property of the workload, not the GPU. But the retrieval is
-embarrassingly parallel across columns: `jax.vmap` over a batch turns the tiny matmuls into batched
-matmuls that fill the device. Measured warm per-column time vs batch size B (µs/column):
-
-| B | 1 | 16 | 64 | 256 | 1024 | 4096 |
-|---|---|---|---|---|---|---|
-| **GPU** | 30592 | 2233 | **555** | 155 | 50 | **16** |
-| **CPU** | 1908 | 1021 | **959** | 854 | 829 | 846 |
-
-CPU per-column is ~flat (limited parallelism); GPU per-column collapses ~1900× once there is a
-batch to hide latency behind. **Crossover at B≈64; at B=4096 the GPU is ~53× faster than CPU per
-column.** So "GPU not a lever" holds *per single column*, but the right retrieval architecture is
-**jit (item C) + vmap a batch of columns onto the GPU** — it is the batch, not the device, that
-delivers the latency hiding.
+Cached single-column execution is kernel-launch-latency-bound (NFourier × 2 sweeps × ~35 steps × 5
+stages of tiny N×N matmuls), so per column the GPU is *not* faster than CPU. The retrieval is
+embarrassingly parallel across columns, and `vmap` over a batch flips it (crossover B≈64, ~53× at
+B=4096). The measurement and the batch-crossover table are moved to **DESIGN §13**.
 
 ---
 
-## E. Retrieval loop — implemented  [RESOLVED]
+## E. Retrieval loop  [RESOLVED → DESIGN §10]
 
-**Implemented** in `src/retrieval_oe.py`: the cost `J(θ)`, Rodgers Gauss–Newton/LM iteration
-(`gauss_newton_oe`, reverse-mode Jacobian via the jitted seam), the r_e(τ) profile
-parameterisation (normalized-depth `_re_of_tau`, the §B′ lever), Bayesian-Tikhonov prior
-(`make_adiabatic_prior`/`make_joint_prior`), QRCP retrieval-grid selection
-(`select_retrieval_grid`), posterior UQ/DOFS (`posterior_diagnostics`, `dofs_by_component`), and
-the OSSE harness (`osse_observation`). It is a **joint** retrieval of `[r_e(s-nodes), r_base, τ_bot]`
-— the cloud base is retrieved, not fixed from truth — with leak-free priors; see
-`DESIGN_DECISIONS.md` §10. (forward-mode for small p is still the documented optimisation; reverse
-is used for a single robust adjoint path.) Demonstrated on thin (RF11) and thick (RF03) VOCALS
-truths in `docs/riccati_solver_VOCALS_retrieval.ipynb`.
+Implemented in `src/retrieval_oe.py`: cost `J(θ)`, Rodgers GN/LM (`gauss_newton_oe`), the
+normalized-depth `_re_of_tau` parameterisation, the Tikhonov priors, QRCP grid selection, posterior
+UQ/DOFS/SIC, and the OSSE harness. It is a **joint** retrieval of `[r_e(s-nodes), r_base, τ_bot]`
+(DESIGN §10). Demonstrated on thin (RF11) and thick (RF03) in the VOCALS notebook.
 
-## F. Other deferred forward-model features  [DEFERRED]
+---
 
-Isotropic internal source (only the collimated beam is handled) and non-ToA depth evaluation
-(only τ=0 is returned). *(Delta-M scaling and the Nakajima–Tanaka TMS correction are now
-implemented — see item A and `DESIGN_DECISIONS.md` §6. IMS remains out of scope — it is
-downward-only by construction in DISORT and is likewise omitted by LIDORT/VLIDORT; see item A.)*
+## F. Other forward-model features — isotropic source, non-ToA depth, adjoint robustness  [OUT OF SCOPE]
 
-**Adjoint robustness (minor).** A reverse-mode `grad` can NaN (singular lineax solve) on an
-*aggressively steep* synthetic r_e profile — not real VOCALS-REx, which is finite-slope; quick fix
-is a least-squares adjoint solver, `AutoLinearSolver(well_posed=False)`. Low priority.
+Out of current scope (user, 2026-06-19); recorded so they are not mistaken for undiscovered gaps:
+- **Isotropic internal source** and **non-ToA-depth evaluation** — only the collimated beam and the
+  τ=0 ToA upwelling field are handled. Wanted eventually, not on the current path.
+- **Adjoint robustness (minor):** reverse-mode `grad` can NaN (singular lineax solve) on an
+  *aggressively steep* synthetic r_e profile — not real VOCALS-REx (finite-slope); quick fix if ever
+  needed is `AutoLinearSolver(well_posed=False)`.
+
+(Delta-M/TMS are implemented and IMS is omitted by design — DESIGN §6.)
 
 ---
 
@@ -347,10 +121,7 @@ be relied on until re-examined:
   vertical-resolution gain rests on penetration-depth diversity (Platnick 2000), which is
   modest. Do not assume multi-band lifts the DOF far.
 
-**To resolve:** re-run the Jacobian / effective-rank analysis *after* delta-M, across optical
-thicknesses and solar/viewing geometries, using the combined r_e channel
-(`J_ω·dω/dr_e + J_g·dg/dr_e`) and stacked bands. Also verify the Platnick (2000) and CPV (2012)
-specifics before they are cited in the report.
+*(G-core — the angular/vertical-DOF, profile-independence, and multi-band-saturation questions — is the focus of a future session. The bulleted claims above and the **Starting point** below are **background**, not current actions; in particular the rank analysis must be re-run post-delta-M before any of it is relied on.)*
 
 *Starting point:* the prior multi-mode / full-radiance rank study (three tiers — baseline u₀,
 full-u with all 16 Fourier modes = 128 rows, and NQuad=32; ToA rank stayed 4 in all, with
@@ -405,266 +176,89 @@ angular-channel set. **Prerequisite:** retain the per-mode grids (and per-mode `
 sensitivities) in the offline `return_grid=True` path (currently discarded). Implementation
 deferred; this records the design so the retrieval-grid work can pick it up.
 
-### Re-mesh instability ⇒ the node basis is correlated  [PARTIALLY ADDRESSED — SO2b gate added]
+### Re-mesh instability ⇒ correlated node basis  [RESOLVED → DESIGN §10h; EOF residual in §3a]
 
-**Update 2026-06-17 (SO2b).** `gauss_newton_oe(remesh_if_chi2_red_gt=…)` now gates re-meshing on a
-**structural-misfit** signal: `n_outer` is an upper bound and re-meshing is *skipped* once the
-reduced χ² `‖y−F‖²_{Se⁻¹}/m` falls to the noise floor — i.e. re-mesh only on a persistently high
-loss (placement/parameterisation likely wrong), not on a well-fit but correlated basis where
-re-pivoting just churns placement. The **normalized-depth** parameterisation (DESIGN §10a) also
-relieves the worst coupling, since the deepest node no longer has the wide-`r_e⁵`-segment leverage
-that misled placement. The "leave the node basis for orthogonal shape modes (EOF)" cure below
-remains the deeper fix (still open). **Empirical n_outer=1-vs-2 (thin RF11): re-meshing did not
-help** — it moved the deepest node (s 0.49→0.37) but profile RMSE got *worse* (0.53→0.70 µm) at
-unchanged fit, i.e. it churned a well-fit correlated basis. So the χ²-gate correctly keeps n_outer
-effectively 1 here; re-mesh would only earn its keep on a structurally misfit (high-χ²) profile.
-See `DESIGN_DECISIONS.md` §10h.
+The lagged-re-mesh *placement* flapping (QRCP re-pivoting near-collinear node columns at a moved
+linearization point) is **resolved in practice**: the default is `max_n_outer=2`, but the **χ²-gate**
+(`remesh_if_chi2_red_gt` — re-mesh only on structural misfit) plus **normalized-depth** `s` (which
+removed the deep-node wide-`r_e⁵` leverage that misled placement) make re-mesh fire **only very rarely**
+— effectively select-once for well-fit VOCALS retrievals (DESIGN §10h; the `n_outer=2` experiment did
+not help). `k > DOFS` is **kept on purpose** (the prior-filled margin is a feature, DESIGN §10f), *not*
+cut to DOFS. The deeper fix it gestured at — leaving the correlated node basis for an **orthogonal
+shape/EOF basis** — is an *architecture* question, not an instability: its real payoff is *placement
+stability* (nothing to re-pivot), **not** "k = DOFS" (you still keep a prior-filled margin). That
+alternative is logged in DESIGN §3a (the smooth-low-dim-basis route, "left open") and B′.
 
-*Surfaced building the thick-cloud (RF03, τ≈23) retrieval. Recorded for the upcoming retrieval-grid
-/ parameterisation work; the demo sidesteps it with `n_outer=1` (select-once).*
+### Auto-select the node count `k_active`  [IMPLEMENTED — SO1 → DESIGN §10f]
 
-**Symptom.** With the lagged re-mesh (`gauss_newton_oe(n_outer=2)`), the first QRCP selection at the
-adiabatic first guess gave a clean, well-spread grid `[0, 1.2, 3.5, 6.6, 13]`; the **re-selection at
-the post-fit state** returned `[0, 0.65, 2.9, 12.6, 13.8]` — two nodes **clustered deep** (Δτ≈1.2,
-both ±3 µm) and the mid-cloud (τ≈6) abandoned. The retrieved **profile barely changed** between the
-two; only the **node placement** jumped.
-
-**Diagnosis — correlated node-sensitivity columns, re-pivoted at a moved linearization point.**
-Two compounding causes:
-1. **The node basis is non-orthogonal.** Because `r_e(τ)` is an *interpolant*, moving any one node's
-   value changes the radiance over the whole τ-span of its two adjacent segments, so neighbouring
-   nodes' Jacobian columns `∂y/∂r_e(τ_j)` overlap heavily. Evidence: the averaging-kernel diagonal is
-   **spread**, `A_ii ≈ [0.61, 0.39, 0.30, 0.40, 0.66]` — *no* node is independently resolved; the
-   2.36 DOFS are shared. QRCP must pivot among **near-collinear** columns, which is ill-conditioned:
-   a small change in the linearization point reshuffles the pivot order. The re-mesh supplies exactly
-   that, so the set jumps.
-2. **k_active > DOFS — by design, not a defect.** `k_active=5` with DOFS≈2.3 leaves ~2 nodes in
-   the near-null space, *prior-regularized on purpose*: we **want** a few more nodes than DOFS,
-   because (i) a node basis is never fully independent — `DOFS = tr(A) < n_nodes` is intrinsic, the
-   nodes are not the independent quantities — and (ii) letting the prior fill the under-determined
-   directions is the point of regularized OE, a feature. What is unstable is **only where QRCP
-   *places* those surplus nodes**: with no data to pin them, pivoting among near-collinear columns is
-   arbitrary. (Their ±3 µm bars ≈ prior σ confirm they are prior-supplied.) So the result is fine —
-   the cure is to stabilise *placement*, not to cut `k_active` down to DOFS (which would discard the
-   deliberately prior-filled nodes).
-The **deep-node leverage** also misleads the placement: with the base anchor fixed, a deep node's
-wide `r_e⁵` segment reaches up into the *visible* upper cloud, so it gets non-trivial sensitivity
-(high `A_ii`) despite being imprecise — the §B′ class↔grid coupling.
-
-**Not a retrieval failure** — fit `‖y−F‖≈1e-2 ≈` noise, profile stable; only the *placement* is
-unstable. So `n_outer=1` (freeze the grid) is a legitimate fix for the figure, not just hiding.
-
-**Candidate fixes (revisit) — stabilise *placement*, keep k slightly > DOFS:**
-- **Freeze the grid (`n_outer=1`).** Select once, don't re-pivot at the moved estimate. What the demo
-  does; simplest, keeps k>DOFS, no recompiles. The lagged re-mesh stays available for the thin case
-  where the grid genuinely needs refining.
-- **Scale the Jacobian by prior σ before QRCP.** `select_retrieval_grid` runs QRCP on the **raw**
-  Jacobian (the "(scaled)" in its docstring is aspirational); ranking by *information*
-  (sensitivity × prior σ) rather than raw sensitivity places the surplus nodes more sensibly.
-- **Rank-revealing cardinality (partial — note the tension).** The QRCP **R-diagonal** pivot
-  magnitudes a-priori show where the resolvable directions end; useful as a *diagnostic*. But cutting
-  `k_active` to ≈DOFS is **not** the goal — we deliberately keep a few prior-filled nodes — and it
-  also breaks the **fixed-cardinality, recompile-free** re-mesh design.
-- **The real answer — leave the node basis.** Retrieve a few **orthogonal shape modes** (SVD/EOF of
-  the sensitivity or prior) instead of N correlated node values: then k = DOFS by construction, there
-  is nothing to re-pivot, and "where did the info come from" is a clean per-mode statement. This is
-  exactly [§B′](#b-the-r_eτ-profile-parameterisation--the-inter-node-interpolation-lever--open--explore)'s
-  "leave interpolation behind, fit a low-dim shape/EOF basis." **The flapping re-mesh is empirical
-  motivation for that architecture**, not just a nuisance.
-
-### Auto-select the node count `k_active` from a QRCP threshold  [IMPLEMENTED — SO1]
-
-**Implemented 2026-06-17 (SO1) as `retrieval_oe.auto_k_active`.** Two estimators, computed once at
-the first guess: (i) the user's `k = round(factor·DOFS)` (`method="dofs"`, factor≥1 keeps a
-prior-filled margin); (ii) the **preferred noise-aware** `method="filter"` (not via DOFS) — whiten
-`K̃ = Se^(−1/2)·K_pool·diag(σ_prior)`, QRCP → pivoted R-diagonal `r_i`, keep the data-dominated
-directions (filter factor `f_i=r_i²/(1+r_i²)≥½ ⇔ r_i≥1`) + a fixed margin. `Σf_i ≈ DOFS` is a
-**built-in cross-check** between the two and a DOFS-robustness probe. Reported next to the used `k`
-in `joint_osse_retrieval.py`; the choose-once-and-freeze design (mirroring `select_num_modes`) and
-the original rationale are below.
-
-**OSSE verdict 2026-06-17.** `Σf_i` tracks DOFS to ≈5 % (thin 3.01 vs 2.88; thick 2.53 vs 2.39) ⇒
-**DOFS is an accurate, robust info measure here** — not an artefact of one estimator. The counts
-agree on thin (filter→4, dofs→4) and differ by one on thick (filter→3, dofs→4); the **filter count
-is the more conservative under saturation** (a thick cloud's deeper nodes are redundant, `f_i`
-collapses 0.97/0.87/0.47/0.21/…). Both auto values are ≤ the hardcoded production `k_active` (4/5),
-so the manual grids slightly over-resolve — harmless (extra nodes are prior-pulled into the shielded
-base) but **switch the production default to `method="filter"`** (no arbitrary `factor`, integer
-count, saturation-aware). See `DESIGN_DECISIONS.md` §10f.
-
-The original design note (retained):
-
-Today `k_active` is a **hardcoded hyperparameter** (4 thin / 5 thick); `select_retrieval_grid`
-QRCP-*ranks* the pool but the *count* is manual. Replace it with a **data-driven threshold**, computed
-**once** at the first guess and **frozen** for the retrieval (so the forward/Jacobian still compile
-once — mirrors how `select_num_modes` fixes the Fourier-mode count). Keep `k` **slightly above the
-resolvable rank** on purpose, so the prior still fills a margin (per above: nodes are never independent,
-and prior influence is a feature — so the target is *≈DOFS + small margin*, **not** exactly DOFS).
-
-The QRCP already produces the signal: the **pivoted R-diagonal** `r_1 ≥ r_2 ≥ …` is each node's
-*marginal* information (its residual sensitivity after orthogonalising against the already-chosen
-nodes) — a surrogate singular-value spectrum of the node basis. Candidate thresholds:
-
-- **Noise-aware (preferred — mirrors `select_num_modes`).** Whiten first:
-  `K̃ = Se^(−1/2) · K · Sa^(1/2)` (rows by noise, columns by the prior square-root; `diag(σ_prior)` is
-  the cheap approximation that ignores prior correlations). Then the R-diagonal is in **SNR units**, and
-  the per-direction **filter factor** `f_i = r_i²/(1+r_i²)` is literally "fraction from data" (Rodgers
-  — the *same* quantity as the UQ data-fraction bar), with `Σ f_i ≈ DOFS`. Keep all directions with
-  `r_i ≳ 1` (data-dominated, `f_i ≳ ½`) **plus a small fixed margin** of prior-dominated ones ⇒ `k`
-  self-consistently lands at ≈DOFS + margin with **no circular post-hoc DOFS**. *(This also finally
-  implements the column-scaling `select_retrieval_grid`'s docstring already claims.)*
-- **Relative cutoff (simpler, less principled).** Keep while `r_i/r_1 > ε` (ε≈0.05–0.1) — numerical-rank
-  style, but raw units ⇒ `ε` is a feel parameter, not tied to the noise.
-- **Cumulative information.** Keep until `Σ_{≤k} r_i² / Σ r_i² ≥ frac` (PCA-style) — robust-ish but
-  `frac` is opaque.
-
-Constraints: always include cloud-top (τ≈0); clamp `k ∈ [1, k_max]`; choose-once-and-freeze
-(recompile-free); the **margin is the explicit "let the prior fill" knob**. Prereq: the
-whitening/column-scaling (QRCP currently runs on the **raw** Jacobian).
+Implemented as `retrieval_oe.auto_k_active`: the noise-aware whitened-QRCP **filter**
+`f_i = r_i²/(1+r_i²)` (with `Σf_i ≈ DOFS` as a built-in cross-check), wired into
+`select_retrieval_grid(k_active=None)` at `filter_threshold=0.25`. DOFS left the *selection* path (now
+an info-content diagnostic only). OSSE verdict and threshold tuning: DESIGN §10f.
 
 ---
 
-## H. Fourier-mode unroll → compile-memory; revisit vmap/scan + static-mu0  [RESOLVED — 2026-06]
+## H. Fourier-mode unroll → compile-memory  [RESOLVED — 2026-06 → DESIGN §7]
 
-**Resolution (2026-06).** Implemented all three levers below as a unit:
-1. **`lax.scan` over the Fourier modes** (chosen over `vmap` by a de-risk + profiling prototype that
-   ran the identical padded-tensor + static-μ0 mode body under both, asserting forward + `jacrev` +
-   `jacfwd` parity vs the old unrolled solve at ~1e-15). **Memory-first decision:** both compile the
-   mode body **once** (O(1) graph), but `scan` is sequential (one mode's working set live at a time)
-   and preserves each mode's *independent* adaptive stepping, whereas `vmap` materialises all
-   modes×columns simultaneously and forces a uniform step count. Since not-OOMing outranks speed
-   (and we batch *columns*, not modes, operationally), `scan` won. The ragged `(NLeg−m, N)` per-mode
-   tensors are **padded** to `(NFourier, NLeg, N)` with the `l<m` rows zeroed, so the body is
-   mode-index-free (the mode index is the scanned axis, not a Python int).
-2. **Static μ0.** `P_l^m(−μ0)` is precomputed host-side with scipy (`_padded_legendre_modes`) into a
-   `(NFourier, NLeg)` table; the in-trace `_assoc_legendre_neg_mu0_jax` recurrence is **removed**.
-   `mu0` moved from a `riccati_solve` arg to a `riccati_setup` parameter.
-3. **Cauchy → S_ε.** `calibrate_num_modes` (the relative azimuthal partial-sum test, which saturated
-   at low signal) is **removed**; mode truncation is now the noise-aware `retrieval_oe.select_num_modes`
-   — keep the smallest `K` whose dropped modes each contribute `< ⅓·min σ_ε` to the ToA reflectance.
-   It is a *runtime* optimisation (the scan already removed the compile-memory necessity), so the
-   solver default is "all `NFourier` modes."
-
-Verified: the float32 suite is numerically unchanged (all `NFourier` is the default); the two OOM
-cases now compile — `characterize_geom.py 24` (forward) and `check_jac.py 16` (NFourier=16 `jacrev`
-at NQuad=16). The historical analysis that motivated this is kept below.
+The Python-unrolled K-mode loop put K copies of the Kvaerno5 solve in the graph and OOM'd the XLA
+compiler (NQuad≥24 forward; NFourier=16 `jacrev` at NQuad=16). Resolved as a unit: **`lax.scan`** over
+padded `(NFourier, NLeg, N)` per-mode tensors (mode body compiles once, O(1) in K), **static μ0**
+(`P_l^m(−μ0)` precomputed host-side, the in-trace recurrence removed), and the **S_ε** mode selector
+replacing the relative-Cauchy test. Details: DESIGN §7.
 
 ---
 
-`riccati_solve` runs the K azimuthal modes as a **Python-unrolled loop** (DESIGN §7: "static,
-Python-unrolled … each mode keeps its natural ragged `(NLeg−m, N)` tensors — no pad/mask"), so the
-**compiled graph contains K independent copies of the whole Kvaerno5 Riccati solve**. Building the
-VOCALS forward at **NQuad=24** (Cauchy K=19) **OOMs the XLA→LLVM compiler** ("Cannot allocate
-memory" — a *compile-time* graph-size failure, not a runtime array allocation; reproduced
-forward-only, no `jacrev`). Compile memory grows ~linearly in K and K grows with NQuad, so it is
-~quadratic in NQuad overall. **NQuad=16 is the current CPU ceiling**; 24 streams is not a lot for
-sharply-peaked cloud phase functions, so this binds. (GPU has more memory — item D — but is
-latency-bound and does not target the root cause.)
+## I. Polarized single-scattering cloudbow forward — v_e / cloud-top r_e  [OUT OF SCOPE — deferred]
 
-**The root cause is graph size, so the fix is to stop unrolling / stop tracing what we don't vary:**
-
-1. **`vmap`/`lax.scan` the Fourier modes (the big lever; DESIGN §7's deferred "scan+pad/mask").**
-   Compile **one** mode-block and reuse it ⇒ compile memory **O(1) in K** instead of O(K). Cost:
-   pad the ragged `(NLeg−m, N)` tensors to `(NLeg, N)` (modest runtime waste). **Resolves the
-   earlier "Cauchy is incompatible with vmap" objection:** it isn't. Run the Cauchy
-   azimuthal-convergence test **once** to fix the integer K (it can be a separate, *untraced* /
-   low-memory pass), **then** `vmap`/`scan` the now-fixed K modes — the early-stop is no longer in
-   the differentiated/compiled path. Alternatively, **if the Cauchy criterion is not buying us
-   memory or runtime, drop it** and use a fixed mode count. Decide by measurement.
-2. **Static `mu0` (don't trace what we don't vary).** We trace `mu0` "because we can," which forces
-   the in-trace associated-Legendre recurrence `_assoc_legendre_neg_mu0_jax` (`P_l^m(−μ0)`) into
-   *every* mode-block (DESIGN §7). For a **single-column** retrieval `mu0` is fixed and never
-   differentiated, so tracing it only bloats the graph for a geometry-swath-reuse benefit we don't
-   use. A static-`mu0` path would precompute `P_l^m(−μ0)` host-side with SciPy (as the `mu_arr_pos`
-   tensors already are) and drop the recurrence from the graph. Secondary for memory (the N×N
-   implicit solve dominates), but free single-column and composes with (1).
-
-Interacts with item A′ (a robust multi-angle thin-cloud forward wants *more* modes → makes this
-OOM worse, and float64 doubles it) and item G's per-mode-grid work (which also wants the per-mode
-machinery).
-
-**Confirmed this session (the OOM now bites the *Jacobian*):** at NQuad=16, NLeg_all=128 the
-**forward compiles (181 s) but `jacrev` OOMs** when K saturates at 16 — the reverse tape over 16
-unrolled mode-blocks is too big. **Workaround adopted for the demo — fix `NFourier=8`, `tol_azim=0`
-(no in-loop Cauchy):** the *absolute* mode amplitudes decay fast after delta-M, so NFourier=8
-reproduces NFourier=16 reflectance to <1 % (y≈[0.108,0.221,0.286] both), and at K=8 **both the GN
-and pool `jacrev` compile cleanly (~460 s each, no OOM)**. This is "Q2" in action: the relative
-Cauchy test was saturating over a tiny denominator and misleading us into 16 modes.
-
-**Agreed next work package (user-approved, do as a unit, after the retrieval skeleton):**
-- **Q2 — demote Cauchy from in-loop selector to offline diagnostic** (PythonicDISORT-style: return
-  per-mode info, user fixes `NFourier`). The right signal is the **absolute** amplitude ‖u_m‖, not
-  the relative ratio (which saturates at low signal). *A change of metric (absolute vs relative) is
-  on the table — clear the specific diagnostic with the user before implementing.* Fixing `NFourier`
-  offline also removes calibrate's wasted full-`NFourier` solve and is the prerequisite for ↓.
-- **Q1 — `vmap`/`scan` the (now fixed-K) modes** + optional static-`mu0`. The ceiling-lifter:
-  O(K)→O(1) compile memory, unblocks NQuad→48 and non-fragile `jacrev`.
-
-*(Decision this session: demo proceeds at NQuad=16, NFourier=8, NLeg_all=128, autodiff Jacobian —
-multi-angle multi-band, no flux-only pivot needed.)*
+A second observable orthogonal to the scalar ToA radiance: the polarized cloudbow — the only accurate
+lever for droplet effective *variance* v_e, and a sharpener for cloud-top r_e. Prototyped and validated
+on the **`ve_retrieval`** branch (`src/polarized_mie.py`, `src/cloudbow_retrieval.py`). **Set aside
+until further notice** (user, 2026-06-19); full assessment + merge plan:
+`ve_retrieval:docs/ve_retrieval/ASSESSMENT.md`. Its instrument-noise counterpart (HARP2 / DoLP) is
+parked in §K.
 
 ---
 
-## I. Polarized single-scattering cloudbow forward — the v_e / cloud-top-r_e observable  [DEFERRED — prototyped on `ve_retrieval`]
+## J. BDRF specified as [ρ/π] — π-too-dark mislabeling  [RESOLVED 2026-06-17 → DESIGN §9]
 
-A second observable, **orthogonal to the scalar ToA radiance**: the single-scattering polarized
-cloudbow. It is the **only** accurate lever for droplet effective *variance* v_e (scalar intensity
-gives DOFS≈1 — v_e barely touches ω, Δω~1e-3), and it sharpens cloud-top r_e. Prototyped and
-validated on the `ve_retrieval` branch (`src/polarized_mie.py`, `src/cloudbow_retrieval.py`);
-logged here as the top merge candidate. Full assessment + merge plan:
-`ve_retrieval:docs/ve_retrieval/ASSESSMENT.md`.
-
-**Observable (no RT solver).** R_Q(Θ) = ¼ ∫₀^{τ_bot} ω(τ′)·F₁₂[r_e,v_e](Θ)·exp[−τ′(1/μ₀+1/μ)] dτ′
-/(μμ₀), over the cloudbow Θ≈135–165°: **primary-bow position → r_e, supernumerary damping → v_e**.
-F₁₂ is gamma-averaged exact Mie (`mie_avg_polmatrix`, validated vs miepython to 1e-5); the
-v_e/r_e Jacobian is exact Mie (differentiable); it reuses the existing OE core
-(`gauss_newton_oe`, `posterior_diagnostics`). This *is* the published standard — Bréon & Goloub
-1998 / Alexandrov 2012a / McBride 2020 / Pörtge 2023 / HARP2 (Smith 2026), their
-`Q = A·P₁₂ + B·cos²θ + C` — but recast in **differentiable, Bayesian (DOFS/AK)** form instead of a
-linear least-squares LUT fit. References: `docs/Cloudbow_retrieval_method.pdf`,
-`docs/Cloudbow_retrieval_method_HARP2.pdf`.
-
-**Why merge it (operational case):** cheap (~16 s, no RT solve), simple (an integral), and it
-**generalizes to aerosols** — it is the POLDER/RSP/HARP2 polarimetric size-distribution machinery
-(extend `miejax_lite` past water droplets). VOCALS OSSE: v_e RMSE 0.007–0.009, DOFS 1.27 (thick) /
-1.84 (thin), cloud-top near-exact.
-
-**Scope / limitations (honest):**
-- **v_e is a cloud-TOP observable** (top τ≲1, single-scattering). Deeper v_e is physically shielded —
-  a fundamental limit, consistent with the whole cloudbow literature (cloud-top DSD only); not a
-  solver deficiency.
-- **Single-scattering is biased vs full vector-RT** (full-Stokes MC `src/polarized_mc.py`: ~2× R_Q
-  at the primary bow; DOLP 0.30→0.07 by τ=5). Fine for *relative*-shape fitting (the standard method
-  absorbs multiple scatter into `B·cos²θ+C`); for *absolute* polarized-radiance fitting use the
-  differentiable **MC-table** forward (`src/cloudbow_table.py`).
-- Needs a gamma-singularity clamp `v_eff ∈ [3e-3, 0.4]`; R_Q **saturates** with τ_bot (thick v_e is
-  τ_bot-insensitive; the thin un-saturated bow *level* encodes τ).
-- The scalar Riccati returns **unphysical negative backscatter** at cloudbow angles (forward-peak /
-  delta-M limit) — do **not** use the Riccati solver for the cloudbow; the MC is the reference there.
-
-**Fusion with the scalar r_e(τ) profile (the operational target).** Fold the cloudbow cloud-top r_e
-as a **top-WEIGHTED** linear pseudo-observation Σ_j a_j r_e(τ_j) = ⟨r_e⟩_w (weights a_j ∝ e^{−κτ},
-κ = 1/μ₀ + 1/μ — the cloudbow measures a depth-weighted average, **not** r_e(0)). The **naive**
-simultaneous scalar+cloudbow joint *hurts* (deep-r_e vs effective-top-r_e fight contaminates v_e);
-use the top-weighted pseudo-obs or a cloudbow-only joint. Prototype:
-`ve_retrieval:docs/ve_retrieval/merge_re_*.py` (`CloudbowConstrainedForward`, `continuous_weights`)
-— librarify into `retrieval_oe.py` when porting.
-
-Relates to §F (deferred forward-model features) and §G (information content — the cloudbow's
-DOFS/averaging-kernel story is the worked example of "what is actually retrievable").
+Fixed: removed `/π` from every `BDRF_Fourier_modes` call site and regenerated the reference `.npz`;
+all affected float32 tests pass at the physically-correct albedos. The convention (`[ρ_s]`, **not**
+`[ρ_s/π]`) and the single-bounce verification are documented in DESIGN §9.
 
 ---
 
-## J. BDRF specified as [ρ/π] across the test/demo suite — π-too-dark mislabeling  [RESOLVED 2026-06-17]
+## K. Measurement-noise model — shot term (Option A) and HARP2/polarized noise deferred  [DECISION / DEFERRED]
 
-**Fixed.** Removed `/π` from every `BDRF_Fourier_modes` call site and regenerated
-`tests/reference_results/*.npz`. All 16 affected float32 tests pass at the physically-correct
-albedos, including the high-stress cases (5e ρ=0.9, 8c ρ=0.85, 8b ρ=0.3, 10d ρ=0.3) — the
-float32 `rel_tol=1e-2` is not stressed by the higher surface reflectance.
+The infrastructure is **built and settled** (`src/noise_model.py`; the three-term σ(ρ); the
+OCI-SWIR calibration-relative default; `osse_observation(noise=)` + `make_Se`; default noiseless —
+see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **open**:
 
-Files changed: `tests/5_test.py`, `7_test.py`, `8_test.py`, `9_test.py`, `10_key_test.py`,
-`13_key_test.py`, `15_test.py`, `supplementary/generate_reference.py`,
-`supplementary/smoke_retrieval.py`, `supplementary/thick_retrieval.py`,
-`supplementary/check_forward.py`, `supplementary/check_jac.py`,
-`supplementary/smoke_refactor.py`, `supplementary/check_atnode.py`,
-`supplementary/characterize_geom.py`.
+- **Shot term (Option A) — wired but OFF, pending OCI SNR-at-L_typ.** The shot coefficients
+  (`snr_ref`, `rho_ref`) exist but default to "off" because OCI's SWIR SNR-at-L_typ table could not be
+  cleanly sourced: the PACE MRD (`PACE-SYS-REQ-0019L`) §3.7 tables are embedded **images** (no
+  extractable text), the SNR requirement lives in an external `.xlsx` (`oci_functional_requirements_table2`),
+  and converting a radiance-domain SNR to our reflectance units further needs per-band solar
+  irradiance F₀ + a reference geometry. **To resolve:** obtain the OCI SWIR SNR + L_typ per band,
+  convert L_typ→ρ_ref, and pass `snr_ref`/`rho_ref` to `oci_swir` (no code change). Low urgency:
+  clouds are bright ⇒ calibration-dominated ⇒ the shot term is a small correction in our regime
+  (`check_noise_model.test_bright_cloud_shot_subdominant`).
+
+- **Calibration error is systematic, not random (diagonal-Se caveat).** `k_cal·ρ` is an absolute-gain
+  uncertainty, correlated across a scene's pixels; a diagonal `Se` treats it as independent. Fine for
+  the **single-column** OSSE (sets the misfit scale + χ²-gate floor); a **multi-pixel / scene**
+  retrieval should model the correlated part (off-diagonal `Se` or a separate bias term). Revisit when
+  the retrieval goes beyond one column.
+
+- **HARP2 / polarized (DoLP) noise — deferred with the cloudbow observable.** HARP2 (VIS 0.44–0.87 µm,
+  10/10/60/10 view angles, **0.5 % DoLP**, 1–3 % radiometric) cannot measure the SWIR retrieval bands,
+  so it attaches to the **polarized single-scattering cloudbow** observable (§I), not the current
+  scalar SWIR retrieval. When that observable lands: add a polarization-aware path (per-observation I
+  vs Q/U/DoLP type) and a `harp2`/`spexone` preset (SPEXone DoLP 0.3 %). Out of scope until then
+  (user-set 2026-06-19: ignore polarization / v_e for now).
+
+- **Notebook adoption — DONE (2026-06-19).** All four OSSE `Se` sites (§5 idealized / §8 thin joint /
+  §12 thick / §13 sub-adiabatic) now build `Se = roe.make_Se(fwd, y, nm.oci_swir())` — the PACE
+  OCI-SWIR model (calibration-relative ~2 %) — replacing the hand-picked `0.03·max(|y|,0.02)` floor;
+  `noise_model` is imported and the §8 markdown + §11b document the change. The OSSE stays **noiseless**
+  (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s own fixed `0.005²·I`
+  mode-selection floor is a *separate* quantity and intentionally unchanged. (User re-runs the notebook.)

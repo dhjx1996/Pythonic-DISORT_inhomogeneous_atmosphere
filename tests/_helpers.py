@@ -137,7 +137,10 @@ def pydisort_toa_full_phi(
     from PythonicDISORT.pydisort import pydisort
 
     N = NQuad // 2
-    g_l = np.atleast_2d(np.asarray(g_l, dtype=float))   # (1, NLeg_all)
+    # np.array (not asarray) forces a writable copy: pydisort normalizes the
+    # 0th Legendre moment in-place (Leg_coeffs_all[:, 0] = 1), and a jnp->numpy
+    # input (e.g. Mie coeffs) would otherwise be a read-only buffer.
+    g_l = np.atleast_2d(np.array(g_l, dtype=float))     # (1, NLeg_all)
     if NLeg is None:
         NLeg = NQuad
     if delta_M_scaling:

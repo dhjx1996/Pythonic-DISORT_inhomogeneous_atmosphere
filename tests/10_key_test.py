@@ -5,7 +5,7 @@ Mimics realistic cloud microphysics where the effective radius r_e varies with
 optical depth, causing both omega(tau) and g(tau) to vary.  Uses linear
 interpolation profiles built by make_cloud_profile.
 
-Verification strategy: multi-layer pydisort (50 / 500 layers, 10x refinement)
+Verification strategy: multi-layer pydisort (100 / 1000 layers, 10x refinement)
 must converge toward the Riccati reference (tol=1e-8) at O(h^2).
 Theoretical convergence ratio for 10x refinement: 100.
 """
@@ -36,7 +36,7 @@ def _u_phi(func, *args):
 
 def _ref_and_layers(tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
                     BDRF_Fourier_modes=()):
-    """Run Riccati@tol=1e-8 (reference), pydisort@50 (coarse), pydisort@500 (fine)."""
+    """Run Riccati@tol=1e-8 (reference), pydisort@100 (coarse), pydisort@1000 (fine)."""
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, omega_func, Leg_coeffs_func, NQuad, mu0, I0, phi0,
         tol=1e-8,
@@ -44,11 +44,11 @@ def _ref_and_layers(tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
     )
 
     _, _, uf_c = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 50, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 100, NQuad, NLeg, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
     _, _, uf_f = multilayer_pydisort_toa_full_phi(
-        tau_bot, omega_func, Leg_coeffs_func, 500, NQuad, NLeg, mu0, I0, phi0,
+        tau_bot, omega_func, Leg_coeffs_func, 1000, NQuad, NLeg, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_Fourier_modes,
     )
 
@@ -74,7 +74,7 @@ def test_10a():
         tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 def test_10b():
@@ -93,7 +93,7 @@ def test_10b():
         tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 def test_10c():
@@ -112,7 +112,7 @@ def test_10c():
         tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)
 
 
 def test_10d():
@@ -131,4 +131,4 @@ def test_10d():
         tau_bot, omega_func, Leg_coeffs_func, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
-    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=50, abs_tol=1e-3)
+    assert_convergence_phi(u_ref, u_coarse, u_fine, min_ratio=75, abs_tol=1e-3)

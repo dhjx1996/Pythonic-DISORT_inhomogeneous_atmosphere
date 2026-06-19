@@ -436,7 +436,7 @@ def select_num_modes(fwd: RetrievalForward, x_ref, s_nodes, Se, *, frac=1/3.0):
 # 2. Retrieval-grid selection: QRCP-trimmed subset of the adaptive ODE grid
 # ============================================================================
 def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active=None, *,
-                          Se=None, prior_builder=None, filter_threshold=0.25,
+                          Se=None, prior_builder=None, filter_threshold=0.5,
                           margin=1, re_of_tau=None, k_max=8):
     """Sensitivity-select **normalized-depth** nodes from the FULL ODE grid.
 
@@ -528,7 +528,7 @@ def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active=None, *,
 # ----------------------------------------------------------------------------
 # 2b. Data-driven retrieval-node count k_active  (SO1)
 # ----------------------------------------------------------------------------
-def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.25, margin=1,
+def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.5, margin=1,
                   k_min=1, k_max=8):
     """How many r_e(τ) nodes the measurement can independently support (SO1).
 
@@ -541,18 +541,22 @@ def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.25, margin=1,
     direction's information that comes from the data*; keep the directions with
     ``f_i ≥ filter_threshold`` plus a fixed ``margin`` of prior-filled ones.
 
-    ``filter_threshold`` is in **data-fraction units** (``f``): 0.5 ⇔ data ties the
-    prior (⇔ ``r_i ≥ 1``); a *lower* threshold is **more conservative** (keeps more
-    nodes — a node is not useless just because <50 % of its information is expected
-    from the data). **Default 0.25**, tuned on the VOCALS thin/thick OSSE
-    (``tests/supplementary/tune_filter_threshold.py``, ``thick_sweep2.py``): it keeps
-    the borderline ``f≈0.29`` upper-interior node (thick → k=4, thin → k=5), which the
-    asymmetric over/under-fit penalty favours (under-resolving a structured thick cloud
-    cost +51 % RMSE vs +18 % for mildly over-resolving a flat one), while staying below
-    the over-fit cliff that opens one node deeper (``f≈0.07–0.12``). Computed **once** at
-    the first guess so the chosen count is then frozen for the retrieval (the
-    forward/Jacobian compile once); a node-count change is only revisited under the
-    ``max_n_outer=3`` re-mesh escalation.
+    ``filter_threshold`` is in **data-fraction units** (``f``): **0.5 ⇔ data ties the
+    prior** (⇔ ``r_i ≥ 1`` ⇔ SNR ≥ 1) — Rodgers' data/prior crossover, the boundary above
+    which a direction is *measured* rather than prior-dominated. **Default 0.5**: it keeps
+    exactly the data-dominated directions (plus the fixed ``margin``), and — being the
+    SNR=1 crossover on the *noise-whitened* Jacobian — it is **invariant to the noise
+    level** (no re-tuning when ``Se`` changes), unlike a tuned absolute cut. A *lower*
+    threshold admits prior-dominated (``f<0.5``) directions into the fit; with a loosened
+    prior those fit noise (the §13 sub-adiabatic overfit). The earlier ``0.25`` was tuned
+    on a **3 %**-noise sweep and was superseded when the measurement noise was grounded to
+    the PACE-OCI **2 %** model: a 0.25-vs-0.5 sweep at 2 %
+    (``tests/supplementary/sweep_threshold_2pct.py``) showed 0.5 leaves the thin case
+    unchanged, fixes the shielded RF10 overfit (drop-cap 172 %→58 %, RMSE 0.69→0.52), and
+    costs the thick case only +0.1 µm (within uncertainty, both χ²≪1, from a node sitting
+    *at* f≈0.5). Computed **once** at the first guess so the count is frozen for the
+    retrieval (the forward/Jacobian compile once); a node-count change is only revisited
+    under the ``max_n_outer=3`` re-mesh escalation.
 
     ``sigma_prior`` is the r_e-block prior σ vector (length = number of pool
     columns). ``k`` is clamped to ``[k_min, min(k_max, n_obs, pool_size)]``;
@@ -795,7 +799,7 @@ class RemeshWarning(UserWarning):
 
 def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
-                    max_n_outer=2, prior_builder=None, filter_threshold=0.25,
+                    max_n_outer=2, prior_builder=None, filter_threshold=0.5,
                     margin=1, remesh_if_chi2_red_gt=2.0, warn=True):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
@@ -834,6 +838,9 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     full_hist = list(hist)
 
     def _chi2_red():
+        # Whitened data misfit / m. χ²_red≈1 ⇔ residuals are noise-sized ⇔ "well-fit"
+        # (no systematic signal left for re-meshing to capture); >thr ⇔ structural
+        # misfit. Derivation + the noiseless-OSSE caveat: DESIGN_DECISIONS.md §10h.
         r0 = np.asarray(y, float) - np.asarray(Fx, float)
         return float(r0 @ Se_inv @ r0) / max(m, 1)
 
@@ -990,8 +997,15 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
     in-situ point) are appended to the state so the synthetic measurement is
     generated at the true cloud depth/base — this is *defining the synthetic world*,
     not a leak (the leak would be letting the *retrieval* know them, which the
-    prior/first-guess no longer does). Noiseless by default (the OSSE decision);
-    pass ``noise`` (a per-observation σ vector or scalar) for a Gaussian realization.
+    prior/first-guess no longer does).
+
+    **Noiseless by default** (the OSSE decision, DESIGN §10b): the noise here is
+    *measurement* noise on the ToA radiances (instrument noise), not VOCALS truth
+    uncertainty (DESIGN §12). ``noise`` may be **(a)** a :class:`noise_model.NoiseModel`
+    (a PACE/OCI instrument model — a Gaussian realization is drawn via its
+    ``sample`` using ``fwd.n_bands`` for the band-major layout), or **(b)** an
+    explicit per-observation σ (scalar or array). Build the matching assumed ``Se``
+    with :func:`make_Se`.
     """
     tau_truth = np.asarray(tau_truth, float)
     re_truth = np.asarray(re_truth, float)
@@ -1008,6 +1022,21 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
         x = np.append(x, tau_bot_truth)
     y = np.asarray(fwd.forward(x, s_truth), float)
     if noise is not None:
-        rng = np.random.default_rng(seed)
-        y = y + rng.normal(0.0, 1.0, size=y.shape) * np.asarray(noise)
+        if hasattr(noise, "sample"):                 # a noise_model.NoiseModel
+            y = np.asarray(noise.sample(y, n_bands=fwd.n_bands, seed=seed), float)
+        else:                                        # explicit per-obs σ (scalar/array)
+            rng = np.random.default_rng(seed)
+            y = y + rng.normal(0.0, 1.0, size=y.shape) * np.asarray(noise)
     return y
+
+
+def make_Se(fwd: RetrievalForward, y, noise_model):
+    """Assumed measurement-error covariance ``Se = diag(σ²)`` from a NoiseModel.
+
+    The OE counterpart to :func:`osse_observation`'s perturbation: it supplies the
+    band-major ``fwd.n_bands`` so a :class:`noise_model.NoiseModel` can apply
+    per-band coefficients. Use this in place of the old hand-picked
+    ``Se = diag((0.03·max(|y|, 0.02))²)`` to ground the weighting in the PACE/OCI
+    instrument model (DESIGN §12). Noiseless OSSE still needs ``Se`` for weighting.
+    """
+    return noise_model.Se(np.asarray(y, float), n_bands=fwd.n_bands)

@@ -24,6 +24,18 @@ rₑ(τ)  ──miejax_lite──▶  (ω(τ), p(τ; μ, φ))  ──pydisort_ri
 `miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics;
 it was ported to JAX from [`miepython`](https://miepython.readthedocs.io/en/latest/).
 
+### When to use which solver
+
+| | `PythonicDISORT.pydisort` | `pydisort_riccati_jax` |
+|---|---|---|
+| Atmosphere | piecewise-constant layers | **continuous** ω(τ), gₗ(τ) |
+| Method | exact eigendecomposition (Stamnes–Conklin) | invariant-imbedding Riccati ODE (Kvaerno5) |
+| Differentiable | via `autograd` (output funcs only) | **yes** — `jax.grad` through the whole solve |
+| Output depths | any τ | ToA (τ=0) only |
+| Best for | constant-property columns | τ-varying retrieval forward model |
+
+For **constant** ω / phase function, prefer `pydisort` — it is exact and faster.
+
 ## VOCALS-REx retrieval demo
 
 Effective-radius profiles rₑ(τ) per [VOCALS-REx](https://doi.org/10.5194/acp-11-627-2011)
@@ -32,9 +44,9 @@ satellite radiances with Gauss–Newton optimal estimation and autodiff Jacobian
 truth; blue: retrieved ±1σ; dashed orange: adiabatic prior; red dot: (assumed) known cloud base.
 
 <p align="center">
-<img src="docs/retrieval_thin.png" width="380" alt="Thin cloud retrieval (RF11, τ≈1.2)"/>
+<img src="idealized_retrieval_thin.png" width="380" alt="Thin cloud retrieval (RF11, τ≈1.2)"/>
 &nbsp;&nbsp;
-<img src="docs/retrieval_thick.png" width="380" alt="Thick cloud retrieval (RF03, τ≈23)"/>
+<img src="idealized_retrieval_thick.png" width="380" alt="Thick cloud retrieval (RF03, τ≈23)"/>
 </p>
 
 **Left:** thin, near-adiabatic cloud (RF11, τ ≈ 1.2).
@@ -47,7 +59,7 @@ See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_re
 |---|---|
 | `src/` | the solver — 3 modules (`pydisort_riccati_jax.py`, `_riccati_solver_jax.py`, `_solve_bc_riccati_jax.py`) |
 | `tests/` | PyTest suite (float32 default + a `float64` opt-in partition) |
-| `docs/riccati_solver.md`, `*.ipynb` | maintainer guide + intro / VOCALS-retrieval notebooks |
+| `docs/*.ipynb` | VOCALS-retrieval notebook (solver tour, validation, and full retrieval) |
 | `docs/DESIGN_DECISIONS.md` | **settled** design decisions and their rationale |
 | `docs/OUTSTANDING.md` | **open** problems and decisions (read this before assuming a feature exists) |
 | `report_riccati_solver.tex` | the formal report (math + design justification) |
