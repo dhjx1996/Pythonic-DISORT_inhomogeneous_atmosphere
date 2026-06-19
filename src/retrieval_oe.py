@@ -435,34 +435,45 @@ def select_num_modes(fwd: RetrievalForward, x_ref, s_nodes, Se, *, frac=1/3.0):
 # ============================================================================
 # 2. Retrieval-grid selection: QRCP-trimmed subset of the adaptive ODE grid
 # ============================================================================
-def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active, *,
-                          re_of_tau=None, k_pool=20):
-    """Sensitivity-select ``k_active`` **normalized-depth** nodes from the ODE pool.
+def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active=None, *,
+                          Se=None, prior_builder=None, filter_threshold=0.25,
+                          margin=1, re_of_tau=None, k_max=8):
+    """Sensitivity-select **normalized-depth** nodes from the FULL ODE grid.
 
-    1. Run the adaptive solve at the current state → ODE absolute-τ grid (candidate
-       pool, a trustworthy *superset* of the informative points, DESIGN §3a), and
-       normalize to ``s = τ/τ_bot ∈ [0,1]``.
-    2. Form the ToA Jacobian ``∂y/∂r_e(s_j)`` on that pool (autodiff).
-    3. QR-with-column-pivoting ranks the nodes by independent information; keep the
-       top ``k_active`` — always including cloud-top ``s=0`` (most informative) —
-       and return them as **normalized-depth** ``s_sel`` (the grid the forward uses).
+    1. Run the adaptive solve at the current state → ODE absolute-τ grid (the
+       candidate pool — a trustworthy *superset* of the informative points,
+       DESIGN §3a), normalize to ``s = τ/τ_bot ∈ [0,1]``. **No resampling**: the
+       pool *is* the ODE grid (the old fixed-cardinality resample manufactured
+       collinear pool columns for thin clouds — removed).
+    2. Form the ToA Jacobian ``∂y/∂r_e(s_j)`` on the interior pool nodes (autodiff).
+    3. **Node count** — if ``k_active is None`` the noise-aware filter
+       (:func:`auto_k_active`, driven by ``filter_threshold``) sets it from the pool;
+       otherwise the given count is used (fixed-count re-mesh). QR-with-column-
+       pivoting ranks the interior nodes by independent information; keep the top
+       ``k_active`` — always including cloud-top ``s≈0`` (most informative).
 
     Parameters
     ----------
+    k_active : int or None
+        None ⇒ the filter decides the count (needs ``Se`` and ``prior_builder``).
+        An int ⇒ select exactly that many (fixed-count re-mesh; ``Se``/``prior_builder``
+        not required).
+    Se, prior_builder : observation covariance and ``prior_builder(s)->(x_a, Sa)``
+        Required only when ``k_active is None`` (for the filter whitening / σ_prior).
     re_of_tau : callable or None
         Maps an **absolute** τ to current r_e (to evaluate the pool's r_e values).
         If None, uses the forward's own interpolant of ``(s_nodes, x)``.
+
+    Returns ``(s_sel, re_sel, info)`` with ``info['k_active']`` the count used.
     """
+    if k_active is None and (Se is None or prior_builder is None):
+        raise ValueError("k_active=None (filter selection) requires Se and "
+                         "prior_builder")
     # current cloud base (retrieved value in joint mode, else the fixed anchor)
     cur_tau_bot = float(fwd._split_state(x, s_nodes)[2])
-    tau_pool = fwd.ode_grid(x, s_nodes)                        # absolute τ
+    tau_pool = fwd.ode_grid(x, s_nodes)                        # absolute τ (full grid)
     s_pool = np.unique(np.clip(tau_pool / cur_tau_bot, 0.0, 1.0))   # normalized
-    # Resample to a FIXED cardinality (uniform in node-index) so the pool Jacobian
-    # compiles once and every lagged re-selection is recompile-free.
-    if k_pool is not None and s_pool.size != k_pool and s_pool.size > 1:
-        s_pool = np.interp(np.linspace(0.0, s_pool.size - 1, k_pool),
-                           np.arange(s_pool.size), s_pool)
-    tau_pool_abs = s_pool * cur_tau_bot                        # absolute τ of pool
+    tau_pool_abs = s_pool * cur_tau_bot
     if re_of_tau is None:
         re_pool = fwd.profile(x, s_nodes, tau_pool_abs)        # same class as forward
     else:
@@ -470,101 +481,104 @@ def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active, *,
 
     K_pool = fwd.jacobian_on_grid(re_pool, s_pool, cur_tau_bot)    # (m, P)
 
-    # Column pivoting on the sensitivity matrix: rank nodes by independent info.
-    from scipy.linalg import qr
-    _, _, piv = qr(K_pool, mode="economic", pivoting=True)
-
     # Candidate set = interior nodes only (the base anchor s=1 is appended by the
-    # forward, not retrieved). Always include cloud-top (s≈0, most informative).
-    # Return EXACTLY k_active nodes so the retrieval-grid size is constant across
-    # lagged re-selections ⇒ r-refinement is recompile-free.
+    # forward / handled by r_base, not retrieved as a free node).
     interior = s_pool < 1.0 - 1e-6
-    top_idx = int(np.argmin(s_pool))
+    s_int = s_pool[interior]
+    re_int = re_pool[interior]
+    K_int = K_pool[:, interior]
+
+    # node count: filter (k_active None) or fixed (re-mesh fixed-count path)
+    if k_active is None:
+        _, Sa_pool = prior_builder(s_int)                     # r_e block first
+        sig = np.sqrt(np.clip(np.diag(Sa_pool)[:s_int.size], 0.0, None))
+        k_active, kinfo = auto_k_active(K_int, Se, sig,
+                                        filter_threshold=filter_threshold,
+                                        margin=margin, k_max=k_max)
+    else:
+        kinfo = dict(filter_threshold=float(filter_threshold))
+    k_active = int(min(k_active, s_int.size))                  # can't exceed interior pool
+
+    # Column pivoting on the sensitivity matrix: rank interior nodes by indep. info.
+    from scipy.linalg import qr
+    _, _, piv = qr(K_int, mode="economic", pivoting=True)      # indexes into s_int
+
+    # Always include cloud-top (s≈0, most informative); fill the rest by QRCP rank.
+    top_idx = int(np.argmin(s_int))
     chosen = [top_idx]
-    for p in piv:                                              # QRCP order
+    for p in piv:
         if len(chosen) >= k_active:
             break
-        if int(p) != top_idx and interior[p]:
+        if int(p) != top_idx:
             chosen.append(int(p))
     if len(chosen) < k_active:                                 # degenerate pool: pad by depth
-        for j in np.argsort(s_pool):
+        for j in np.argsort(s_int):
             if len(chosen) >= k_active:
                 break
-            if j not in chosen and interior[j]:
+            if j not in chosen:
                 chosen.append(int(j))
-    chosen = sorted(set(chosen), key=lambda j: s_pool[j])
-    s_sel = s_pool[chosen]
-    re_sel = re_pool[chosen]
-    return s_sel, re_sel, dict(s_pool=s_pool, K_pool=K_pool, piv=piv)
+    chosen = sorted(set(chosen), key=lambda j: s_int[j])
+    s_sel = s_int[chosen]
+    re_sel = re_int[chosen]
+    info = dict(s_pool=s_pool, K_pool=K_pool, piv=piv, k_active=int(k_active))
+    info.update({k: v for k, v in kinfo.items() if k != "k_active"})
+    return s_sel, re_sel, info
 
 
 # ----------------------------------------------------------------------------
 # 2b. Data-driven retrieval-node count k_active  (SO1)
 # ----------------------------------------------------------------------------
-def auto_k_active(K_pool, Se, Sa_pool, *, method="filter", factor=1.5, margin=1,
+def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.25, margin=1,
                   k_min=1, k_max=8):
     """How many r_e(τ) nodes the measurement can independently support (SO1).
 
-    Computed **once** at the first guess from the POOL Jacobian (so the chosen
-    count is then frozen for the retrieval — the forward/Jacobian still compile
-    once, mirroring :func:`select_num_modes` for the Fourier modes). Two
-    estimators, returned with diagnostics so they can be cross-checked:
+    Noise-aware **filter** count from the pool Jacobian (DOFS is no longer used for
+    selection — it is an information-content diagnostic only; see
+    :mod:`info_content`). Whiten ``K̃ = Se^(-1/2) · K_pool · diag(σ_prior)`` (rows by
+    noise, columns by the prior √variance), QRCP → pivoted R-diagonal
+    ``r_1 ≥ r_2 ≥ …`` (each node's **marginal** information in SNR units). The
+    Rodgers filter factor ``f_i = r_i²/(1+r_i²)`` is the *fraction of that
+    direction's information that comes from the data*; keep the directions with
+    ``f_i ≥ filter_threshold`` plus a fixed ``margin`` of prior-filled ones.
 
-    - ``method="dofs"`` — ``k = round(factor · DOFS)`` (the user's SO1 proposal),
-      ``factor ≥ 1`` so a few prior-filled nodes are kept beyond the resolvable
-      rank (a node basis is never fully independent: ``DOFS = tr(A) < n_nodes``
-      intrinsically, and letting the prior fill the surplus is a *feature* of
-      regularised OE — OUTSTANDING §G). DOFS is the Rodgers ``tr(A)`` on the pool.
+    ``filter_threshold`` is in **data-fraction units** (``f``): 0.5 ⇔ data ties the
+    prior (⇔ ``r_i ≥ 1``); a *lower* threshold is **more conservative** (keeps more
+    nodes — a node is not useless just because <50 % of its information is expected
+    from the data). **Default 0.25**, tuned on the VOCALS thin/thick OSSE
+    (``tests/supplementary/tune_filter_threshold.py``, ``thick_sweep2.py``): it keeps
+    the borderline ``f≈0.29`` upper-interior node (thick → k=4, thin → k=5), which the
+    asymmetric over/under-fit penalty favours (under-resolving a structured thick cloud
+    cost +51 % RMSE vs +18 % for mildly over-resolving a flat one), while staying below
+    the over-fit cliff that opens one node deeper (``f≈0.07–0.12``). Computed **once** at
+    the first guess so the chosen count is then frozen for the retrieval (the
+    forward/Jacobian compile once); a node-count change is only revisited under the
+    ``max_n_outer=3`` re-mesh escalation.
 
-    - ``method="filter"`` *(default — NOT routed through DOFS)* — whiten
-      ``K̃ = Se^(-1/2) · K_pool · diag(σ_prior)`` (rows by noise, columns by the
-      prior √variance), QRCP → pivoted R-diagonal ``r_1 ≥ r_2 ≥ …`` (each node's
-      **marginal** information in SNR units). Keep the **data-dominated**
-      directions — filter factor ``f_i = r_i²/(1+r_i²) ≥ ½ ⇔ r_i ≥ 1`` (Rodgers;
-      the literal "fraction from data") — plus a fixed ``margin`` of prior-filled
-      ones. ``Σ f_i ≈ DOFS`` gives a built-in cross-check that the two estimators
-      agree (and a robustness probe on the DOFS itself).
-
-    Both are clamped to ``[k_min, min(k_max, n_obs, pool_size)]``; cloud-top is
-    always retained by :func:`select_retrieval_grid`, not counted here.
+    ``sigma_prior`` is the r_e-block prior σ vector (length = number of pool
+    columns). ``k`` is clamped to ``[k_min, min(k_max, n_obs, pool_size)]``;
+    cloud-top is always retained by :func:`select_retrieval_grid`, not counted here.
 
     Returns ``(k, info)``.
     """
     K = np.asarray(K_pool, float)
     Se = np.asarray(Se, float)
-    Sa = np.asarray(Sa_pool, float)
+    sig = np.asarray(sigma_prior, float)
     # Se^{-1/2} for general SPD observation covariance (here Se is diagonal).
     w, V = np.linalg.eigh(Se)
     Se_half_inv = (V / np.sqrt(w)) @ V.T
 
-    # filter-factor spectrum (always computed — it is the DOFS cross-check)
-    sig = np.sqrt(np.clip(np.diag(Sa), 0.0, None))
-    K_tilde = Se_half_inv @ K @ np.diag(sig)
+    K_tilde = Se_half_inv @ K @ np.diag(sig)       # whitened (SNR units)
     from scipy.linalg import qr
     _, R, _ = qr(K_tilde, mode="economic", pivoting=True)
     rdiag = np.abs(np.diag(R))
-    f = rdiag ** 2 / (1.0 + rdiag ** 2)
-    n_data = int(np.count_nonzero(rdiag >= 1.0))
-    sum_f = float(f.sum())
-
-    # DOFS on the pool (correlated Sa)
-    Se_inv = np.linalg.inv(Se)
-    Sa_inv = np.linalg.inv(Sa)
-    KtSeK = K.T @ Se_inv @ K
-    A = np.linalg.solve(KtSeK + Sa_inv, KtSeK)
-    dofs = float(np.trace(A))
-
-    if method == "dofs":
-        k = int(round(float(factor) * dofs))
-    elif method == "filter":
-        k = n_data + int(margin)
-    else:
-        raise ValueError(f"unknown method {method!r}; 'filter' or 'dofs'")
+    f = rdiag ** 2 / (1.0 + rdiag ** 2)            # per-direction data fraction
+    n_data = int(np.count_nonzero(f >= float(filter_threshold)))
+    k = n_data + int(margin)
 
     k_hi = int(min(k_max, K.shape[0], K.shape[1]))
     k = int(np.clip(k, k_min, max(k_min, k_hi)))
-    info = dict(method=method, k_active=k, dofs=dofs, sum_filter_factor=sum_f,
-                n_data_dominated=n_data, margin=int(margin), factor=float(factor),
+    info = dict(k_active=k, filter_threshold=float(filter_threshold),
+                n_data=n_data, margin=int(margin), sum_filter_factor=float(f.sum()),
                 rdiag=rdiag.tolist(), filter_factors=f.tolist())
     return k, info
 
@@ -775,34 +789,41 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
     return x, K, Fx, history, converged
 
 
+class RemeshWarning(UserWarning):
+    """Emitted when re-meshing is triggered — or is warranted but disabled/capped."""
+
+
 def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
-                    n_outer=1, k_active=None, prior_builder=None,
-                    r_top_prior=None, remesh_if_chi2_red_gt=None):
-    """Optimal estimation with optional **lagged re-meshing** (outer loop).
+                    max_n_outer=2, prior_builder=None, filter_threshold=0.25,
+                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True):
+    """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
     The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
-    retrieving τ_bot never moves a node past the base — see
-    :meth:`RetrievalForward._re_of_tau`). Inner loop: Rodgers Gauss–Newton on a
-    fixed grid, projected onto physical bounds each step. Outer loop (``n_outer>1``):
-    after each inner solve, re-select the grid by QRCP at the *current* estimate
-    (``select_retrieval_grid``), re-map the r_e-node block onto the new s-grid and
-    rebuild the prior, then re-run. Corrects first-guess node placement (OUTSTANDING
-    B). ``n_outer=1`` ⇒ select-once.
+    retrieving τ_bot never moves a node past the base). Inner loop: Rodgers
+    Gauss–Newton on a fixed grid, projected onto physical bounds each step. The
+    outer loop is a **gated last resort** that escalates progressively, capped by
+    ``max_n_outer``:
 
-    ``prior_builder(s_nodes) -> (x_a, Sa)`` is required when ``n_outer>1`` to
-    rebuild the prior on each new grid.
+    - ``max_n_outer=1`` → no re-meshing (select-once).
+    - ``max_n_outer=2`` → may re-mesh with a **fixed node count** (placement only). [default]
+    - ``max_n_outer=3`` → may further escalate to a **changed node count** (filter
+      re-decides). Hard ceiling.
 
-    **Adaptive re-meshing (SO2b).** ``n_outer`` is an *upper bound*; the outer loop
-    already stops when the grid stabilises. Passing ``remesh_if_chi2_red_gt`` adds a
-    structural-misfit gate: re-meshing is attempted only while the reduced χ²
-    ``‖y−F‖²_{Se⁻¹} / m`` exceeds the threshold (a "persistently high loss ⇒ the
-    node placement / parameterisation may be wrong" signal). Once the fit reaches the
-    noise floor (χ²_red ≲ threshold, e.g. ~1–2), re-meshing is skipped — the prior is
-    adequate and re-pivoting the correlated node basis would only churn placement
-    (OUTSTANDING §G "re-mesh instability"). ``None`` ⇒ always re-mesh up to
-    ``n_outer`` (legacy behaviour).
+    Re-mesh fires only on the **"both"** trigger: reduced χ²
+    ``= ‖y−F‖²_{Se⁻¹}/m > remesh_if_chi2_red_gt`` **and** the re-selected grid would
+    actually move. The (recompiling) re-selection runs only at an *enabled* tier — at
+    a tier *beyond* ``max_n_outer`` the warning fires on χ² **alone** (so a select-once
+    user still learns the fit wanted more, without paying a recompile to find out).
+
+    ``prior_builder(s_nodes) -> (x_a, Sa)`` is required for any re-meshing (rebuilds
+    the prior on each re-selected grid and supplies σ_prior for the filter); a
+    fixed-count re-selection (tier 2) keeps ``len(s_nodes)`` nodes, tier 3 lets the
+    filter (``filter_threshold``) re-decide the count. ``warn`` toggles the
+    :class:`RemeshWarning` messages. The initial grid is the ``s_nodes`` passed in
+    (select it once with :func:`select_retrieval_grid` before calling).
     """
+    import warnings
     s_nodes = np.asarray(s_nodes, float)
     x = np.asarray(x_a, float) if x0 is None else np.asarray(x0, float)
     Se_inv = np.linalg.inv(np.asarray(Se, float))
@@ -812,30 +833,58 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                                      n_iter=n_iter, lm=lm, xtol=xtol)
     full_hist = list(hist)
 
-    for _ in range(max(0, n_outer - 1)):
-        if k_active is None or prior_builder is None:
+    def _chi2_red():
+        r0 = np.asarray(y, float) - np.asarray(Fx, float)
+        return float(r0 @ Se_inv @ r0) / max(m, 1)
+
+    thr = remesh_if_chi2_red_gt
+    # Progressive escalation: n_outer=2 → fixed-count re-mesh, n_outer=3 → changed-count.
+    n_outer = 2
+    while prior_builder is not None and thr is not None and n_outer <= 3:
+        chi2 = _chi2_red()
+        if chi2 <= thr:
+            break                                              # fit adequate → stop
+        if n_outer > max_n_outer:                              # warranted but disabled/capped
+            if warn and n_outer == 2:                          # max_n_outer=1: re-mesh off entirely
+                warnings.warn(
+                    f"Structural misfit (reduced χ²={chi2:.1f} > {thr}); re-meshing "
+                    f"appears warranted — but it is disabled (max_n_outer={max_n_outer}). "
+                    f"Returning the select-once result; consider raising max_n_outer "
+                    f"or revising the prior/parameterization.", RemeshWarning, stacklevel=2)
+            elif warn:                                         # max_n_outer=2: count change capped
+                warnings.warn(
+                    f"Misfit persists after fixed-count re-meshing (reduced "
+                    f"χ²={chi2:.1f} > {thr}); a node-count change appears warranted but "
+                    f"is capped (max_n_outer={max_n_outer}). Consider max_n_outer=3 or "
+                    f"revising the prior.", RemeshWarning, stacklevel=2)
             break
-        # SO2b structural-misfit gate: skip re-meshing once the fit is at the noise
-        # floor (re-pivoting a well-fit, correlated node basis only churns placement).
-        if remesh_if_chi2_red_gt is not None:
-            r0 = np.asarray(y, float) - np.asarray(Fx, float)
-            chi2_red = float(r0 @ Se_inv @ r0) / max(m, 1)
-            if chi2_red <= remesh_if_chi2_red_gt:
-                break
-        # current r_e via the forward's parameterisation (mirrors F(x)); re_of_tau
-        # maps an ABSOLUTE τ to r_e (select_retrieval_grid evaluates the pool there).
+        # enabled tier → "both": run the re-selection we will actually use.
         cur_x, cur_nodes = np.asarray(x, float), s_nodes
         _, cur_rbase, cur_taubot = fwd._split_state(cur_x, cur_nodes)
         cur_taubot = float(cur_taubot)
         re_of_tau = lambda t: fwd.profile(cur_x, cur_nodes, t)
+        fixed_k = len(s_nodes) if n_outer == 2 else None       # tier 3 lets the count change
         new_s, _, _ = select_retrieval_grid(
-            fwd, x, s_nodes, k_active, re_of_tau=re_of_tau)
-        if (len(new_s) == len(s_nodes)
-                and np.allclose(new_s, s_nodes, atol=1e-3)):
-            break                                              # grid stabilised
-        # re-map the r_e-node block onto the new normalized grid (evaluate the
-        # current profile at the new s-nodes ⇒ absolute τ = s·τ_bot), carrying the
-        # current retrieved base/τ_bot estimates into the trailing joint-state entries.
+            fwd, x, s_nodes, fixed_k, Se=Se, prior_builder=prior_builder,
+            filter_threshold=filter_threshold, margin=margin, re_of_tau=re_of_tau)
+        grid_changed = not (len(new_s) == len(s_nodes)
+                            and np.allclose(new_s, s_nodes, atol=1e-3))
+        if not grid_changed:
+            break                                              # re-mesh would not help
+        if warn and n_outer == 2:
+            warnings.warn(
+                f"Re-meshing (n_outer={n_outer}): persistent structural misfit "
+                f"(reduced χ²={chi2:.1f} > {thr}) and node placement would shift; "
+                f"re-selecting placement at fixed node count (k={len(s_nodes)}) — "
+                f"this triggers a recompile.", RemeshWarning, stacklevel=2)
+        elif warn:
+            warnings.warn(
+                f"Re-meshing (n_outer={n_outer}): misfit persists after placement "
+                f"re-selection (reduced χ²={chi2:.1f} > {thr}); re-selecting both node "
+                f"count and placement (k: {len(s_nodes)}→{len(new_s)}) — this triggers "
+                f"a larger recompile.", RemeshWarning, stacklevel=2)
+        # apply the re-mesh: re-map the r_e-node block onto the new normalized grid,
+        # carrying the current base/τ_bot estimates into the trailing joint entries.
         x = np.asarray(fwd.profile(cur_x, cur_nodes, new_s * cur_taubot), float)
         if fwd.retrieve_r_base:
             x = np.append(x, float(cur_rbase))
@@ -843,13 +892,13 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
             x = np.append(x, cur_taubot)
         x_a, Sa = prior_builder(new_s)
         s_nodes = new_s
-        # K may change size ⇒ recompiles once for this new k (rare).
         x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                          n_iter=n_iter, lm=lm, xtol=xtol)
         full_hist += hist
+        n_outer += 1
 
-    return OEResult(x=x, tau_nodes=s_nodes, x_a=x_a, Sa=Sa, Se=Se, K=K, y=np.asarray(y),
-                    Fx=Fx, cost_history=full_hist, converged=conv)
+    return OEResult(x=x, tau_nodes=s_nodes, x_a=x_a, Sa=Sa, Se=Se, K=K,
+                    y=np.asarray(y), Fx=Fx, cost_history=full_hist, converged=conv)
 
 
 # ============================================================================

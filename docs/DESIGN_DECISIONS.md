@@ -522,9 +522,22 @@ deeper nodes are redundant (saturation), and `f_i` collapses sharply (0.97, 0.87
 where DOFS's soft sum still counts the half-resolved 4th. Both auto values are **below** the
 hardcoded production `k_active` (4 thin / 5 thick), i.e. the manual grids slightly over-resolve;
 this is harmless because the extra nodes are prior-pulled (they land in the shielded base) but the
-filter estimator is the principled choice to switch to. **Recommendation: `method="filter"`** as the
-default (no arbitrary `factor`, integer count, conservative under saturation); keep `dofs` as the
-DOFS-proportional alternative.
+filter estimator is the principled choice.
+
+**Implemented 2026-06-19 (filter wired in; threshold tuned).** `auto_k_active` is now
+**filter-only** (the `dofs` estimator and `factor` removed); `select_retrieval_grid(k_active=None)`
+sets the count from the **full ODE grid** (the 20-node resample — which *manufactured* collinear
+pool columns for thin clouds — is gone); and the cut is exposed as `filter_threshold` in
+data-fraction units. A follow-up VOCALS thin/thick sweep (`tests/supplementary/tune_filter_threshold.py`,
+`thick_sweep2.py`) set the **default `filter_threshold=0.25`** — *lower* (more conservative) than the
+0.5 data/prior crossover, so the count is thin→5 / thick→4 (vs →4/→3 at 0.5). Rationale: the
+borderline `f≈0.29` upper node *helps* a structured thick cloud (RF08: under-resolving it cost
++51 % RMSE) more than it over-fits a flat one (RF03: +18 %), and 0.25 stays *below* the deeper
+over-fit cliff (the `f≈0.07–0.12` node, whose inclusion blew RF03 up +98 % with τ_bot drift). DOFS
+**left the selection path entirely** — it is now an information-content diagnostic only
+(`src/info_content.py`, full ODE grid; `posterior_diagnostics` keeps per-retrieval DOFS+SIC). A
+SIC-peak selector (SIC, not DOFS, peaks at the RMSE-optimal k) was explored and set aside for the
+simpler fixed threshold.
 
 **(g) Interpolation lever (SO2a) — second-order; re5-linear kept  [SETTLED].**
 re5-linear vs plain-linear `_re_of_tau`, same data, same grid (model comparison):
@@ -549,6 +562,16 @@ well-fit but correlated node basis just churns placement (the "re-mesh instabili
 policy: **re-mesh only on a persistently high loss (structural misfit), freeze the grid otherwise.**
 For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1, matching the SO2b
 "disable if it destabilises / only re-mesh on high loss" rule.
+
+**Implemented 2026-06-19 (progressive escalation).** `n_outer` → **`max_n_outer`**, a capped
+*escalation ladder*: **1** = off (select-once), **2** = re-mesh at *fixed* node count (placement
+only), **3** = escalate to a *changed* count (the filter re-decides). It fires only on the **"both"
+trigger** — reduced χ² > `remesh_if_chi2_red_gt` (default 2.0) **and** the re-selected grid would
+actually move; the (recompiling) re-selection runs only at an *enabled* tier, while at a tier beyond
+`max_n_outer` the code **warns on χ² alone** (a `RemeshWarning`, no wasted recompile) so a select-once
+user still learns the fit wanted more. Default `max_n_outer=2`. Cost rationale (it's a *last resort*):
+paying the 20-node-pool tax on every retrieval just to keep re-mesh recompile-free was the wrong
+trade once the χ²-gate made re-mesh rare — so re-mesh now pays its own recompile when (rarely) invoked.
 
 ---
 
