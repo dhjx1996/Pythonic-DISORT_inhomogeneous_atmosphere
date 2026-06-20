@@ -129,52 +129,55 @@ per-mode BoA decay ‖J^{m=1}‖≈9e-12, ‖J^{m=2}‖≈1e-16) lives in the re
 `technical_reports/boa_step_clustering_report.tex` — recoverable from git `99fb971`. **Treat its
 conclusions as contaminated** (built on the un-delta-M'd m≥1 modes); re-derive, don't cite.
 
-### Per-mode ODE grids and the retrieval grid  [DEFERRED — logged]
+### Per-mode ODE grids and the retrieval grid  [INVESTIGATED 2026-06-20 → keep m=0; DESIGN §3a]
 
-*(Significance is to retrieval-grid **quality**, not compute — cost is secondary here. Surfaced
-while deciding not to `vmap` the Fourier modes, item C / §7; logged for the retrieval-grid work.)*
+**Verdict: rejected. The m=0 ODE grid stays the sole retrieval-grid pool.** The hypothesis — that
+the discarded m≥1 grids carry complementary vertical information, so the "best" pool is the **union
+of the non-negligible (Cauchy-K) modes' grids** — was tested directly
+(`tests/supplementary/per_mode_grid_investigation.py`, a faithful monkeypatch that retains every
+mode's forward ODE grid) and does **not** hold: the union is neutral-to-harmful on every VOCALS
+case (OCI 2 % noise, `filter_threshold=0.5`).
 
-The ODE grid that §3a uses as the retrieval-grid candidate **pool** is, today, the **m=0 grid
-alone**: the solver computes a grid per Fourier mode but returns only `tau_grid_m0` and **discards
-the m≥1 grids**. m=0 is a defensible default — it carries the slowest (diffusion) eigenvalue and
-the beam source, so it is typically the *densest* single grid and the largest single-channel
-superset, and it holds the flux plus the bulk of the ToA-weighted, small-DOF information
-(§3b/c). But each Fourier mode is an **independent angular information channel** with its **own**
-ODE grid; discarding the m≥1 grids likely throws away retrieval-grid information. Significance:
+- **Placement (TEST 1).** Every mode m=0…15 has a near-identical grid (~17–19 steps; same
+  near-ToA/mid/deep split ≈2–3 / 5 / 10–11). The ~10–11 deep (s>0.85) steps in *every* mode are the
+  universal BoA imbedding boundary layer (≈zero info, §3a). **The modes densify the same regions;
+  they do not place steps at new informative depths** — because optics ω(τ), gₗ(τ) are *shared*
+  across modes (every mode integrates the same Riccati structure), so a real optics feature already
+  varies the m=0 state. Confirmed: the union-only nodes are overwhelmingly **mid/deep** re-samples
+  (THIN 8 near-ToA / 27 mid / 6 deep) of already-covered, prior-dominated depths — not new near-ToA
+  features.
+- **Pool (TEST 2).** Union ≈ 3× m=0 (THIN 17→56, THICK 18→53), but the extra columns are
+  near-collinear near-ToA duplicates.
+- **Selection + recovery (TEST 3/3b) — decisive.** Offering QRCP the denser pool makes it
+  **over-concentrate near ToA and abandon the deep coverage** the sparser m=0 grid was forced to
+  provide, with equal-or-worse truth recovery:
 
-- **Pool completeness (improves the §3a *superset*).** The observable is `Σ_m u_m·cos(m(φ0−φ))`;
-  different modes can be sensitive to different τ-depths, so the m=0 grid can *miss* τ-features
-  informative only for the angular (m≥1) channels. The principled pool is plausibly the **union of
-  the non-negligible modes' grids** (`∪_m {variation_m} ⊇ ∪_m {retrievable_m}`) — a strict
-  generalization of §3a's "subset of the m=0 grid."
-- **Selection precision (improves the §3a *subset*).** QRCP/sensitivity selection currently runs on
-  the **summed** Jacobian (it blends modes; this §G already flags it). A **per-mode sensitivity
-  decomposition** prunes more precisely: keep a τ-point only if *some* non-negligible mode is
-  sensitive to it; drop one whose only support is a Cauchy-negligible mode, even where the summed
-  Jacobian gave it modest weight.
-- **Decides the open angular-DOF question (above).** Re-running the (now delta-M-corrected) per-mode
-  Jacobian/grid analysis answers *where in τ* each azimuthal mode places its sensitivity: if the
-  m≥1 modes cluster at the **same** near-ToA depths as m=0, they add angular detail at **no new
-  vertical resolution** (pool stays ≈ m=0); if they place steps **deeper/differently**, they carry
-  **complementary vertical information** and the pool must be the union. This is the decisive test
-  of whether higher azimuthal modes lift the retrievable *vertical* DOF.
-- **Ties to the Cauchy stop (item C / §7).** The same K from the azimuthal-convergence criterion
-  that truncates the *forward* also names the **non-negligible modes** whose grids should form the
-  retrieval-grid pool — so the Cauchy machinery feeds the grid construction directly.
-- **Caveat — variation ≠ information.** A per-mode grid is placed by that mode's *state* variation,
-  which includes the optics-independent **BoA imbedding boundary layer** (≈zero information) present
-  in *every* mode. So the per-mode *grids* enlarge the pool, but it is the per-mode *sensitivity*
-  (the adjoint face, §3a) that does the informative pruning.
-- **Step-count as a cheap amplitude predictor (hypothesis, secondary).** A mode whose Riccati state
-  barely leaves its IC (few adaptive steps) plausibly yields a small ‖u_m‖; if so, step count
-  a-priori predicts mode negligibility. The *true* Cauchy signal is the amplitude ‖u_m‖ (what
-  DISORT tests); step count is only a correlate — to be checked, not assumed.
+  | case | m=0 grid (k: dense/near-base RMSE) | union grid (k: dense/near-base RMSE) |
+  |---|---|---|
+  | THIN  RF11 (τ1.2)    | k5: 0.388 / 0.391 µm        | k6: 0.384 / **0.427**          |
+  | THICK RF03 (τ23)     | k3: **0.905** / 1.505       | k5: 0.915 / 1.531 (χ² 0.32→0.19, no recovery gain) |
+  | RF10 shielded (τ4.9) | k5: **0.516** / **0.723**, drop-cap 58 % | k6: **0.646** / **0.977**, drop-cap **187 %** |
 
-**Net:** the "best" retrieval grid is plausibly the **sensitivity-selected subset of the union of
-the non-negligible (Cauchy-K) modes' ODE grids** — generalizing §3a from the m=0 grid to the full
-angular-channel set. **Prerequisite:** retain the per-mode grids (and per-mode `u_m` /
-sensitivities) in the offline `return_grid=True` path (currently discarded). Implementation
-deferred; this records the design so the retrieval-grid work can pick it up.
+  RF10 is the clear harm: the union bunched 5/6 nodes into s≤0.21, under-sampled the weakly-
+  informative base, and the over-concentrated near-ToA fit overshot the drop (cap 58 %→187 %, RMSE
+  +25 %). The m=0 grid's relative near-ToA sparseness is a **feature** — it forces QRCP to spread
+  nodes across the informative depth range.
+
+This also disposes of the two sub-ideas. A **per-mode sensitivity decomposition** for selection is
+moot — the summed-Jacobian QRCP already uses the *full observable* (the right measure), and the
+modes carry no independent vertical sensitivity here. The **intersection** is strictly worse than
+m=0 (a lossy subset: it breaks the superset guarantee, shrinks as modes are added, and collapses
+onto the zero-information BoA layer).
+
+**Flip condition — the one regime where this reverses.** The modes are redundant *only* because the
+high-order Legendre moments are slaved to r_e(τ) through the fixed-`v_eff` Mie table. Extend the
+forward to a **τ-varying effective variance v_e(τ)** (size-distribution width changing with depth —
+entrainment, drizzle onset at base) and v_e modulates exactly the **high-order** moments
+(cloudbow/rainbow sharpness) *decoupled* from the low-order asymmetry; since Fourier mode m couples
+only to moments l≥m, high-m modes would then resolve a depth m=0 smooths over. That information
+lives in the **polarized** cloudbow (scalar intensity plateaus at DOFS≈1), so the per-mode grids
+become live **only** for a polarized, v_e(τ)-resolving forward model. Until then m=0 is a complete
+pool. *(Recorded for the v_e side-project; revisit there.)*
 
 ### Re-mesh instability ⇒ correlated node basis  [RESOLVED → DESIGN §10h; EOF residual in §3a]
 
@@ -189,7 +192,7 @@ shape/EOF basis** — is an *architecture* question, not an instability: its rea
 stability* (nothing to re-pivot), **not** "k = DOFS" (you still keep a prior-filled margin). That
 alternative is logged in DESIGN §3a (the smooth-low-dim-basis route, "left open") and B′.
 
-### Auto-select the node count `k_active`  [IMPLEMENTED — SO1 → DESIGN §10f]
+### Auto-select the node count `k_active`  [IMPLEMENTED → DESIGN §10f]
 
 Implemented as `retrieval_oe.auto_k_active`: the noise-aware whitened-QRCP **filter**
 `f_i = r_i²/(1+r_i²)` (with `Σf_i ≈ DOFS` as a built-in cross-check), wired into

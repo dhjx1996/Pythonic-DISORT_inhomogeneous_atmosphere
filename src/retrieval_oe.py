@@ -71,7 +71,7 @@ class RetrievalForward:
                  re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0)):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
-        # (the joint retrieval, PO). When True the corresponding quantity is read
+        # (the joint retrieval). When True the corresponding quantity is read
         # from the state vector instead of the constructor; ``tau_bot`` / ``r_base``
         # then supply only the *first-guess / fallback* (a leak-free climatological
         # value, NOT the truth). State layout is always
@@ -166,7 +166,7 @@ class RetrievalForward:
 
         ``r_nodes`` are the first ``len(s_nodes)`` entries (r_e at the free nodes at
         normalized depth ``s∈[0,1)``, incl. cloud top s=0). ``r_base`` / ``τ_bot``
-        are read from the trailing entries when retrieved (the joint retrieval, PO),
+        are read from the trailing entries when retrieved (the joint retrieval),
         else fall back to the fixed constructor values ``self.r_base`` /
         ``self.tau_bot``. The returned ``r_base`` / ``τ_bot`` are **traced scalars**
         in joint mode, so ``∂y/∂r_base`` and ``∂y/∂τ_bot`` flow through autodiff
@@ -526,11 +526,11 @@ def select_retrieval_grid(fwd: RetrievalForward, x, s_nodes, k_active=None, *,
 
 
 # ----------------------------------------------------------------------------
-# 2b. Data-driven retrieval-node count k_active  (SO1)
+# 2b. Data-driven retrieval-node count k_active
 # ----------------------------------------------------------------------------
 def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.5, margin=1,
                   k_min=1, k_max=8):
-    """How many r_e(τ) nodes the measurement can independently support (SO1).
+    """How many r_e(τ) nodes the measurement can independently support.
 
     Noise-aware **filter** count from the pool Jacobian (DOFS is no longer used for
     selection — it is an information-content diagnostic only; see
@@ -969,7 +969,7 @@ def dofs_by_component(post, n_nodes, *, retrieve_r_base=False,
     **profile** (the first ``n_nodes`` nodes) and the retrieved scalars
     ``r_base`` / ``τ_bot`` when present — directly answering "of the DOFS gained by
     making the base/depth unknown, how much does the measurement actually supply to
-    them vs the profile" (PO). Note these are *self*-information diagonals; the
+    them vs the profile". Note these are *self*-information diagonals; the
     off-diagonal of A shows the (generally non-trivial) cross-talk between them.
     """
     d = np.diag(np.asarray(post.A, float))

@@ -1,20 +1,21 @@
-"""Full joint OSSE retrievals: the headline result + the SO2a / SO2b / SO1 probes.
+"""Full joint OSSE retrievals: headline result + interpolation-model, re-meshing, and node-count probes.
 
 Runs end-to-end Gauss-Newton joint retrievals (state = [r_e nodes, r_base,
 tau_bot]) on the thin (RF11) and thick (RF03) VOCALS truths, with leak-free
 priors, and reports retrieved-vs-truth for the profile AND the two newly-unknown
-anchors. One driver covers several objectives by varying a few knobs:
+anchors. One driver covers several probes by varying a few knobs:
 
-  * PO   — headline broad-prior joint retrieval (thin + thick); retrieved tau_bot
-           / r_base vs truth; DOFS decomposition.
-  * SO2a — re_class in {re5-linear, linear}: a MODEL COMPARISON on the same data
-           (fit chi^2 / profile RMSE / DOFS), the clean test of the interpolation
-           lever (OUTSTANDING B'). Also logs the QRCP node placement per class.
-  * SO2b — n_outer in {1, 2}: does lagged re-meshing help or destabilise node
-           placement (OUTSTANDING G "re-mesh instability")?
-  * SO1  — auto_k_active (filter + dofs estimators) is reported from the pool
-           Jacobian at the first guess (no extra compile), next to the fixed
-           k_active actually used.
+  * Headline      — broad-prior joint retrieval (thin + thick); retrieved tau_bot
+                    / r_base vs truth; DOFS decomposition.
+  * Interp model  — re_class in {re5-linear, linear}: a MODEL COMPARISON on the
+                    same data (fit chi^2 / profile RMSE / DOFS), the clean test of
+                    the interpolation lever (OUTSTANDING B'). Also logs the QRCP
+                    node placement per class.
+  * Re-meshing    — n_outer in {1, 2}: does lagged re-meshing help or destabilise
+                    node placement (OUTSTANDING G "re-mesh instability")?
+  * Node count    — auto_k_active (filter + dofs estimators) is reported from the
+                    pool Jacobian at the first guess (no extra compile), next to the
+                    fixed k_active actually used.
 
 Incremental JSON -> docs/joint_osse_results.json. Select variants by name on the
 CLI, else all run.  /tmp/jaxve/bin/python -u tests/supplementary/joint_osse_retrieval.py [name ...]
@@ -48,11 +49,11 @@ BROAD = dict(r_top_prior=10.0, r_base_prior=12.0, sigma_top=5.0, sigma_base=8.0)
 # label, target_tau, restrict, bands, k_active, re_class, n_outer
 # (thin_re5_n1 first: the key normalized-depth fix validation in the real config)
 VARIANTS = [
-    ("thin_re5_n1",    1.0, None, [1.24, 2.13], 4, "re5-linear", 1),  # PO headline thin
-    ("thick_re5_n1",  23.3, "RF03", [1.24, 1.64, 2.13], 5, "re5-linear", 1),  # PO headline thick
-    ("thin_re5_n2",    1.0, None, [1.24, 2.13], 4, "re5-linear", 2),  # SO2b (vs thin_re5_n1)
-    ("thin_linear_n1", 1.0, None, [1.24, 2.13], 4, "linear",     1),  # SO2a thin
-    ("thick_linear_n1", 23.3, "RF03", [1.24, 1.64, 2.13], 5, "linear",  1),  # SO2a thick
+    ("thin_re5_n1",    1.0, None, [1.24, 2.13], 4, "re5-linear", 1),  # headline thin
+    ("thick_re5_n1",  23.3, "RF03", [1.24, 1.64, 2.13], 5, "re5-linear", 1),  # headline thick
+    ("thin_re5_n2",    1.0, None, [1.24, 2.13], 4, "re5-linear", 2),  # re-mesh probe (vs thin_re5_n1)
+    ("thin_linear_n1", 1.0, None, [1.24, 2.13], 4, "linear",     1),  # interp probe thin
+    ("thick_linear_n1", 23.3, "RF03", [1.24, 1.64, 2.13], 5, "linear",  1),  # interp probe thick
 ]
 _precomp = mie_legendre_precompute(max_nstop=512, NLeg=NLeg_all)
 
@@ -101,7 +102,7 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
     print(f"    QRCP grid({k}) in s: {np.round(s_grid,3)}; modes K={fwd.K_list}",
           flush=True)
 
-    # SO1: what would auto_k_active pick? (pool Jacobian already computed; pool in s)
+    # what would auto_k_active pick? (pool Jacobian already computed; pool in s)
     Sa_pool = roe.make_adiabatic_prior(info["s_pool"], 1.0,
                                        clim["r_base_mean"], BROAD["r_top_prior"],
                                        sigma_top=BROAD["sigma_top"],
@@ -109,7 +110,7 @@ def run(label, target_tau, restrict, bands, k_active, re_class, n_outer):
     k_filter, if_f = roe.auto_k_active(info["K_pool"], Se, Sa_pool, method="filter")
     k_dofs, if_d = roe.auto_k_active(info["K_pool"], Se, Sa_pool, method="dofs",
                                      factor=1.5)
-    print(f"    SO1 auto_k: filter->{k_filter} (Sum_f={if_f['sum_filter_factor']:.2f}, "
+    print(f"    auto_k: filter->{k_filter} (Sum_f={if_f['sum_filter_factor']:.2f}, "
           f"n_data={if_f['n_data_dominated']}), dofs->{k_dofs} "
           f"(DOFS={if_d['dofs']:.2f}); used k={k}", flush=True)
 

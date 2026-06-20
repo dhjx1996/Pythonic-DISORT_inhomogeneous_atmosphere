@@ -1,6 +1,6 @@
 """Smoke test for the JOINT r_e(τ) + r_base + τ_bot retrieval refactor.
 
-Cheap (NQuad=6, 1 band, 1 view) plumbing check for the PO refactor of
+Cheap (NQuad=6, 1 band, 1 view) plumbing check for the joint-retrieval refactor of
 ``retrieval_oe`` — it does NOT run a full GN retrieval (that is the expensive
 background job). It asserts:
 

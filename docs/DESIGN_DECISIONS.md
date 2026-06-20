@@ -104,7 +104,15 @@ depth-attenuated features (**adjoint**). Worked example: in
 `adiabatic_cloud_with_drizzle.ipynb`, a near-ToA g-spike at τ=1 on a conservative τ=30 cloud
 raised the step count 107→186, clustering on the spike *and* keeping the (uninformative) BoA
 cluster. **So: select the retrieval grid as a sensitivity/QRCP-weighted subset of the ODE
-pool.** The alternative — *decoupling* the retrieval grid from the ODE grid via a smooth
+pool.** *Which* ODE grid: the **m=0 grid alone** (the solver returns `tau_grid_m0` and discards
+m≥1). Folding in the m≥1 grids — pool = the **union of the non-negligible modes' grids** — was
+tested and **rejected** (OUTSTANDING §G, 2026-06-20): because optics ω(τ), gₗ(τ) are *shared*
+across Fourier modes, the m≥1 grids only densify the *same* near-ToA region with near-collinear
+duplicates, so the union adds no informative depth and merely lets QRCP over-concentrate near ToA
+and abandon deep coverage (neutral-to-harmful — RF10 shielded RMSE 0.52→0.65 µm, drop-cap
+58 %→187 %). The m=0 grid is thus a *complete* pool; the lone exception is a future v_e(τ)-resolving,
+**polarized** forward model, where high-m modes would carry independent cloudbow vertical
+information (OUTSTANDING §G flip condition). The alternative — *decoupling* the retrieval grid from the ODE grid via a smooth
 low-dim basis (EOF/adiabatic-shape/NN) — is **not pursued here** (these are largely unexplored
 beyond the adiabatic case): a basis carries its own a-priori commitment in its shape/training
 distribution and is *static*, whereas the ODE grid is problem-derived, profile-adaptive, and
@@ -510,7 +518,7 @@ two-stage robustness without the unquantified stage-1→stage-2 error leak. Two-
 a robustness fallback. A conservative band is *included in* the joint measurement rather than run as
 a separate stage.
 
-**(f) Adaptive node count (SO1) — DOFS *is* a robust info measure here  [SETTLED].**
+**(f) Adaptive node count — DOFS *is* a robust info measure here  [SETTLED].**
 `auto_k_active` offers two estimators — `round(factor·DOFS)` and the noise-aware whitened-QRCP
 filter factor `f_i=r_i²/(1+r_i²)` (not via DOFS), with `Σf_i ≈ DOFS` as a built-in cross-check and
 DOFS-robustness probe. **OSSE verdict** (`joint_osse_results.json`, profile-only pool Jacobian at
@@ -556,7 +564,7 @@ DOFS **left the selection path entirely** — it is now an information-content d
 a genuinely structured cloud is ever shown to be *structurally* under-resolved at 0.5 (χ² above the
 noise floor), paid for then rather than by default.
 
-**(g) Interpolation lever (SO2a) — second-order; re5-linear kept  [SETTLED].**
+**(g) Interpolation lever — second-order; re5-linear kept  [SETTLED].**
 re5-linear vs plain-linear `_re_of_tau`, same data, same grid (model comparison):
 
 | cloud | re5-linear (RMSE / ‖y−F‖ / DOFS) | linear (RMSE / ‖y−F‖ / DOFS) |
@@ -571,7 +579,7 @@ re5-linear is kept as default — it is physically motivated (adiabatic `r_e ∝
 interpolant is linear in the natural variable) and marginally more accurate; the difference does not
 warrant the extra machinery of a higher-order scheme.
 
-**(h) Re-meshing (SO2b) — n_outer=1 is the right default; re-mesh did not help  [SETTLED].**
+**(h) Re-meshing — n_outer=1 is the right default; re-mesh did not help  [SETTLED].**
 On the thin case, lagged re-meshing (`n_outer=2`) moved the deepest node (s 0.49→0.37) but the
 profile RMSE got *worse* (0.53→0.70 µm) while the fit was unchanged (‖y−F‖≈1e-3) — re-pivoting a
 well-fit but correlated node basis just churns placement (the "re-mesh instability" of OUTSTANDING
@@ -595,8 +603,7 @@ instrument's ~3 % precision" — the same gate, floored by parameterisation rath
 realisation. *(Standard Rodgers OE goodness-of-fit; recorded here because the inline policy uses
 "noise floor"/"structural misfit" as shorthand without the derivation.)*
 
-For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1, matching the SO2b
-"disable if it destabilises / only re-mesh on high loss" rule.
+For these well-fit VOCALS retrievals the gate keeps `n_outer` effectively 1 (re-mesh only on structural / high-loss misfit).
 
 **Implemented 2026-06-19 (progressive escalation).** `n_outer` → **`max_n_outer`**, a capped
 *escalation ladder*: **1** = off (select-once), **2** = re-mesh at *fixed* node count (placement

@@ -1,4 +1,4 @@
-"""PO information-content study: how does retrieving (τ_bot, r_base) jointly —
+"""Information-content study: how does retrieving (τ_bot, r_base) jointly —
 and the choice of prior — change the DOFS?
 
 For each (cloud, band-set) config this builds ONE joint forward, selects a QRCP
@@ -17,8 +17,8 @@ cheap host linear algebra once K exists):
 Reported per config: total DOFS, the per-component split (profile / r_base /
 τ_bot via diag(A)), posterior 1σ on r_base and τ_bot, and the data-fraction of
 each. This isolates (i) the cost of making the two anchors unknown (A vs B
-profile-part) and (ii) the prior-dependence of DOFS (B vs C) — both PO
-sub-questions — and, by varying ``bands``, re-assesses band selection.
+profile-part) and (ii) the prior-dependence of DOFS (B vs C), and by varying
+``bands``, re-assesses band selection.
 
 Results are appended incrementally to docs/joint_dofs_results.json so partial
 runs are not lost. Run:

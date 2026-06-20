@@ -1,9 +1,8 @@
-"""Synthesise the joint-retrieval experiments into the PO / SO1 / SO2a / SO2b answers.
+"""Synthesise the joint-retrieval experiments.
 
 Reads docs/joint_dofs_results.json (information content, linearized at truth) and
 docs/joint_osse_results.json (full leak-free GN retrievals) and prints a compact
-summary mapped to the objectives. Pure host-side; run any time after the
-experiments have written (partial) results:
+summary. Pure host-side; run any time after the experiments have written (partial) results:
 
     /tmp/jaxve/bin/python tests/supplementary/summarize_joint_results.py
 """
@@ -19,9 +18,9 @@ def _load(p):
     return json.loads(p.read_text()) if p.exists() else {}
 
 
-def po_dofs(dofs):
+def joint_dofs(dofs):
     print("\n" + "=" * 78)
-    print("PO  Information content (DOFS), linearized at the truth scene")
+    print("Information content (DOFS), linearized at the truth scene")
     print("=" * 78)
     if not dofs:
         print("  (no DOFS results yet)")
@@ -49,9 +48,9 @@ def po_dofs(dofs):
               f"{B['r_base_prior_sigma']:.2f} -> post {B['r_base_sigma']:.2f}")
 
 
-def po_osse(osse):
+def joint_osse(osse):
     print("\n" + "=" * 78)
-    print("PO  Full joint retrievals (leak-free; first guess = climatology)")
+    print("Full joint retrievals (leak-free; first guess = climatology)")
     print("=" * 78)
     if not osse:
         print("  (no OSSE results yet)")
@@ -72,9 +71,9 @@ def po_osse(osse):
               f"{[round(x,2) for x in r['tau_grid']]}")
 
 
-def so1(osse):
+def node_count(osse):
     print("\n" + "=" * 78)
-    print("SO1  Adaptive node count: auto_k_active (filter vs dofs) + DOFS robustness")
+    print("Adaptive node count: auto_k_active (filter vs dofs) + DOFS robustness")
     print("=" * 78)
     if not osse:
         print("  (no OSSE results yet)")
@@ -90,9 +89,9 @@ def so1(osse):
     print("  tr(A)); agreement => DOFS is a consistent info measure for this basis.")
 
 
-def so2a(osse):
+def interp_model(osse):
     print("\n" + "=" * 78)
-    print("SO2a  Interpolation model comparison: re5-linear vs linear (same data)")
+    print("Interpolation model comparison: re5-linear vs linear (same data)")
     print("=" * 78)
     pairs = [("thin", "thin_re5_n1", "thin_linear_n1"),
              ("thick", "thick_re5_n1", "thick_linear_n1")]
@@ -112,9 +111,9 @@ def so2a(osse):
             print(f"  {tag}: (need {a} and {b})")
 
 
-def so2b(osse):
+def remesh(osse):
     print("\n" + "=" * 78)
-    print("SO2b  Re-meshing / n_outer: placement stability (thin re5, n_outer 1 vs 2)")
+    print("Re-meshing / n_outer: placement stability (thin re5, n_outer 1 vs 2)")
     print("=" * 78)
     if "thin_re5_n1" in osse and "thin_re5_n2" in osse:
         r1, r2 = osse["thin_re5_n1"], osse["thin_re5_n2"]
@@ -131,8 +130,8 @@ def so2b(osse):
 if __name__ == "__main__":
     dofs, osse = _load(DOFS), _load(OSSE)
     print(f"DOFS configs: {list(dofs)}\nOSSE variants: {list(osse)}")
-    po_dofs(dofs)
-    po_osse(osse)
-    so1(osse)
-    so2a(osse)
-    so2b(osse)
+    joint_dofs(dofs)
+    joint_osse(osse)
+    node_count(osse)
+    interp_model(osse)
+    remesh(osse)
