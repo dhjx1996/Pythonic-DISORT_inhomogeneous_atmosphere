@@ -591,7 +591,7 @@ def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.5, margin=1,
 # 3. Prior (pluggable): adiabatic mean + Bayesian-Tikhonov covariance
 # ============================================================================
 def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
-                         sigma_top=3.0, sigma_base=10.0, corr_length=None,
+                         sigma_top=3.0, sigma_base=1.5, corr_length=None,
                          strength=1.0):
     """Adiabatic first guess ``x_a`` and correlated prior covariance ``S_a``.
 
@@ -601,7 +601,7 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
     Coherent with the ``re5-linear`` forward class. ``S_a`` is a depth-increasing,
     exponentially correlated Gaussian::
 
-        S_a[i,j] = σ_i σ_j exp(-|τ_i-τ_j| / ℓ),   σ(τ) tight at top, loose at base
+        S_a[i,j] = σ_i σ_j exp(-|τ_i-τ_j| / ℓ),   σ(τ) linear σ_top→σ_base
 
     The off-diagonal correlation is the Bayesian-Tikhonov smoothness term; ``ℓ``
     (default τ_bot/2) and ``strength`` (a single σ-scale knob) are the only free
@@ -626,7 +626,10 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
 
     if corr_length is None:
         corr_length = max(tau_bot / 2.0, 1e-3)
-    # depth-increasing σ: linearly from σ_top (τ=0) to σ_base (τ=τ_bot).
+    # σ linear from σ_top (τ=0) to σ_base (τ=τ_bot). The default σ_base<σ_top keeps
+    # the radiatively-shielded base TIGHT ("tight where the measurement is blind",
+    # DESIGN_DECISIONS §11): a loose base σ lets the shielded deep node swing (the
+    # σ_base=10 footgun fixed here — was the cause of the notebook §5 swing).
     sigma = strength * (sigma_top + (sigma_base - sigma_top) * tau_nodes / tau_bot)
     dt = np.abs(tau_nodes[:, None] - tau_nodes[None, :])
     Sa = (sigma[:, None] * sigma[None, :]) * np.exp(-dt / corr_length)
@@ -636,7 +639,7 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
 
 def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
                      retrieve_r_base=True, retrieve_tau_bot=True,
-                     sigma_top=5.0, sigma_base=8.0, sigma_tau_bot=None,
+                     sigma_top=5.0, sigma_base=2.0, sigma_tau_bot=None,
                      corr_length=None, strength=1.0):
     """Joint prior over the retrieved state ``x = [r_e nodes, (r_base), (τ_bot)]``.
 
@@ -650,11 +653,16 @@ def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
     weakly, so we do not assert a cross-correlation in the prior).
 
     All means are **leak-free** — generic/climatological ``r_top_prior``,
-    ``r_base_prior``, ``tau_bot_prior``, *never* the truth. Broad σ's make it the
-    **weakly-informative (Option 2)** headline prior: the data sets ``τ_bot`` (the
-    measurement constrains optical thickness directly) and the upper-cloud r_e,
-    while the prior fills the radiatively shielded base. The ``retrieve_*`` flags
-    must match the :class:`RetrievalForward` they will be used with.
+    ``r_base_prior``, ``tau_bot_prior``, *never* the truth. The default σ's encode
+    the **weakly-informative (Option 2)** structure: a moderate ``sigma_top`` (the
+    top is observable, A_top≈1), a **tight ``sigma_base``** (the base is radiatively
+    shielded, ~80 % prior-dominated, so its prior must be tight — *not* broad —
+    "tight where the measurement is blind", DESIGN_DECISIONS §11), and a broad
+    ``sigma_tau_bot`` (the data set ``τ_bot`` directly). The grounded production
+    priors :func:`make_marine_sc_prior` (generic) and :func:`make_climatology_prior`
+    (per-flight LOO) set all three from VOCALS-REx data rather than these generic
+    defaults. The ``retrieve_*`` flags must match the :class:`RetrievalForward`
+    they will be used with.
 
     ``sigma_tau_bot`` defaults to ``0.5·τ_bot_prior`` (~50 % relative — broad);
     ``corr_length`` is in normalized-depth units (default 0.5).
@@ -687,9 +695,9 @@ def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
     flight — leave-one-flight-out, so the prior never sees a statistic derived from
     the truth profile or any profile sharing its flight; the leak-free OSSE
     discipline). Means = ensemble means; σ's = ensemble spreads. This is the
-    fallback if the broad Option-2 prior (:func:`make_joint_prior` with generic
-    numbers) degrades the retrieval — and is then also the prior the
-    information-content profiling would use.
+    fallback if the generic Option-2 prior (:func:`make_marine_sc_prior`) degrades
+    the retrieval — and is then also the prior the information-content profiling
+    would use.
     """
     return make_joint_prior(
         s_nodes, tau_bot_prior=clim["tau_bot_mean"],

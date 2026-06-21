@@ -693,6 +693,26 @@ data-determined. This is the optimal-estimation-principled prior and it is what 
 literature, and sensitivity experiments jointly support. Sub-saturation profiles are the
 rare tail we deliberately do not encode (capturing one is a bonus, §13).
 
+**(e) The four prior builders — catalog** (`retrieval_oe.py`). A small hierarchy:
+`make_adiabatic_prior` builds one correlated r_e block; `make_joint_prior` assembles the full
+state from it; the two **grounded production priors** wrap `make_joint_prior` with data-set
+numbers. All share the same Sₐ structure — an exponentially-correlated Gaussian
+`Sₐ[i,j] = σ_i σ_j · exp(−|Δτ| / ℓ)` over the r_e + r_base block (correlation length `ℓ` default
+`τ_bot/2`, i.e. 0.5 in normalized depth) with `τ_bot` appended **block-diagonal** (droplet size and
+optical thickness are different physical quantities — no asserted cross-correlation). The mean is the
+adiabatic r_e⁵-linear law `r_e ∝ τ^(1/5)`.
+
+| builder | role | mean from | σ from (defaults) | leak-free? |
+|---|---|---|---|---|
+| `make_adiabatic_prior` | base block: r_e⁵-linear mean + correlated Sₐ (single r_e block) | adiabatic curve from `r_base` + `r_top_prior` | linear σ_top→σ_base (def **3.0 / 1.5**); exp-correlated, ℓ=τ_bot/2 | **caller-dependent** — leak-free iff `r_top_prior` is climatological; **§5 passes the truth → idealized, *not* leak-free** |
+| `make_joint_prior` | assembles `[r_e nodes, r_base, τ_bot]`; r_base = deepest node (s=1); τ_bot block-diagonal | generic/clim `r_top_prior`, `r_base_prior`, `tau_bot_prior` | σ_top / σ_base / σ_τbot (def **5.0 / 2.0 / 0.5·τ_bot**) | yes when fed non-truth means |
+| `make_marine_sc_prior` | **Option 2 — generic grounded marine-Sc** (production default) | `r_top_prior` (clim/MODIS); `r_base = 0.65·r_top` (adiabatic ratio, clipped < r_top); `tau_bot_prior` | σ_top 2.5, σ_base **1.5** (≈ VOCALS MAD 1.4), σ_τbot ~100 % (= τ_bot) | yes — fed climatological `r_top_prior`/`tau_bot_prior` |
+| `make_climatology_prior` | **Option 1 — LOO VOCALS climatology** (strongest; the IC-profiling prior) | LOO ensemble **means** (r_top, r_base, τ_bot) | LOO ensemble **robust spreads** (1.4826·MAD ≈ 2.7 / 1.4 / 9.5) | yes — `vocals_climatology(exclude_flight=…)` never sees the truth's flight |
+
+Routing: `make_marine_sc_prior` and `make_climatology_prior` both call `make_joint_prior` (which calls
+`make_adiabatic_prior` for the r_e+r_base block), passing σ_base **explicitly** — so the base
+builders' σ defaults apply only to *direct* callers.
+
 ---
 
 ## 12. Measurement-noise model — three-term σ(ρ), OCI-SWIR calibration-relative; default noiseless  [SETTLED — shot term + HARP2/polarized open in OUTSTANDING K]

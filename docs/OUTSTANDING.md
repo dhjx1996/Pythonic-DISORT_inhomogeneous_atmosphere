@@ -49,8 +49,14 @@ inside the retrieval's own uncertainty (DESIGN §10g model comparison); **re5-li
 (physically motivated, marginally more accurate). **Residual (low-priority, deferred):** a multi-profile
 confirmation (re5≈linear shown on 2 profiles only) and the C¹ **PCHIP** class (deferred until the
 node-count/DOF supports it). The deeper alternative — **leave interpolation behind for a low-dim
-shape/EOF basis** (the more honest framing at DOFS≈2, and the resolution of the re-mesh instability
-above) — is logged in DESIGN §3a as the smooth-basis route, "left open."
+shape/EOF basis** — is **CLOSED (user, 2026-06-21): rejected.** An EOF-from-ensemble basis over-constrains
+every retrieved profile to the training-distribution shapes (`span{φ_i}`), compromising the
+**minimally-constrained** feature that distinguishes this method from the adiabatic / 2–3-param literature.
+The free sensitivity-placed-node parameterisation is **retained**. If node-difference wiggles ever warrant
+suppression, the lever to *research* is a **2nd-difference (curvature) Tikhonov penalty** — not needed now:
+the demo swings (e.g. idealized §5) were an artifact of a deliberately **loose σ_base=10**, and a
+climatologically-tight base prior (DESIGN §11; VOCALS r_base MAD≈1.4 µm) already removes them. (This
+supersedes DESIGN §3a's "smooth-basis route, left open.")
 
 ---
 
