@@ -163,8 +163,15 @@ study, the ensemble pilot, and the truth / linearization-probe runs. **Their res
 
 ### Result JSONs REMOVED (unreferenced — the notebook loads only `info_content_{definitive,mechanism}.json`)
 
-`docs/cached_results/info_content_{stage1, ensemble, nquad_profiles, nquad64_check, robust_priormean,
-robust_draw, linearity_probe, linearity_probe_clim}.json` (the two `robust_*` were ~92 k lines each).
+`docs/cached_results/info_content_{stage1, ensemble, robust_priormean, robust_draw, linearity_probe,
+linearity_probe_clim}.json` (the two `robust_*` were ~92 k lines each).
+
+### PRESERVED (per repo owner, 2026-06-25) — the NQuad-convergence study
+
+Justifies the **NQuad=48 operating point** (DOFS converges by ~NQuad 32–48; the NQuad=64 check moves it
+≲0.05 DOFS): `tests/supplementary/ic_worker_nquad.py` + `docs/cached_results/info_content_nquad_profiles.json`
+(NQuad 16/24/32/48 sweep over 5 profiles, τ=1.2–23.3) + `info_content_nquad64_check.json` (NQuad=64 on the
+thin/thick extremes). **Keep.**
 
 ### Scripts SUPERSEDED — flag only, keep for now
 
@@ -173,7 +180,7 @@ robust_draw, linearity_probe, linearity_probe_clim}.json` (the two `robust_*` we
 | `info_content_stage1.py` | `ic_worker_profile.py` + `ic_analysis_definitive.py` (Stage-1 pilot) |
 | `info_content_linearity_probe_clim.py` | truth-linearization **retired** (DD§14); IC shown insensitive to the linearization state |
 | `ic_worker_ensemble.py` | folded into `ic_worker_profile.py` (the per-profile worker) |
-| `ic_worker_nquad.py` + `nquad_saturation.py` + `nquad_saturation_thick48.py` | NQuad operating point settled (48); convergence no longer swept |
+| `nquad_saturation.py` + `nquad_saturation_thick48.py` | older NQuad-saturation study (Q2, §5) — distinct from the **preserved** NQuad-convergence study above |
 
 **Corrects §6:** only **`ic_worker_profile.py`** and **`ic_worker_mechanism.py`** are the active IC workers
 (not 4); `_ic_parallel.py` is local process-parallel infra — the definitive run uses HPC SLURM, so review
