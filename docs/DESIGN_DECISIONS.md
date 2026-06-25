@@ -395,11 +395,25 @@ not an ω retrieval**:
   baseline secant low-passes it (~5% median slope agreement at 2.13 µm). The table slope is the
   *better* ∂ω/∂r_e.
 
-**Decision:** keep the (n_re, NLeg) Legendre table (`miejax_lite.table_lookup`) as the
-production optics path; the hybrid traced-Mie-ω + HG pipeline is rejected. If a traced ω path
-is ever wanted (hyperspectral), `mie_avg` first needs an r_e-independent radius grid. The GN
-state must be clamped to the table support *inside* the forward map (bounded-state forward) —
-model error can otherwise drive iterates to NaN optics. Details and figures: the notebook.
+**Decision:** keep the (n_re, NLeg) Legendre table as the production optics path; the hybrid
+traced-Mie-ω + HG pipeline is rejected. If a traced ω path is ever wanted (hyperspectral),
+`mie_avg` first needs an r_e-independent radius grid. The GN state must be clamped to the table
+support *inside* the forward map (bounded-state forward) — model error can otherwise drive
+iterates to NaN optics. Details and figures: the notebook.
+
+**Optics-backend swap → `optics_table` (miepython), JAX-Mie retired  [2026-06-24].** Since the
+table is *built once outside the gradient* and consumed only through the differentiable
+`table_lookup` interpolation, **autodiff never flows through Mie** — so the JAX-Mie front-end
+(`miejax_lite.mie_avg_legendre`) buys nothing for the retrieval/IC Jacobian. The table is now
+built with **miepython** (Bohren & Huffman; numba-accelerated) in `src/optics_table.py`
+(gamma-averaged over v_eff=0.10; Segelstein water n,k vendored to `src/data/`, covering 0.55–3.7
+µm), and `table_lookup` is ported there (the only piece still in JAX). `retrieval_oe` now imports
+`table_lookup` from `optics_table`; **`miejax_lite` is retired from the production path** (repo
+kept for legacy). Validated to round-off vs `miejax_lite` on the shared bands (|Δω|,|Δg|≈3–4e-6
+across all 128 Legendre moments; `tests/supplementary/validate_optics_table.py`). The table is
+**profile-independent**, so it is built once and disk-cached (`build_or_load_table`), shared by
+every per-profile worker. Motivation: miepython reaches the strong-absorption bands (3.7 µm) the
+band superset needs (§14), and is the field-reference Mie.
 
 ---
 
@@ -617,7 +631,7 @@ trade once the χ²-gate made re-mesh rare — so re-mesh now pays its own recom
 
 ---
 
-## 11. Prior design — grounded in VOCALS-REx data + literature + information content  [SETTLED]
+## 11. Prior design — grounded in VOCALS-REx data + literature + information content  [SETTLED — population-confirmed 2026-06-23]
 
 The earlier broad prior was hand-picked and **inverted** (r_top=10 < r_base=12 — the
 *converse* of an adiabatic profile, where r_e is largest at the top). Replaced by
@@ -712,6 +726,55 @@ adiabatic r_e⁵-linear law `r_e ∝ τ^(1/5)`.
 Routing: `make_marine_sc_prior` and `make_climatology_prior` both call `make_joint_prior` (which calls
 `make_adiabatic_prior` for the r_e+r_base block), passing σ_base **explicitly** — so the base
 builders' σ defaults apply only to *direct* callers.
+
+**(f) Population confirmation (all-125 IC, NQuad=48; 2026-06-23).** The (a)/(b) mechanism — argued
+from single profiles RF03/RF11 — now holds across **all 125 VOCALS profiles**
+(`info_content_mechanism_all125.json`): under a *diagonal* Sₐ the full-view angular field directly
+reaches only mid-cloud (deepest s with data-fraction≥0.5 ≈ **0.46 / 0.39 / 0.23** for thin/mid/thick),
+while the *correlated* prior extends the reach to the base (≈ **1.00 / 0.99 / 0.89**) — the prior adds
+~0.6 in normalized depth uniformly, and the flux-albedo's vertical localization is *entirely*
+prior-mediated (direct reach ≈ 0). So the "tight where the measurement is blind" design (d) is
+vindicated population-wide: the deep r_base is reconstructed by the prior's smoothness from the
+observable upper cloud, not measured. (The prior-viability *ladder* of (e) — uninformative ≫ marine_sc
+≈ climatology — was **not** re-run at NQuad=48; it remains the NQuad=32 Stage-1 pilot result.)
+
+**(g) Hyperparameter scoping — prior correlation length ℓ (deferred, 2026-06-23).** The smoothness
+term's correlation length is **ℓ = τ_bot/2 ≈ 0.5 in normalized depth** (`make_adiabatic_prior` default,
+§(e)). It is a **Bayesian–Tikhonov smoothness hyperparameter, not an empirically-cited correlation
+length** — the exp-correlated-smoothness *form* is standard OE practice (Rodgers 2000, *Inverse
+Methods*), but the ℓ value is our design choice (no citation). It **is** an IC lever (longer ℓ →
+smoother → fewer DOF; shorter → toward the measurement-rank ceiling). We **intentionally do not tune
+it**: the IC profiling reports at the default ℓ, and a dedicated ℓ-sensitivity sweep is left to future
+work (others may pick it up). The robustness runs partially bracket it — set i (the weak σ≈10-µm **diagonal**
+prior, ℓ→0) vs the LOO prior (ℓ=0.5) — and an `IC_CORR_LENGTH` knob can isolate it cleanly if revisited.
+
+**(h) Pending §11 rewrite (deferred, 2026-06-23).** (d)/(e) above still describe `make_marine_sc_prior`
+(now **retired as the IC default**) and **mis-cite** the adiabatic r_base/r_top≈0.7 ratio as
+"King/Vukićević AMT-2025" — that paper is **Buggee & Pilewskie (2025)**, doi:10.5194/amt-18-5299-2025
+(the "King" was King & Vaughan = KV2012; "Vukićević" leaked in from CPV2012 — a garbled mash-up). The
+IC profiling now uses the **LOO `make_climatology_prior`** as default; the weak-prior robustness rung
+uses **σ≈10 µm on r_e (King & Vaughan 2012)** and a representative **r_top≈10 µm (Painemal & Zuidema
+2011, doi:10.1029/2011JD016155)**. Full (d)/(e) rewrite to follow.
+
+**(i) IC linearization point — recorded (2026-06-24).** The flexible-node retrieval state **is** the
+5 `s_ref` nodes (+ r_base, τ_bot), so a linearization point must live in that basis. The "truth"
+linearization is therefore the in-situ VOCALS profile **projected onto the 5-node basis** (`np.interp`
+at s=[0,.2,.4,.6,.8]) then re5-interpolated to the ODE grid — **not** the literal (wiggly) aircraft
+profile, which isn't in the state space. For near-uniform VOCALS Sc this 5-node sample is low-gradient
+(e.g. RF11 idx89: raw 7.8–9.5 µm, 26 pts → sample 8.6–9.3 µm). **Headline = the LOO prior-MEAN
+linearization (set iv):** the prior mean is the smooth 3-parameter r_e⁵-adiabatic curve
+(`make_adiabatic_prior`: x_a = (r_base⁵ + (r_top⁵−r_base⁵)(1−s))^{1/5}, from the LOO r_top/r_base
+means) — a clean, leak-free, population-representative, Rodgers-standard a-priori reference. The truth
+(ii), realization (v), and ℓ=τ_bot (vi) linearizations are the **robustness ensemble** (IC invariant
+to the lin point). **Realizations are demoted from the headline** (kept in the ensemble). **Construction
+corrected 2026-06-24** (`roe.draw_climatology_realization`): a realization is a physical 3-param
+r_e⁵-adiabatic draw — r_top, r_base from the LOO marginals (independent, rejection-sampled to
+25≥r_top>r_base≥2), τ_bot = the truth (IC profiling) or LOO-drawn (full-retrieval synthetic truths).
+This **replaces** the earlier per-node S_a cholesky draw, which gave *unphysically non-monotonic*
+profiles: the prior *mean* is adiabatic, but its *covariance* is per-node correlated-Gaussian
+(σ_iσ_j exp(−|Δτ|/ℓ), L684), so mean + per-node noise wanders off adiabatic — the cause of set v's
++22 % ODE steps, and why a realization is a less clean reference than the mean. Only set v (the draw
+array) re-runs with the corrected construction; truth/priormean/mechanism unchanged.
 
 ---
 
@@ -819,3 +882,95 @@ fewer adaptive steps (looser `tol`), and column batching — not the device itse
 
 *(Relocated from the former OUTSTANDING §D — empirical detail in `tests/supplementary/profile_solver.py`
 and `batch_columns.py`, 2026-06-08, Tesla T4 vs CPU.)*
+
+**CPU data-parallelism over columns — process-level, taskset-pinned (2026-06-21).** When no GPU is at
+hand (the Stage-1 IC sweeps ran CPU-only), the moderate many-column workload is still well served — but
+**not by giving one job more cores**. A single XLA process self-parallelizes one Jacobian to only
+~10/16 cores (1028 % CPU observed), and the latency-bound tiny-matrix work shows **no positive
+core-scaling**: a warm Jacobian eval took **287 s on 16 cores vs 215 s on 4 cores** (16 is *slower* —
+XLA thread-pool over-subscription/spin on the N×N≤24 matrices). So the lever is **concurrency, not
+cores-per-job**: run several columns as separate **taskset-pinned processes** confined to disjoint core
+subsets (`tests/supplementary/_ic_parallel.py`: N workers × C cores, N·C = 16). 4×4 on the 16-core box
+gives ≈4× throughput (each task ≈ as fast on 4 cores as on 16) at ~3 GB RAM total; the Stage-1 sweeps
+ran this way (NQuad sweep 20 tasks / 84 min; population ensemble 10 / 93 min). For *all*-VOCALS a SLURM
+**job array** (one profile/task, 4 cores each) is the same pattern at cluster scale. So: **GPU-vmap for
+huge batches (above); taskset-pinned process-parallel on CPU for moderate many-profile sweeps** — both
+exploit embarrassing parallelism *across* columns, never single-column core-scaling.
+
+---
+
+## 14. Information-content profiling (DEFINITIVE) — spectral verification + angular novelty  [SETTLED — 2026-06-24]
+
+The definitive Stage-1 IC run (supersedes the pilot §15 / `info_content_stage1.py`). Reports Rodgers
+**DOFS = tr(A) = Σ sᵢ²/(1+sᵢ²)** and Shannon **SIC = ½ Σ log₂(1+sᵢ²)** of the minimally-constrained
+free-node **r_e(τ)** profile over all 125 physical VOCALS-REx profiles, NQuad=48, μ₀=0.9. Two legs:
+the **spectral axis verifies the literature** (it *saturates*); the **angular axis is the novel
+contribution** (it adds on top of the saturated spectral baseline and reaches the shielded base).
+
+**Reframe / two legs.** The spectral leg reproduces the hyperspectral-albedo saturation of
+**Coddington–Pilewskie–Vukićević 2012** (JGR, doi:10.1029/2011JD016771) and the bispectral / depth-
+graded SWIR lineage (Nakajima–King 1990; Platnick 2000). SIC is the literature-comparable metric (the
+absolute DOFS count is parameterization-specific — a *profile*, not a 2-parameter cloud-mean). The
+angular leg — multi-angle radiance adding vertical DOFS at the saturated spectral baseline, and the
+interchangeability test (spectral↔angular overlap only **pre**-saturation; Δ_ang(b)>0 at saturation) —
+is the unique result.
+
+**Band superset (10 bands; provenance in the notebook).** `[0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13,
+2.26, 3.7, 4.05]` µm = HARP2 VIS/NIR (0.67 = 60 view angles) + OCI window/SWIR (1.038 is a clean
+no-major-gas window band) + NK1990 **3.7** µm (strong absorption) + the **4.05** µm **VIIRS M13** band
+(ω≈0.87 — slightly more absorbing than 3.7's window ω≈0.9; an *operational* MWIR channel) — testing
+whether spectral IC has headroom beyond the 3.7 µm window band. (The 2.95 µm liquid-water absorption
+*peak*, ω≈0.5, was rejected as too dark — no signal/sensitivity.) **Removed after review:** 2.00 µm (CO₂)
+and 1.72 µm (CH₄-sensitive 1.6–1.7 region). No band order is baked into the workers; the **value-greedy**
+order ({0.67,2.13} bispectral → 1.24,1.64 Platnick → fillers → 3.7 → 4.05 → redundant VIS) is applied
+post-hoc, with a data-greedy cross-check.
+
+**IC state = ALL r_e(τ) nodes INCLUDING the base (r_base = r_e at s=1); τ_bot held KNOWN.** r_base is
+an r_e value so it stays *in* the profiled state (`info_content.jacobian_on_ode_grid(...,
+include_base=True)`; the base joins the adiabatic prior block as the s=1 node, §11). τ_bot is *not* an
+r_e quantity and is fully measured (A≈1), so holding it known isolates the r_e novelty and keeps the
+s=τ/τ_bot depth grid well-posed. ⇒ the reported r_e IC is an **upper bound**. The τ_bot-unknown case is
+a one-off sensitivity (`ic_tau_bot_check.py`, reported here, *not* in the notebook): promoting τ_bot to
+an unknown is a clean ~1-DOF add (small r_e crosstalk) and the r_e IC is insensitive to linearizing
+τ_bot at the prior mean vs the truth — confirming the τ_bot-known choice.
+
+**Linearization = the LOO prior MEAN (set iv, HEADLINE); truth-linearization RETIRED.** The prior mean
+= the ensemble **median**, sd = **1.4826·MAD** (robust-Gaussian; τ_bot is heavy-tailed — median 9.4 vs
+mean 26, §11). Robustness levers retained: prior strength (loo / weak σ≈10 KV2012 / loo2x ℓ=1.0) and
+linearization at a LOO **realization** (`draw`, set v). The pilot's truth-linearization (set ii) and
+`info_content_linearity_probe.py` / `info_content_robust_truth.json` are removed.
+
+**Noise = OCI 2 % calibration-relative** (`noise_model.oci_swir`), radiance *and* flux — matching the
+pre-§15 retrievals (the pilot's 3 % was an inconsistency). Optics = the miepython table (§8).
+
+**Raw-Jacobian caching (the architecture).** Each worker caches **K_full (all 10 bands × all views),
+K_flux, s_int, the noise σ, the reflectance `y`, and the prior covariances** to a per-(mode,profile)
+`.npz` sidecar (`ic_worker_profile.py`). Every figure quantity — the (n_bands × n_view) trade-off grid,
+any band ordering/subset, Δ_ang/Δ_spec — is then a ~ms SVD of a *row subset* of one K_full, assembled
+post-hoc (`ic_analysis_definitive.py` → `info_content_definitive.json`; the notebook only plots). No
+forward solves in analysis. Mechanism (fig 5) from `ic_worker_mechanism.py` (same definitive config).
+
+**Two post-hoc robustness tests (2026-06-25).** (1) **Noise-level sweep** — Sₑ is rebuilt from the cached
+`y` at k_cal ∈ {1,2,3,5}% (the Jacobian is noise-independent), testing whether the angular/deep-base
+gains — which ride near-0.5 filter factors, the most noise-sensitive modes — survive realistic radiometry.
+(2) **Spectral-headroom test** — the 4.05 µm (VIIRS M13) band probes whether absorption *beyond* the
+3.7 µm window opens a new vertical mode or confirms the saturation ceiling. Both are free SVD re-evaluations of
+the cached K. The trade-off heatmaps also use a **uniform view axis** (1..N, not geometric).
+
+**Per-band attribution = Shapley value [decided 2026-06-25].** Every single-band IC number in §15 (the
+Test-2 bars, the substitution-vs-views curves, the free-node-vs-adiabatic comparison) is a **Shapley value** —
+the band's average marginal contribution over *all* 2¹⁰ band subsets — not a single marginal. A single
+marginal is superset-dependent and biased at either extreme: the **"9→10" leave-one-out** (`D(all)−D(all\b)`)
+*under*-credits mutually-redundant bands (each VIS band ≈0 because another VIS band substitutes), while the
+**"0→1" standalone** (`D({b})`) *over*-credits the τ/column anchor (every band ≈1 DOF alone, washing out all
+contrast: free-node vs adiabatic ToA share becomes 19 % ≈ 20 %). Shapley is the unique *fair, superset-
+independent* attribution and **sums to the total DOFS/SIC** (a genuine decomposition). It is tractable here
+because `_fast_dofs_sic` exploits the **diagonal Sₑ**: `DOFS = tr((G+Sa⁻¹)⁻¹G)`, `SIC = ½log₂|I+Sa·G|` with
+`G = (K/σ)ᵀ(K/σ)` an m×m (m = #nodes) matrix — O(rows·m²), no rows×rows inverse — verified bit-identical to
+`posterior_diagnostics`. Conclusions are *sharper but identical in direction* under leave-one-out (e.g.
+free-node ToA share Shapley 26 % vs adiabatic 16 %; LOO 39 % vs 7 %). `ic_analysis_definitive.py`:
+`band_shapley`, `substitution_shapley`, `adiabatic_comparison`, `_shapley`, `_all_subset_metrics`.
+
+*Files: `tests/supplementary/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive,
+ic_tau_bot_check}.py`, `src/{optics_table,info_content}.py`; handoff `AGENT_all125_ic.md`; figures in
+notebook §15.*

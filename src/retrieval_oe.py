@@ -1,7 +1,7 @@
 """retrieval_oe.py — optimal-estimation r_e(τ) retrieval over the Riccati seam.
 
 Thin glue around the *existing* differentiable forward model
-(``pydisort_riccati_jax`` seam + ``miejax_lite`` optics table) that turns a
+(``pydisort_riccati_jax`` seam + ``optics_table`` Mie lookup) that turns a
 multi-band, multi-angle ToA reflectance measurement into an effective-radius
 profile ``r_e(τ)`` by Gauss–Newton optimal estimation with a Bayesian-Tikhonov
 (correlated-Gaussian) prior, plus the posterior uncertainty quantification.
@@ -47,7 +47,7 @@ from pydisort_riccati_jax import (
     riccati_setup, riccati_solve, eval_radiance,
     pydisort_riccati_jax, _barycentric_interpolate,
 )
-from miejax_lite import table_lookup
+from optics_table import table_lookup   # miepython-built table; JAX-Mie (miejax_lite) retired (DESIGN §13)
 
 
 # ============================================================================
@@ -154,6 +154,7 @@ class RetrievalForward:
         self._fwd_jit = None
         self._jac_jit = None
         self._jac_grid_jit = None
+        self._jac_flux_grid_jit = None
 
     # -- joint-state decode: free nodes (+ optional retrieved base / τ_bot) ---
     @property
@@ -280,6 +281,27 @@ class RetrievalForward:
                        for i in range(self.n_view)])           # (n_view,)
         return jnp.pi * u / (self.mu0 * self.I0)
 
+    def _band_flux_reflectance(self, opt, setup, K, s_knots, vals, tau_bot):
+        """ToA plane albedo (flux reflectance) for one band: ``F_up/(μ0 I0)``.
+
+        ``F_up = 2π·Σᵢ μᵢ Wᵢ u0ᵢ`` is the **m=0** azimuthal mode only — exact, not
+        truncated: the m≥1 modes integrate to zero over azimuth (Fourier orthogonality),
+        so they carry no net flux. Taken from the raw delta-M solution ``res.u_modes[0]``;
+        the TMS/NT single-scatter correction is applied only in :func:`eval_radiance`, so
+        this flux is **delta-M but NOT NT-corrected** (the correct convention for fluxes).
+        This is the angle-integrated *spectral-albedo* quantity of CPV2012/King–Vaughan —
+        the literature spectral-IC baseline, free of an arbitrary view-angle choice."""
+        def om(tau):
+            return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
+
+        def leg(tau):
+            return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
+
+        res = riccati_solve(setup, om, leg, tau_bot, num_modes=K)
+        u0 = res.u_modes[0]                                    # m=0 mode at the N quad μ
+        flux_up = 2.0 * jnp.pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, u0)
+        return flux_up / (self.mu0 * self.I0)                  # plane albedo (scalar)
+
     def _forward_raw(self, x, s_nodes):
         s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
         return jnp.concatenate([
@@ -382,6 +404,33 @@ class RetrievalForward:
         return np.asarray(self._jac_grid_jit(jnp.asarray(re_vals, float),
                                              jnp.asarray(s_grid, float),
                                              jnp.asarray(tau_bot, float)))
+
+    # -- flux-reflectance (plane albedo) observable + Jacobian ---------------
+    def flux_reflectance(self, x, s_nodes):
+        """Per-band ToA flux reflectance (plane albedo); ``(n_bands,)``. The
+        angle-integrated spectral-albedo observable (CPV2012-style), independent of any
+        view angle."""
+        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
+        return np.asarray(jnp.stack([
+            self._band_flux_reflectance(opt, setup, K, s_knots, vals, tau_bot)
+            for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)]))
+
+    def flux_reflectance_on_grid(self, re_vals, s_grid, tau_bot=None):
+        """``K_flux = ∂(per-band flux reflectance)/∂r_e(s_j)``; ``(n_bands × len)``. The
+        spectral-albedo IC baseline (m=0 only, by construction). Same traced-arg /
+        cached-compile contract as :meth:`jacobian_on_grid`."""
+        if tau_bot is None:
+            tau_bot = self.tau_bot
+        if self._jac_flux_grid_jit is None:
+            def fwd(rv, sg, tb):
+                return jnp.stack([
+                    self._band_flux_reflectance(opt, setup, K, sg, rv, tb)
+                    for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)])
+            _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
+            self._jac_flux_grid_jit = jax.jit(_jac(fwd, argnums=0))
+        return np.asarray(self._jac_flux_grid_jit(jnp.asarray(re_vals, float),
+                                                  jnp.asarray(s_grid, float),
+                                                  jnp.asarray(tau_bot, float)))
 
 
 def build_forward(*args, **kw):
@@ -706,6 +755,41 @@ def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
         sigma_top=clim["r_top_std"], sigma_base=clim["r_base_std"],
         sigma_tau_bot=clim["tau_bot_std"], corr_length=corr_length,
         strength=strength)
+
+
+def draw_climatology_realization(clim, s_nodes, *, rng, tau_bot=None,
+                                 bounds=(2.0, 25.0), max_tries=10000):
+    """A physically-plausible **adiabatic** r_e(τ) realization from the LOO climatology.
+
+    A "realization" is a genuine 3-parameter r_e⁵-adiabatic profile — NOT a per-node draw
+    of the prior covariance S_a (which is unphysically non-monotonic; see DESIGN §11(i)).
+    ``r_top`` and ``r_base`` are sampled from their LOO marginals N(mean, std), drawn
+    independently and rejection-sampled so ``bounds[1] >= r_top > r_base >= bounds[0]``;
+    the adiabatic curve ``r_e(s) = (r_base⁵ + (r_top⁵−r_base⁵)(1−s))^{1/5}`` is then
+    evaluated at ``s_nodes`` (re5-exact — re-interpolating these node values recovers the
+    curve). Returns ``(x, info)`` where ``x = [r_e(s_nodes), r_base, τ_bot]`` (the
+    RetrievalForward state) and ``info`` records ``r_top/r_base/tau_bot/tries``.
+
+    ``tau_bot`` — **hyperparameter, set per use** (DESIGN §11(i)): a fixed float (e.g. the
+    truth, for IC profiling) OR ``None`` to draw it from the LOO climatology
+    (``clim["tau_bot_mean"/"tau_bot_std"]``, rejected to τ_bot>0; for full-retrieval
+    synthetic truths). Use the same ``rng`` per index for reproducibility.
+    """
+    s_nodes = np.asarray(s_nodes, float)
+    lo, hi = bounds
+    draw_tb = tau_bot is None
+    for tries in range(1, max_tries + 1):
+        r_top = clim["r_top_mean"] + clim["r_top_std"] * rng.standard_normal()
+        r_base = clim["r_base_mean"] + clim["r_base_std"] * rng.standard_normal()
+        tb = (float(clim["tau_bot_mean"] + clim["tau_bot_std"] * rng.standard_normal())
+              if draw_tb else float(tau_bot))
+        if hi >= r_top > r_base >= lo and tb > 0:
+            break
+    else:
+        raise ValueError("adiabatic realization rejection failed (>max_tries)")
+    re_nodes = (r_base ** 5 + (r_top ** 5 - r_base ** 5) * (1.0 - s_nodes)) ** 0.2
+    x = np.concatenate([re_nodes, [r_base], [tb]])
+    return x, {"r_top": float(r_top), "r_base": float(r_base), "tau_bot": tb, "tries": tries}
 
 
 def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.65,

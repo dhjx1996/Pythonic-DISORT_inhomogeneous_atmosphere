@@ -144,3 +144,5 @@ ui-tests/playwright-report
 **/Error-analysis-images/**
 **/.ipynb_checkpoints/**
 **/disort4.0.99_f2py/**
+# miepython optics table cache (profile-independent build artifact; rebuilt/cached by build_or_load_table)
+tests/supplementary/optics_table*.npz

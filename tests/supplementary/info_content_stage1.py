@@ -1,5 +1,10 @@
 """Stage 1 — the information-content matrix (experiments A-E), linearized AT THE TRUTH.
 
+    *** SUPERSEDED (2026-06-24) by the DEFINITIVE run: ic_worker_profile.py (raw-K cache) +
+    ic_analysis_definitive.py. Truth-linearization is RETIRED (headline = LOO prior mean);
+    bands are the 9-band instrument superset; optics are the miepython table. Kept only as the
+    historical pilot that established the A-E structure. Do not extend. ***
+
 One full Jacobian per regime, then the whole A-E matrix by exact ROW-SUBSETTING:
 each ToA observation is an independent row of K, so a config with fewer bands/views
 is just fewer rows. We compute K_full once per regime for the FULL band ladder
@@ -21,6 +26,7 @@ BAND-MAJOR (y = [band0 x all views, band1 x all views, ...]; see _forward_raw).
         /tmp/jaxve/bin/python tests/supplementary/info_content_stage1.py
 """
 import sys
+import os
 import json
 from pathlib import Path
 from math import pi
@@ -36,8 +42,9 @@ from info_content import jacobian_on_ode_grid, info_spectrum        # noqa: E402
 from miejax_lite import (mie_legendre_precompute, build_re_table,   # noqa: E402
                          select_channel)
 
-DATA = ('/home/jovyan/cloud_profile_retrieval/'
-        'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
+DATA = os.environ.get('VOCALS_DATA',
+                      '/home/jovyan/cloud_profile_retrieval/'
+                      'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
 OUT = Path(__file__).resolve().parents[2] / "docs" / "cached_results" / "info_content_stage1.json"
 
 NQ, mu0, NLeg_all, v_eff = 32, 0.9, 128, 0.10

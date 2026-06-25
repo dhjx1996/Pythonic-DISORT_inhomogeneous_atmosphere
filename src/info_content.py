@@ -33,26 +33,50 @@ import numpy as np
 from retrieval_oe import posterior_diagnostics  # the single DOFS/SIC/AK implementation
 
 
-def jacobian_on_ode_grid(fwd, x, s_nodes):
-    """ToA Jacobian ``K = ∂y/∂r_e`` and grid on the FULL interior ODE grid.
+def jacobian_on_ode_grid(fwd, x, s_nodes, include_base=False):
+    """ToA Jacobian ``K = ∂y/∂r_e`` and grid on the FULL ODE grid.
 
     Runs the adaptive solve at state ``x`` to obtain the ODE τ-grid, evaluates the
-    r_e profile on it, and forms the ToA Jacobian on its **interior** normalized-depth
-    nodes (the base node s=1 is dropped — r_base is a separate retrieved scalar).
+    r_e profile on it, and forms the ToA Jacobian on its normalized-depth nodes.
     Prior-independent and ``Se``-independent: reuse the returned ``K`` across the
     whole prior ladder / noise levels.
 
-    Returns ``(K, s_int)`` — ``K`` of shape ``(n_obs, n_int)`` and the interior
-    normalized-depth grid ``s_int`` the columns live on.
+    ``include_base`` — by default the base node ``s=1`` is **dropped** (the legacy
+    behaviour: r_base was a separate retrieved scalar, so the *profile* IC excluded
+    it). Pass ``include_base=True`` to **keep** it: the base is r_e at the deepest
+    layer, so for r_e-profile information content *including the base droplet size*
+    it belongs in the state. The matching prior block is then
+    ``make_climatology_prior(s_int[:-1], clim)[1][:n, :n]`` — i.e. the r_e+base
+    adiabatic block (the base joins as the s=1 node; :func:`make_joint_prior`),
+    dropping only the τ_bot scalar.
+
+    Returns ``(K, s_int)`` — ``K`` of shape ``(n_obs, n)`` and the normalized-depth
+    grid ``s_int`` the columns live on (ending at ``s=1`` iff ``include_base``).
     """
     x = np.asarray(x, float)
     cur_tau_bot = float(fwd._split_state(x, s_nodes)[2])
     tau_grid = fwd.ode_grid(x, s_nodes)                            # absolute τ (full grid)
     s_grid = np.unique(np.clip(tau_grid / cur_tau_bot, 0.0, 1.0))  # normalized
-    interior = s_grid < 1.0 - 1e-6
-    s_int = s_grid[interior]
+    keep = np.ones_like(s_grid, bool) if include_base else (s_grid < 1.0 - 1e-6)
+    s_int = s_grid[keep]
     re_grid = fwd.profile(x, s_nodes, s_grid * cur_tau_bot)
-    K = np.asarray(fwd.jacobian_on_grid(re_grid, s_grid, cur_tau_bot))[:, interior]
+    K = np.asarray(fwd.jacobian_on_grid(re_grid, s_grid, cur_tau_bot))[:, keep]
+    return K, s_int
+
+
+def flux_jacobian_on_ode_grid(fwd, x, s_nodes, include_base=False):
+    """Per-band **flux-reflectance** (plane-albedo) Jacobian + grid on the full
+    ODE grid; ``(n_bands, n)``. The angle-integrated (m=0) spectral-albedo baseline —
+    the CPV2012-style quantity, free of an arbitrary view-angle choice. Parallel to
+    :func:`jacobian_on_ode_grid`; ``include_base`` keeps the ``s=1`` base node."""
+    x = np.asarray(x, float)
+    cur_tau_bot = float(fwd._split_state(x, s_nodes)[2])
+    tau_grid = fwd.ode_grid(x, s_nodes)
+    s_grid = np.unique(np.clip(tau_grid / cur_tau_bot, 0.0, 1.0))
+    keep = np.ones_like(s_grid, bool) if include_base else (s_grid < 1.0 - 1e-6)
+    s_int = s_grid[keep]
+    re_grid = fwd.profile(x, s_nodes, s_grid * cur_tau_bot)
+    K = np.asarray(fwd.flux_reflectance_on_grid(re_grid, s_grid, cur_tau_bot))[:, keep]
     return K, s_int
 
 
