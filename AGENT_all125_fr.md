@@ -169,7 +169,12 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
 
 ## Failure handling (fix yourself)
 
-- **Hang on the first forward/Jacobian** → Troubleshooting (thread oversubscription — the main risk).
+- **Hang on the first forward/Jacobian** → Troubleshooting (thread oversubscription — the main risk; the
+  `XLA_FLAGS` default in the sbatch fixes it).
+- **Thick-profile timeout:** single-thread XLA (cpt=1) runs each task at true 1-CPU speed (~1–3 h, IC
+  scale), but the thickest dense-truth profiles (**idx 40, 42, 119**) are slowest and could approach the
+  8 h `--time`. If a *few* of those time out, raise `--time` (cluster permitting) and resubmit only those
+  indices (e.g. `sbatch --array=40,42,119 …`) — don't re-run the whole array.
 - **OOM** (exit 137; unlikely at `--mem=12G`): raise `--mem`, or on Venue B lower `-P`.
 - **Degenerate profiles** auto-write `{"skipped": ...}` in `<i>.json` (no `_A`/`_B` sidecars) — **expect
   exactly 1** (index 0, RF01, τ≈1585). Any other skip is worth a glance but not a failure.
@@ -201,6 +206,8 @@ srun --cpus-per-task=1 --cpu-bind=cores python -c "import os; print('affinity', 
 Results are delivered **as the zip (Step 3), NOT via Git** — do **not** commit or push any JSON/npz. After
 the array finishes and the bundle is built, report: (1) records vs `skipped` (expect 1 skip — RF01
 τ≈1585); (2) the **`npz in bundle` count** (≈250 = 125×{A,B}) and the bundle path + size; (3) how many
-retrievals flagged `converged:false` or `structural_misfit:true` (per config); (4) wall time / venue; (5)
-any errors. The primary downloads `cloud_profile_retrieval/fr_bundle.zip` and runs all analysis
-(`retrieval_analysis.py`) on jovyan.
+retrievals flagged `converged:false` or `structural_misfit:true` (per config); (4) **per-task wall times —
+min / median / max, and specifically the thickest profiles (idx 40, 42, 119; τ≈42–51)** — so the primary
+can judge whether `--time` needs raising for any re-run; (5) venue + whether the `XLA_FLAGS` single-thread
+fix held (no hung tasks); (6) any errors / timed-out task indices. The primary downloads
+`cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`) on jovyan.
