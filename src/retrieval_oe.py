@@ -66,8 +66,8 @@ class RetrievalForward:
 
     def __init__(self, opt_bands, *, NQuad, mu0, I0, phi0, tau_bot, r_base,
                  view_mu, view_phi, BDRF_bands=None, NLeg_all=128, NFourier=8,
-                 tol=1e-3, re_class="re5-linear", jac_mode="rev",
-                 retrieve_tau_bot=False, retrieve_r_base=False,
+                 tol=1e-3, re_class="re5-linear", state_space="linear",
+                 jac_mode="rev", retrieve_tau_bot=False, retrieve_r_base=False,
                  re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0)):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
@@ -104,6 +104,17 @@ class RetrievalForward:
             raise ValueError(f"unknown re_class {re_class!r}; "
                              "expected 're5-linear' or 'linear'")
         self.re_class = re_class             # profile parameterisation lever (§B′)
+        # GN state transform. 'linear' (default) keeps the legacy physical-µm state
+        # bit-for-bit. 'log' retrieves x'=ln(state) (r_e nodes, r_base, τ_bot — the
+        # whole positive state, as BP2026 §2.4): positivity is then automatic and GN
+        # convergence improves (Maahn et al.: 86 %→100 %). The transform lives ENTIRELY
+        # in _split_state/_clamp_state/_encode_state, so forward/Jacobian/profile/grid
+        # selection all inherit it (autodiff yields the chain-ruled K' = K·diag(state));
+        # pair with a log-space prior (to_log_prior / make_*_prior(log=True)).
+        if state_space not in ("linear", "log"):
+            raise ValueError(f"unknown state_space {state_space!r}; "
+                             "expected 'linear' or 'log'")
+        self.state_space = state_space
         self.retrieve_tau_bot = bool(retrieve_tau_bot)
         self.retrieve_r_base = bool(retrieve_r_base)
         # physical/table bounds for clamping GN iterates (DESIGN §8 bounded-state
@@ -172,8 +183,16 @@ class RetrievalForward:
         ``self.tau_bot``. The returned ``r_base`` / ``τ_bot`` are **traced scalars**
         in joint mode, so ``∂y/∂r_base`` and ``∂y/∂τ_bot`` flow through autodiff
         (τ_bot is a traced ``riccati_solve`` arg by construction, DESIGN §7).
+
+        In ``state_space='log'`` the *state-vector* entries are natural logs, so they
+        are exponentiated here to physical values **before** the split — autodiff then
+        threads the chain rule (``∂y/∂x' = ∂y/∂x · x``) for free. The fixed fallbacks
+        ``self.r_base`` / ``self.tau_bot`` are always physical (read separately), so
+        only the retrieved entries are transformed.
         """
         x = jnp.asarray(x, float)
+        if self.state_space == "log":
+            x = jnp.exp(x)                           # log-state → physical (r_e, r_base, τ_bot)
         k = int(jnp.asarray(s_nodes).shape[0])       # static (shape known at trace)
         r_nodes = x[:k]
         idx = k
@@ -200,14 +219,30 @@ class RetrievalForward:
         """
         x = np.asarray(x, float).copy()
         k = int(np.asarray(s_nodes).shape[0])
-        x[:k] = np.clip(x[:k], self.re_min, self.re_max)         # r_e nodes
+        # In log-state the bounds are the logs of the physical limits (positivity is
+        # then automatic; the clamp only keeps the optics inside the table support).
+        re_lo, re_hi, tau_lo, tau_hi = (self.re_min, self.re_max,
+                                        self.tau_min, self.tau_max)
+        if self.state_space == "log":
+            re_lo, re_hi = np.log(re_lo), np.log(re_hi)
+            tau_lo, tau_hi = np.log(tau_lo), np.log(tau_hi)
+        x[:k] = np.clip(x[:k], re_lo, re_hi)                     # r_e nodes
         idx = k
         if self.retrieve_r_base:
-            x[idx] = np.clip(x[idx], self.re_min, self.re_max)
+            x[idx] = np.clip(x[idx], re_lo, re_hi)
             idx += 1
         if self.retrieve_tau_bot:
-            x[idx] = np.clip(x[idx], self.tau_min, self.tau_max)
+            x[idx] = np.clip(x[idx], tau_lo, tau_hi)
         return x
+
+    def _encode_state(self, x_phys):
+        """Map a **physical** state ``[r_e nodes, (r_base), (τ_bot)]`` into the
+        forward's state space — identity for ``'linear'``, elementwise ``ln`` for
+        ``'log'``. The inverse of the decode in :meth:`_split_state`; used to feed a
+        physical truth / climatology draw to the (possibly log-space) forward (e.g.
+        :func:`osse_observation`)."""
+        x_phys = np.asarray(x_phys, float)
+        return np.log(x_phys) if self.state_space == "log" else x_phys
 
     # -- r_e(s) interpolant knots in normalized depth s=τ/τ_bot ---------------
     def _knots_vals(self, x, s_nodes):
@@ -639,6 +674,29 @@ def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.5, margin=1,
 # ============================================================================
 # 3. Prior (pluggable): adiabatic mean + Bayesian-Tikhonov covariance
 # ============================================================================
+def to_log_prior(x_a, Sa):
+    """Delta-method transform of a Gaussian prior to natural-log space.
+
+    For a positive state ``x`` with prior ``N(x_a, Sa)``, the log-state
+    ``x' = ln(x)`` has, to first order (the delta method), prior
+    ``N(ln(x_a), D Sa Dᵀ)`` with ``D = diag(1/x_a)`` — the standard log-normal
+    linearisation (exact for the mean, first-order for the covariance). Applied to
+    the **whole** state vector (r_e nodes, ``r_base`` and ``τ_bot`` are all strictly
+    positive), matching BP2026's log-transform of the full state (their §2.4), which
+    they report as essential for Gauss–Newton convergence. The off-diagonal
+    correlation structure is preserved (``D`` is diagonal), so the Bayesian-Tikhonov
+    smoothness term now lives on *fractional* r_e. Pairs with
+    :class:`RetrievalForward` built with ``state_space='log'``.
+
+    Returns ``(ln(x_a), D Sa Dᵀ)``.
+    """
+    x_a = np.asarray(x_a, float)
+    if np.any(x_a <= 0.0):
+        raise ValueError("to_log_prior requires a strictly positive prior mean x_a")
+    D = np.diag(1.0 / x_a)
+    return np.log(x_a), D @ np.asarray(Sa, float) @ D
+
+
 def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
                          sigma_top=3.0, sigma_base=1.5, corr_length=None,
                          strength=1.0):
@@ -689,7 +747,7 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
 def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
                      retrieve_r_base=True, retrieve_tau_bot=True,
                      sigma_top=5.0, sigma_base=2.0, sigma_tau_bot=None,
-                     corr_length=None, strength=1.0):
+                     corr_length=None, strength=1.0, log=False):
     """Joint prior over the retrieved state ``x = [r_e nodes, (r_base), (τ_bot)]``.
 
     The r_e nodes live at **normalized depth** ``s∈[0,1)`` — *and* ``r_base``, which
@@ -715,6 +773,10 @@ def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
 
     ``sigma_tau_bot`` defaults to ``0.5·τ_bot_prior`` (~50 % relative — broad);
     ``corr_length`` is in normalized-depth units (default 0.5).
+
+    ``log=True`` returns the prior already delta-method transformed to natural-log
+    space (:func:`to_log_prior`) for a ``state_space='log'`` forward — the mean
+    becomes ``ln(x_a)`` and the covariance ``D Sa Dᵀ`` (fractional r_e / τ_bot).
     """
     s_nodes = np.asarray(s_nodes, float)
     # r_e block in NORMALIZED depth: base node at s=1; unit τ_bot ⇒ frac=1−s.
@@ -732,11 +794,14 @@ def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
         Sa_aug[:n, :n] = Sa
         Sa_aug[n, n] = float(sigma_tau_bot) ** 2
         Sa = Sa_aug
+    if log:
+        x_a, Sa = to_log_prior(x_a, Sa)
     return x_a, Sa
 
 
 def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
-                           retrieve_tau_bot=True, corr_length=None, strength=1.0):
+                           retrieve_tau_bot=True, corr_length=None, strength=1.0,
+                           log=False):
     """Leave-one-flight-out VOCALS-REx climatological prior (Option 1, *fallback*).
 
     ``clim`` is the held-out ensemble summary from
@@ -754,7 +819,7 @@ def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
         retrieve_r_base=retrieve_r_base, retrieve_tau_bot=retrieve_tau_bot,
         sigma_top=clim["r_top_std"], sigma_base=clim["r_base_std"],
         sigma_tau_bot=clim["tau_bot_std"], corr_length=corr_length,
-        strength=strength)
+        strength=strength, log=log)
 
 
 def draw_climatology_realization(clim, s_nodes, *, rng, tau_bot=None,
@@ -795,7 +860,7 @@ def draw_climatology_realization(clim, s_nodes, *, rng, tau_bot=None,
 def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.65,
                          sigma_top=2.5, sigma_base=1.5, sigma_tau_bot=None,
                          retrieve_r_base=True, retrieve_tau_bot=True,
-                         corr_length=None, strength=1.0):
+                         corr_length=None, strength=1.0, log=False):
     """Generic marine-Sc joint prior, grounded in VOCALS-REx data + literature.
 
     Replaces the earlier hand-picked (and inadvertently *inverted*, r_base>r_top)
@@ -833,7 +898,8 @@ def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.
         s_nodes, tau_bot_prior=tau_bot_prior, r_top_prior=r_top_prior,
         r_base_prior=r_base_prior, sigma_top=sigma_top, sigma_base=sigma_base,
         sigma_tau_bot=sigma_tau_bot, retrieve_r_base=retrieve_r_base,
-        retrieve_tau_bot=retrieve_tau_bot, corr_length=corr_length, strength=strength)
+        retrieve_tau_bot=retrieve_tau_bot, corr_length=corr_length,
+        strength=strength, log=log)
 
 
 # ============================================================================
@@ -853,35 +919,88 @@ class OEResult:
     converged: bool = False
 
 
-def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol):
-    """Inner Gauss–Newton on a fixed (normalized-depth) retrieval grid (Rodgers n-form).
+def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
+              cost_rtol=None, chi2_floor=None):
+    """Inner **adaptive Levenberg–Marquardt** OE solve on a fixed (normalized-depth)
+    retrieval grid (Rodgers n-form, damped). Each iterate is projected onto the
+    physical/table bounds (:meth:`RetrievalForward._clamp_state`).
 
-    ``s_nodes`` is the retrieval grid in normalized depth s=τ/τ_bot. Each iterate is
-    projected onto the physical/table bounds (:meth:`RetrievalForward._clamp_state`)
-    so an overshoot cannot drive the optics out of the table or τ_bot ≤ 0.
+    **Why LM, not plain GN (DESIGN §15).** A noiseless OSSE has a near-flat minimum
+    (the misfit floors at the k-node *representation* error, χ²≪1); plain Gauss–Newton
+    with fixed damping **overshoots** it — the cost oscillates and the last iterate is
+    not the best. LM fixes this: the step ``δx = (KᵀSε⁻¹K + (1+λ)Sa⁻¹)⁻¹·rhs`` is
+    **accepted only if it lowers the full cost J**; on a reject the damping ``λ`` is
+    raised (×4, smaller/steeper-descent step) and retried, on an accept ``λ`` is eased
+    (×0.5, toward pure GN). This guarantees **monotonic descent**, so the returned
+    (last accepted) iterate is the best found and the stagnation test below is
+    meaningful. ``lm`` is the *initial* damping.
+
+    **Convergence (BP2026 lines 205-213), on the monotone cost:**
+
+    - *no further decrease* — if even maximal damping cannot lower J, we are at a
+      (local) minimum → converged.
+    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step improved the
+      data-misfit norm ``φ = ‖y−F‖_{Sε⁻¹}`` (√χ²) by a fraction **< ``cost_rtol``**.
+      ``None`` (default) disables it.
+    - *noise floor* (BP crit 2, ``chi2_floor`` set): reduced χ² ``= φ²/m ≤ chi2_floor``.
+      **Default INACTIVE** (``None``): Sε magnitude not reliably profiled (DESIGN §10h).
+    - *step norm* ``‖δx‖ < xtol·(‖x‖+xtol)`` and the ``n_iter`` cap.
+
+    ``history`` logs the full OE cost ``J = ½‖y−F‖²_{Sε⁻¹} + ½‖x−x_a‖²_{Sa⁻¹}`` at the
+    initial guess and each accepted iterate (monotone non-increasing).
     """
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
     y = np.asarray(y, float)
+    m = max(len(y), 1)
+    LM_MIN, LM_MAX, MAX_BACKTRACK = 1e-8, 1e8, 10
+
+    def _cost(xv, Fxv):
+        r = y - np.asarray(Fxv, float)
+        dchi2 = float(r @ Se_inv @ r)                         # ‖y−F‖²_{Sε⁻¹}
+        J = 0.5 * dchi2 + 0.5 * float((xv - x_a) @ Sa_inv @ (xv - x_a))
+        return J, dchi2, r
+
     x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
-    history = []
+    Fx = np.asarray(fwd.forward(x, s_nodes), float)
+    K = np.asarray(fwd.jacobian(x, s_nodes), float)           # (m, p)
+    J, dchi2, r = _cost(x, Fx)
+    phi = np.sqrt(dchi2)
+    history = [J]
     converged = False
+    lm_cur = max(float(lm), LM_MIN)
     for _ in range(n_iter):
-        Fx = np.asarray(fwd.forward(x, s_nodes), float)
-        K = np.asarray(fwd.jacobian(x, s_nodes), float)       # (m, p)
-        # cost J = ½‖y-F‖²_{Se⁻¹} + ½‖x-x_a‖²_{Sa⁻¹}
-        r = y - Fx
-        J = 0.5 * r @ Se_inv @ r + 0.5 * (x - x_a) @ Sa_inv @ (x - x_a)
-        history.append(float(J))
-        lhs = K.T @ Se_inv @ K + (1.0 + lm) * Sa_inv
+        lhs_base = K.T @ Se_inv @ K
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
-        dx = np.linalg.solve(lhs, rhs)
-        x = fwd._clamp_state(x + dx, s_nodes)                 # projected GN step
-        if np.linalg.norm(dx) < xtol * (np.linalg.norm(x) + xtol):
+        accepted = False
+        for _bt in range(MAX_BACKTRACK):                      # damp until the step lowers J
+            dx = np.linalg.solve(lhs_base + (1.0 + lm_cur) * Sa_inv, rhs)
+            x_new = fwd._clamp_state(x + dx, s_nodes)          # projected step
+            Fx_new = np.asarray(fwd.forward(x_new, s_nodes), float)
+            J_new, dchi2_new, r_new = _cost(x_new, Fx_new)
+            if J_new < J:
+                accepted = True
+                break
+            lm_cur = min(lm_cur * 4.0, LM_MAX)                # reject → more damping
+        if not accepted:                                      # can't descend → at a min
             converged = True
             break
-    Fx = np.asarray(fwd.forward(x, s_nodes), float)
-    K = np.asarray(fwd.jacobian(x, s_nodes), float)
+        phi_new = np.sqrt(dchi2_new)
+        rel = (phi - phi_new) / max(phi, 1e-300)              # ≥0 (monotone by construction)
+        step_small = np.linalg.norm(dx) < xtol * (np.linalg.norm(x_new) + xtol)
+        x, Fx, r, J, dchi2, phi = x_new, Fx_new, r_new, J_new, dchi2_new, phi_new
+        K = np.asarray(fwd.jacobian(x, s_nodes), float)
+        history.append(J)
+        lm_cur = max(lm_cur * 0.5, LM_MIN)                    # accept → ease toward pure GN
+        if cost_rtol is not None and rel < cost_rtol:
+            converged = True
+            break
+        if chi2_floor is not None and dchi2 / m <= chi2_floor:
+            converged = True
+            break
+        if step_small:
+            converged = True
+            break
     return x, K, Fx, history, converged
 
 
@@ -891,6 +1010,7 @@ class RemeshWarning(UserWarning):
 
 def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
+                    cost_rtol=None, chi2_floor=None,
                     max_n_outer=2, prior_builder=None, filter_threshold=0.5,
                     margin=1, remesh_if_chi2_red_gt=2.0, warn=True):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
@@ -918,6 +1038,13 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     filter (``filter_threshold``) re-decide the count. ``warn`` toggles the
     :class:`RemeshWarning` messages. The initial grid is the ``s_nodes`` passed in
     (select it once with :func:`select_retrieval_grid` before calling).
+
+    ``cost_rtol`` / ``chi2_floor`` are the BP2026 inner-loop convergence controls
+    (see :func:`_gn_inner`, now an adaptive **Levenberg–Marquardt** solve):
+    ``cost_rtol`` enables criterion 1 (data-misfit stagnation; ``None`` ⇒ no
+    cost-stagnation stop — the LM no-further-decrease / step-norm / ``n_iter`` stops
+    only), ``chi2_floor`` enables the noise-floor criterion 2 (default ``None`` ⇒
+    inactive). Both apply to every inner solve, including post-re-mesh ones.
     """
     import warnings
     s_nodes = np.asarray(s_nodes, float)
@@ -926,7 +1053,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     m = len(np.asarray(y, float))
 
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
-                                     n_iter=n_iter, lm=lm, xtol=xtol)
+                                     n_iter=n_iter, lm=lm, xtol=xtol,
+                                     cost_rtol=cost_rtol, chi2_floor=chi2_floor)
     full_hist = list(hist)
 
     def _chi2_red():
@@ -992,7 +1120,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
         x_a, Sa = prior_builder(new_s)
         s_nodes = new_s
         x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
-                                         n_iter=n_iter, lm=lm, xtol=xtol)
+                                         n_iter=n_iter, lm=lm, xtol=xtol,
+                                         cost_rtol=cost_rtol, chi2_floor=chi2_floor)
         full_hist += hist
         n_outer += 1
 
@@ -1112,6 +1241,9 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
         x = np.append(x, r_base_truth)
     if fwd.retrieve_tau_bot:
         x = np.append(x, tau_bot_truth)
+    # the truth state is built in PHYSICAL r_e/τ; encode it into the forward's state
+    # space (identity for 'linear', ln for 'log') so y = F(x_truth) is unchanged.
+    x = fwd._encode_state(x)
     y = np.asarray(fwd.forward(x, s_truth), float)
     if noise is not None:
         if hasattr(noise, "sample"):                 # a noise_model.NoiseModel
@@ -1132,3 +1264,81 @@ def make_Se(fwd: RetrievalForward, y, noise_model):
     instrument model (DESIGN §12). Noiseless OSSE still needs ``Se`` for weighting.
     """
     return noise_model.Se(np.asarray(y, float), n_bands=fwd.n_bands)
+
+
+# ============================================================================
+# 7. Post-hoc oracle-adiabatic baseline (pure NumPy/SciPy — NO radiative transfer)
+# ============================================================================
+def best_fit_adiabatic(s_eval, re_truth, tau_bot, *, metric="rmse", Sinv=None,
+                       bounds=(2.0, 25.0)):
+    """Best-fit r_e⁵-adiabatic profile to a truth curve — the **oracle** error floor.
+
+    Fits the two parameters ``(r_top, r_base)`` of the r_e⁵-linear curve
+        ``r_e(s) = (r_base⁵ + (r_top⁵ − r_base⁵)·(1 − s))^{1/5}``
+    (normalized depth ``s = τ/τ_bot ∈ [0,1]`` — the **same function class the forward
+    integrates**, :meth:`RetrievalForward._re_of_tau`) to ``re_truth`` sampled at
+    ``s_eval``, by bounded least squares. This is the lowest error an adiabatic model
+    can reach **with oracle knowledge of the truth**: ``(r_top, r_base)`` are fit to
+    the truth itself (NOT pinned to its endpoints), and ``τ_bot`` is taken as known —
+    a *generous* floor (the oracle is also handed the true τ_bot, which our retrieval
+    must itself infer). The headline question is whether the free-node retrieval beats
+    it (ΔRMSE = RMSE_adia − RMSE_ours > 0 for non-adiabatic truths; ≈0 near-adiabatic).
+
+    The fit is over the full 2-parameter family (each end free in ``bounds``); it is
+    **not** constrained to ``r_top ≥ r_base`` — i.e. it is the best fit within the
+    retrieval's *own* re5-linear class (which likewise does not impose monotonicity),
+    making this the like-for-like "collapse our k-node state to 2 adiabatic DOF and fit
+    perfectly" baseline. (A monotone-constrained variant is a one-line bounds change;
+    this function is post-hoc and re-runnable, so the choice is not baked into any run.)
+
+    ``metric``:
+
+    - ``'rmse'`` — ordinary least squares (the headline; ``s_eval`` should be a **dense
+      uniform-in-s** grid so RMSE is thickness-neutral).
+    - ``'maha'`` — Mahalanobis (Ŝ⁻¹-whitened) least squares: pass the posterior
+      precision ``Sinv = Ŝ⁻¹`` of the r_e block (Cholesky ``Sinv = L Lᵀ``; residual
+      whitened by ``Lᵀ``). ``s_eval``/``re_truth`` are then the retrieval-grid nodes
+      (where Ŝ lives); the returned ``d2`` is the adiabatic lower bound
+      ``d²_adia,min`` of the posterior Mahalanobis diagnostic.
+
+    ``tau_bot`` is the oracle-known base optical depth; the curve is τ_bot-independent
+    in ``s`` (re5-linear is unchanged by the normalization), so it is carried for
+    provenance/validation only, not used in the fit.
+
+    Returns ``dict(r_top, r_base, re_fit, rmse, success, metric[, d2])``.
+    """
+    from scipy.optimize import least_squares
+    s_eval = np.asarray(s_eval, float)
+    re_truth = np.asarray(re_truth, float)
+    float(tau_bot)                                           # provenance/validate (unused in the s-fit)
+    lo, hi = float(bounds[0]), float(bounds[1])
+
+    def curve(p):
+        r_top, r_base = p
+        return (r_base ** 5 + (r_top ** 5 - r_base ** 5) * (1.0 - s_eval)) ** 0.2
+
+    if metric == "maha":
+        if Sinv is None:
+            raise ValueError("metric='maha' requires the posterior precision Sinv=Ŝ⁻¹")
+        L = np.linalg.cholesky(np.asarray(Sinv, float))     # Sinv = L Lᵀ
+        def resid(p):
+            return L.T @ (curve(p) - re_truth)
+    elif metric == "rmse":
+        def resid(p):
+            return curve(p) - re_truth
+    else:
+        raise ValueError(f"unknown metric {metric!r}; expected 'rmse' or 'maha'")
+
+    # first guess: top from the shallowest truth node, base from the deepest.
+    p0 = [float(np.clip(re_truth[np.argmin(s_eval)], lo, hi)),
+          float(np.clip(re_truth[np.argmax(s_eval)], lo, hi))]
+    sol = least_squares(resid, p0, bounds=([lo, lo], [hi, hi]))
+    r_top, r_base = float(sol.x[0]), float(sol.x[1])
+    re_fit = curve(sol.x)
+    out = dict(r_top=r_top, r_base=r_base, re_fit=np.asarray(re_fit),
+               rmse=float(np.sqrt(np.mean((re_fit - re_truth) ** 2))),
+               success=bool(sol.success), metric=metric)
+    if metric == "maha":
+        d = re_fit - re_truth
+        out["d2"] = float(d @ np.asarray(Sinv, float) @ d)  # d²_adia,min (Ŝ⁻¹-weighted)
+    return out

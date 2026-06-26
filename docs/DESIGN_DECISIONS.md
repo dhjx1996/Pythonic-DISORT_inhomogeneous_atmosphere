@@ -974,3 +974,100 @@ free-node ToA share Shapley 26 % vs adiabatic 16 %; LOO 39 % vs 7 %). `ic_analys
 *Files: `tests/supplementary/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive,
 ic_tau_bot_check}.py`, `src/{optics_table,info_content}.py`; handoff `AGENT_all125_ic.md`; figures in
 notebook §15.*
+
+## 15. Full r_e(τ) retrievals — log-space state, BP2026 convergence, oracle-adiabatic floor  [SETTLED — 2026-06-26]
+
+The **capstone**: turn the §14 information-content claim into actual retrievals. Invert all 125 physical
+VOCALS-REx profiles by joint Gauss–Newton OE (state `x = [r_e(s_nodes), r_base, τ_bot]`), NQuad=48,
+μ₀=0.9, the §14 10-band × 24-view system, in **two prior configs** sharing one compiled forward — **A**
+LOO-climatology prior mean (headline), **B** one LOO climatology *realization* (τ_bot sampled) as both
+prior mean and first guess (robustness to where the regulariser is centred). **Headline = does the
+free-node retrieval beat the best-possible adiabatic profile?** Three code upgrades (`src/retrieval_oe.py`):
+
+**(a) Log-space state (`state_space='log'`).** Retrieve `x' = ln(x)` for the *whole* positive state
+(r_e nodes, r_base **and** τ_bot) — BP2026 §2.4, who report it essential for GN convergence (Maahn et al.
+86 %→100 %). Positivity is then free; the optics-table clamp only enforces support. The transform lives
+entirely in `_split_state`/`_clamp_state`/`_encode_state` (a single `exp` at decode), so
+forward/Jacobian/profile/grid-selection inherit it and autodiff returns the chain-ruled `K' = K·diag(x)`
+**for free** — verified **exact at float64** (the production precision; forward parity 2e-12,
+Jacobian-chain-rule 2e-11; a ~0.75 % log-vs-linear gap at float32 is just adaptive-step noise from
+`exp(ln x)≠x` at 1e-7, and is in any case *not* a model error because the OSSE `y` and the GN forward run
+the identical log path). The prior is transformed
+by the **delta method** `to_log_prior(x_a,Sa)`: `x_a'=ln(x_a)`, `Sa'=D Sa Dᵀ`, `D=diag(1/x_a)` (validated
+vs a Monte-Carlo log-normal) — exposed as `log=True` on `make_{joint,climatology,marine_sc}_prior`; the
+Bayesian-Tikhonov correlation now lives on *fractional* r_e. The whole-state choice (vs radii-only) is the
+natural reading of BP2026's "log-transform the state" and gives a clean lognormal τ_bot prior (τ_bot spans
+1–50, so log is natural). **No §15-notebook IC re-run is needed**: posterior IC is reportable in linear µm
+by un-chain-ruling `K_lin = K_log/r_e`, and DOFS/SIC are invariant under the reparam. *Grid selection
+stays in physical space* (the noise-aware QRCP filter whitening is dimensionally correct there, and is
+≈ invariant to the log reparam since `diag(r)·diag(σ_log) ≈ diag(σ_phys)`).
+
+**(b) Robust Gauss–Newton — adaptive Levenberg–Marquardt + BP2026 convergence.** Examining the
+per-iteration cost trajectory (rigour over results) exposed that the plain projected-GN `_gn_inner`
+**oscillates**: a noiseless OSSE has a near-flat minimum (the misfit floors at the k-node *representation*
+error, χ²≪1) and undamped GN **overshoots** it — the cost bounces and the last iterate is not the best.
+This was **latent all along** — the old `joint_osse_results.json` runs show 2–5 cost up-steps and
+`converged=False` in *both* linear and re5, thin and thick, even at 2–3 bands; it went unexamined because
+the cost still *ended* low and the smoke test only checked `final ≤ initial` — **not** new to the
+10-band/log capstone. `_gn_inner` is now an **adaptive LM** solve: a step is accepted only if it lowers the
+full cost J; on a reject the damping λ is raised (×4) and retried, on an accept eased (×0.5) — guaranteeing
+**monotonic descent**, so the returned iterate is the best found (verified: oscillation up-steps 2–5 → 0).
+It improves *every* retrieval (the queued notebook re-run inherits it). On that monotone cost the BP2026
+stops layer: **criterion 1 (primary): cost stagnation** — the data-misfit norm `φ = ‖y−F‖_{Sε⁻¹}` (= √χ²,
+the OE form of BP's RSS) improves by a fraction **below `cost_rtol`** (`None` ⇒ no cost-stop; the LM
+no-further-decrease / step-norm / `n_iter` stops only). `cost_rtol` **ships at 0.01**, erring tight (the unit
+test reaches the same minimum as a far-tighter reference and the worker re-validation converges + beats
+the floor) — NOT BP's 3 % on faith. A threshold-insensitivity sweep (`tune_cost_rtol.py`, COST_RTOL ∈
+{5,3,1,0.3,0.1}% vs a tight reference) runs as **verification** and selects the **loosest value still on
+the RMSE/DOFS/profile plateau** (it may relax 0.01 toward BP's 3 % if 0.03 proves on-plateau — a compute
+saving, not a correctness change, since 0.01 errs tight). Erring tight matters because in a noiseless OSSE
+an over-loose threshold under-converges and *inflates* our RMSE, which would unfairly
+flatter the adiabatic floor — the wrong direction for the headline. **Criterion 2: noise floor** —
+stop if reduced χ² `≤ chi2_floor` while non-increasing — is **implemented but default INACTIVE**
+(`chi2_floor=None`): the Sε magnitude is not reliably profiled (the user's instruction), so the
+noise-floor stop is coded and available but off, per §10h.
+
+**(c) Oracle best-fit-adiabatic floor (`best_fit_adiabatic`).** The headline baseline (no adiabatic-OE or
+bispectral re-run; BP2025/26 comparisons are literature-cited). Pure NumPy/SciPy (no RT), so every metric
+is a post-hoc re-computation: fit `(r_top, r_base)` of the re5-linear curve to the **truth** at known
+τ_bot by bounded least squares (`metric='rmse'` for ΔRMSE; `metric='maha'`, Cholesky-whitened by Ŝ⁻¹, for
+the adiabatic lower bound `d²_adia,min` of the posterior Mahalanobis diagnostic). It is a *generous* floor:
+`(r_top,r_base)` are fit to the truth (NOT pinned to its endpoints) and τ_bot is handed over as known
+(which our retrieval must itself infer). The fit spans the full 2-parameter re5 family (**not** constrained
+to `r_top≥r_base`) — i.e. the best fit within the retrieval's own re5-linear class, the like-for-like
+"collapse our k-node state to 2 adiabatic DOF and fit perfectly" baseline; a monotone-constrained variant
+is a one-line bounds change and, being post-hoc, is not baked into any run. ΔRMSE = RMSE_adia − RMSE_ours
+(>0 ⇒ we beat the floor; ≈0 near-adiabatic).
+
+**Observation = noiseless OSSE** (recap of §10b/§12): `y = F(x_truth)` with no noise realization added;
+`Se` (oci_swir 2 % calibration-relative) enters only as the assumed weighting / posterior covariance, so
+`x̂−x_truth` is pure regularisation/smoothing **bias** and `Ŝ` carries the analytic noise variance (no
+Monte-Carlo). Retrievals run on the HPC (`AGENT_all125_fr.md`, repurposed from the IC handoff) in
+**float64** (`PYDISORT_RICCATI_JAX_X64=1`), as the IC run did — **required, not optional** for the 10-band
+forward. The discriminator is a 2×2 regime gap: the **notebook** retrievals ran *float32* but only on the
+**2-band** bispectral pair `[1.24,2.13]` (even at NQuad=48/64, dense thin/mid/thick truths) — fine; the
+**IC** run used the **10-band** superset at NQuad=48 on all 125 dense truths but at **float64** — fine;
+so **10-band × float32 had never been run**. Two probes localised it (and refuted the obvious guesses —
+DESIGN values rigour over a tidy story): `band_float32_probe.py` shows **all 10 band *forwards* pass alone
+at float32** (so it is neither band *count* nor a single fragile band — bands are independent
+`riccati_solve`s), and a forward-vs-Jacobian check shows the **smooth forward and the small
+retrieval-grid Jacobian (6 columns) both pass** too. By elimination the trigger is the one remaining op:
+the **grid-selection pool Jacobian** (`jacobian_on_grid` — a ~30-column **forward-mode AD** through the
+adaptive integrator). Forward-mode AD augments each band's ODE with tangent states; that augmented system
+is stiffer than the plain forward, and the float32 rtol-floor (§"Tolerance flooring") is calibrated for the
+*forward*, not for forward-AD-through-the-solver. At the worst-case scale here (10 bands × ~30 tangent
+columns) it exceeds the `max_steps` budget. Nothing prior hit it: the notebook's float32 Jacobians were
+2-band / ~6-column (small enough); the IC run's big 10-band Jacobians were float64. The failure is thus in
+**grid selection, before any GN step** — **not** a log-space artefact. (float64 has the roundoff headroom
+and integrates the augmented system cleanly, as the IC run proved on all 125.) *Band-count is also a lever
+if float32 were ever wanted:* each forward-mode tangent propagates through **all** band-ODEs at once, so
+dropping bands shrinks the augmented solve, and the §14 IC shows the 10-band set is **redundant** for r_e
+information — but float64 is the clean fix and all-10-at-float64 is harmless, so we keep them. float64 integrates cleanly (proven on all 125 by the IC run) and keeps
+the posterior IC directly comparable to the float64 §14. Raw sidecars bundle back to jovyan where
+`retrieval_analysis.py` computes every metric (RMSE/ΔRMSE, LWP bias, Mahalanobis, posterior IC). Grid
+fixed per profile (`max_n_outer=1` — a clean A-vs-B comparison; a structural-misfit χ²>thr still warns,
+flagged in the sidecar).
+
+*Files: `src/retrieval_oe.py` (`state_space`/`to_log_prior`, `cost_rtol`/`chi2_floor`,
+`best_fit_adiabatic`); `tests/supplementary/{retrieval_worker,tune_cost_rtol}.py`; handoff
+`AGENT_all125_fr.md`; analysis `retrieval_analysis.py` + notebook §16 (post-results).*
