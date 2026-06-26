@@ -127,6 +127,7 @@ cat > /tmp/fr.sbatch <<EOF
 #SBATCH --time=08:00:00
 #SBATCH --output=/tmp/fr_%a.out
 export JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # REQUIRED: single-thread XLA (cpt=1) — see Troubleshooting
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band.npz
 export OMP_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} MKL_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} NUMEXPR_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
@@ -144,6 +145,7 @@ export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_TH
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band.npz
 export PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # single-thread XLA (see Troubleshooting)
 mkdir -p docs/cached_results/_fr_parts
 # simple bounded-parallel loop (4 at a time); raise/lower -P to fit the box's cores & RAM
 seq 0 $((N-1)) | xargs -P 4 -I {} $PY tests/supplementary/retrieval_worker.py {} docs/cached_results/_fr_parts/{}
@@ -179,16 +181,20 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
 
 ## Troubleshooting: a single forward/Jacobian hangs for hours (thread oversubscription)
 
-**Symptom:** a task sits on the *first* forward/Jacobian for hours — no `DONE` print.
-**Cause:** with no CPU-binding, XLA's Eigen pool *and* OpenBLAS size to the **whole node**, then the
-`--cpus-per-task` cgroup throttles 64–128 threads onto a few CPUs → thrash. The fix needs **both** the env
-caps **and** `srun --cpu-bind=cores` (XLA's pool sizes to *affinity*, not OMP). Both are in the sbatch
-above. **Smoking-gun check (2 s):**
+**Symptom:** a task sits on the *first* forward/Jacobian for hours — no `DONE` print (e.g. the
+2026-06-26 first submission ran 3h45m with **zero** completions).
+**Cause:** XLA's Eigen thread pool sizes to the task's CPU **affinity**, not to `OMP_NUM_THREADS`; if the
+affinity isn't constrained to 1, the cgroup then throttles ~32 XLA threads onto the 1 allocated CPU →
+thrash → indefinite hang. `OMP_NUM_THREADS=1` caps OpenBLAS but does **nothing** to XLA's pool.
+**Fix (now baked into the sbatch): `XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"`** — forces
+single-threaded XLA *regardless of affinity*, which is the correct config for `cpus-per-task=1` anyway. We
+formerly relied on `srun --cpu-bind=cores` to constrain affinity (it worked for the IC run), but on the
+current **crew1** nodes it does **not** bind — confirmed by the **smoking-gun check (2 s):**
 ```bash
-srun --cpus-per-task=1 --mem=12G python -c "import os; print('affinity', len(os.sched_getaffinity(0)), 'cpu_count', os.cpu_count())"
+srun --cpus-per-task=1 --cpu-bind=cores python -c "import os; print('affinity', len(os.sched_getaffinity(0)), 'cpu_count', os.cpu_count())"
 ```
-`affinity ≫ 4` ⇒ SLURM isn't binding ⇒ this is the cause. `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false`
-forces single-threaded XLA as a localizing test.
+`affinity ≫ 1` ⇒ binding isn't working ⇒ the `XLA_FLAGS` default above is what saves you (keep
+`--cpu-bind=cores` too — harmless, and it helps on nodes where it *does* bind).
 
 ## Report back
 
