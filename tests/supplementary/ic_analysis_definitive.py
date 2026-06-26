@@ -42,7 +42,33 @@ OUT = Path(os.environ.get("IC_DEFINITIVE_OUT",
 
 
 def spread_idx(k, nv_max):
-    return np.unique(np.linspace(0, nv_max - 1, k).round().astype(int))
+    """``k`` well-spread but **IRREGULAR** view indices from ``[0, nv_max)`` — a
+    deterministic golden-ratio (low-discrepancy) sequence, NESTED (a prefix of one
+    fixed order, nadir index 0 first) so the view-sweep is monotone.
+
+    Replaces the old uniform ``linspace`` grid. A regular grid **aliases** with the
+    angular Jacobian of conservative-scattering bands — the §15 Fig 3b 0.55-µm V=16
+    notch (confirmed: 100 % of random 16-view subsets beat the regular one) — and,
+    oppositely, *over-credits* the smooth magnitude signal of absorbing bands; both
+    are regular-grid sampling biases. An irregular grid removes them (DESIGN §14). The
+    golden ratio (the most-irrational number) gives the lowest-discrepancy, alias-free
+    spread; it is a *fixed* irregular set (real multi-angle instruments — POLDER /
+    HARP2 / 3MI — have fixed irregular angles), preserving the principal-plane
+    µ-density without the regularity. **Both endpoints are anchored** (nadir index 0
+    *and* the most-oblique index ``nv_max-1``) so the full angular range is spanned at
+    every V≥2 (as the old uniform grid did); only the *interior* is irregular. V=1 →
+    nadir; V=nv_max → all."""
+    target = min(int(k), int(nv_max))
+    if target <= 1:
+        return np.array([0])                        # V=1 = nadir
+    phi = 0.6180339887498949                        # golden-ratio conjugate (√5−1)/2
+    order, seen, i = [0, nv_max - 1], {0, nv_max - 1}, 1   # anchor nadir + most-oblique
+    while len(order) < target and i < 100 * nv_max:
+        idx = int(round(((i * phi) % 1.0) * (nv_max - 1)))
+        if idx not in seen:
+            seen.add(idx); order.append(idx)
+        i += 1
+    return np.array(sorted(order[:target]))
 
 
 def load_dirs(dirs):
@@ -316,7 +342,7 @@ def angular_context_saturation(caches, prior="loo"):
     return out
 
 
-def substitution_shapley(caches, band_idx=(8, 9, 4), prior="loo", n_views=10):
+def substitution_shapley(caches, band_idx=(8, 9, 4, 0), prior="loo", n_views=10):
     """Fig 3b: the **Shapley SHARE** (fraction of the total DOFS / SIC) commanded by selected bands vs
     #views — superset-INDEPENDENT (each band's fair share of the information, averaged over all 2ⁿ subsets;
     the Shapley values sum to the full-set DOFS/SIC). The absorbing bands' share **falls** with views
