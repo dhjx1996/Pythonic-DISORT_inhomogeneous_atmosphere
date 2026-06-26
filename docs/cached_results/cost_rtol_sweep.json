@@ -1,0 +1,99 @@
+{
+  "benchmarks": [
+    {
+      "index": 105,
+      "flight": "RF12",
+      "tau_bot": 10.009,
+      "k": 5,
+      "ref": {
+        "rmse": 0.2275,
+        "dofs": 4.666,
+        "tau_bot": 9.969,
+        "n_gn": 12
+      },
+      "sweep": [
+        {
+          "cost_rtol": 0.05,
+          "rmse": 0.2265,
+          "d_rmse": -0.001,
+          "dofs": 4.673,
+          "d_dofs": 0.007,
+          "d_prof": 0.0146,
+          "n_gn": 7,
+          "tau_bot": 9.956,
+          "converged": true,
+          "on_plateau": true
+        },
+        {
+          "cost_rtol": 0.03,
+          "rmse": 0.2265,
+          "d_rmse": -0.001,
+          "dofs": 4.673,
+          "d_dofs": 0.007,
+          "d_prof": 0.0146,
+          "n_gn": 7,
+          "tau_bot": 9.956,
+          "converged": true,
+          "on_plateau": true
+        },
+        {
+          "cost_rtol": 0.01,
+          "rmse": 0.2265,
+          "d_rmse": -0.001,
+          "dofs": 4.673,
+          "d_dofs": 0.007,
+          "d_prof": 0.0146,
+          "n_gn": 7,
+          "tau_bot": 9.956,
+          "converged": true,
+          "on_plateau": true
+        },
+        {
+          "cost_rtol": 0.003,
+          "rmse": 0.2265,
+          "d_rmse": -0.001,
+          "dofs": 4.673,
+          "d_dofs": 0.007,
+          "d_prof": 0.0146,
+          "n_gn": 7,
+          "tau_bot": 9.956,
+          "converged": true,
+          "on_plateau": true
+        },
+        {
+          "cost_rtol": 0.001,
+          "rmse": 0.2265,
+          "d_rmse": -0.001,
+          "dofs": 4.673,
+          "d_dofs": 0.007,
+          "d_prof": 0.0146,
+          "n_gn": 7,
+          "tau_bot": 9.956,
+          "converged": true,
+          "on_plateau": true
+        }
+      ],
+      "runtime_s": 1968.5
+    }
+  ],
+  "sweep": [
+    0.05,
+    0.03,
+    0.01,
+    0.003,
+    0.001
+  ],
+  "tol": {
+    "rmse": 0.01,
+    "dofs": 0.02,
+    "prof": 0.05
+  },
+  "plateau_all_profiles": [
+    0.05,
+    0.03,
+    0.01,
+    0.003,
+    0.001
+  ],
+  "recommended_cost_rtol": 0.05
+}

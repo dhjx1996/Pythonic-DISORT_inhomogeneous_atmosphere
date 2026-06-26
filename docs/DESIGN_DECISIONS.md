@@ -1022,7 +1022,11 @@ the floor) — NOT BP's 3 % on faith. A threshold-insensitivity sweep (`tune_cos
 the RMSE/DOFS/profile plateau** (it may relax 0.01 toward BP's 3 % if 0.03 proves on-plateau — a compute
 saving, not a correctness change, since 0.01 errs tight). Erring tight matters because in a noiseless OSSE
 an over-loose threshold under-converges and *inflates* our RMSE, which would unfairly
-flatter the adiabatic floor — the wrong direction for the headline. **Criterion 2: noise floor** —
+flatter the adiabatic floor — the wrong direction for the headline. **Verification** (idx 105, mid) found
+`cost_rtol` **immaterial under the LM**: all of {5,3,1,0.3,0.1}% reach the *identical* converged result
+(RMSE 0.2265, DOFS 4.67) in the *same* 7 iterations — the LM's no-further-decrease / step-norm criteria
+bind before `cost_rtol` does, so 0.01 carries **no** convergence-vs-compute trade-off (thin/thick
+verification is a cheap follow-up during the HPC run). **Criterion 2: noise floor** —
 stop if reduced χ² `≤ chi2_floor` while non-increasing — is **implemented but default INACTIVE**
 (`chi2_floor=None`): the Sε magnitude is not reliably profiled (the user's instruction), so the
 noise-floor stop is coded and available but off, per §10h.
