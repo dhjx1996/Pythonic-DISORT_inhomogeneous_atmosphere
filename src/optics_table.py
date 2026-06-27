@@ -212,14 +212,21 @@ def select_channel(table, channel):
                   table["qext"][channel], np.asarray(table["wavelengths"])[channel])
 
 
-def table_lookup(opt, r_e):
+def table_lookup(opt, r_e, n_leg=None):
     """O(1) differentiable linear lookup of ``(omega, Leg_coeffs)`` at ``r_e``.
 
     Ported verbatim from ``miejax_lite.table_lookup`` — the one piece that stays in
     JAX (the per-τ hot path inside the solver). Out-of-range ``r_e`` clamps to the
-    grid ends (gradient → 0); differentiable in ``r_e`` (gradient = table slope)."""
+    grid ends (gradient → 0); differentiable in ``r_e`` (gradient = table slope).
+
+    ``n_leg`` (optional): interpolate only the **first ``n_leg`` Legendre moments**.
+    The discrete-ordinate solve needs only ``NLeg+1`` of them (delta-M ``c_l`` + ``f``);
+    interpolating the full ``NLeg_all`` (e.g. 1024, kept for the NT/TMS correction) on
+    every ODE step is pure waste. The TMS path passes ``n_leg=None`` to get all moments."""
     re_min, dr, n_re = opt["re_min"], opt["dr"], opt["n_re"]
     omega_grid, leg_grid = opt["omega"], opt["leg"]
+    if n_leg is not None:
+        leg_grid = leg_grid[:, :n_leg]                       # (B) slice BEFORE the gather/interp
     idx = jnp.clip((r_e - re_min) / dr, 0.0, n_re - 1.0)
     i0 = jnp.clip(jnp.floor(idx).astype(jnp.int32), 0, n_re - 2)
     frac = idx - i0

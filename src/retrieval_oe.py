@@ -68,7 +68,8 @@ class RetrievalForward:
                  view_mu, view_phi, BDRF_bands=None, NLeg_all=128, NFourier=8,
                  tol=1e-3, re_class="re5-linear", state_space="linear",
                  jac_mode="rev", retrieve_tau_bot=False, retrieve_r_base=False,
-                 re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0)):
+                 re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0),
+                 delta_M_scaling=True, NT_cor=True):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
         # (the joint retrieval). When True the corresponding quantity is read
@@ -154,12 +155,26 @@ class RetrievalForward:
         if jac_mode == "fwd":
             import diffrax
             _adjoint = diffrax.ForwardMode()
+        # NFourier may be a scalar (uniform ceiling) OR a per-band list/array. The
+        # azimuthal mode count needed for ToA-radiance convergence is set by the Mie
+        # size parameter x=2pi*r_e/lambda, so it is strongly band-dependent (short-
+        # lambda / large-r_e need many more modes than absorbing long-lambda bands);
+        # a per-band ceiling from the convergence study (DESIGN: NFourier study) is
+        # both accurate and ~half the runtime of a uniform max. See select_num_modes
+        # for the (now-deprecated for OSSE) noise-aware per-profile trim.
+        if np.ndim(NFourier) == 0:
+            NF_list = [int(NFourier)] * self.n_bands
+        else:
+            NF_list = [int(v) for v in NFourier]
+            if len(NF_list) != self.n_bands:
+                raise ValueError(f"per-band NFourier length {len(NF_list)} != "
+                                 f"n_bands {self.n_bands}")
         self.setups = [
-            riccati_setup(NQuad, I0, phi0, mu0, NFourier=NFourier,
+            riccati_setup(NQuad, I0, phi0, mu0, NFourier=nf,
                           NLeg_all=NLeg_all, BDRF_Fourier_modes=bdrf,
-                          delta_M_scaling=True, NT_cor=True, tol=tol,
+                          delta_M_scaling=delta_M_scaling, NT_cor=NT_cor, tol=tol,
                           adjoint=_adjoint)
-            for bdrf in BDRF_bands
+            for bdrf, nf in zip(BDRF_bands, NF_list)
         ]
         self.K_list = [s.NFourier for s in self.setups]
         self._fwd_jit = None
@@ -305,13 +320,19 @@ class RetrievalForward:
                                           tau_bot))
 
     def _band_reflectance(self, opt, setup, K, s_knots, vals, tau_bot):
+        n_solve = setup.NLeg + 1                              # (B) moments the delta-M solve needs
         def om(tau):
             return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
 
-        def leg(tau):
+        def leg_solve(tau):                                  # truncated → cheap ODE hot loop
+            return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot),
+                                n_leg=n_solve)[1]
+
+        def leg_tms(tau):                                    # full NLeg_all → NT/TMS single-scatter
             return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
 
-        res = riccati_solve(setup, om, leg, tau_bot, num_modes=K)
+        res = riccati_solve(setup, om, leg_solve, tau_bot, num_modes=K,
+                            Leg_coeffs_tms_func=leg_tms)
         u = jnp.stack([eval_radiance(setup, res, self.view_mu[i], self.view_phi[i])
                        for i in range(self.n_view)])           # (n_view,)
         return jnp.pi * u / (self.mu0 * self.I0)
@@ -920,7 +941,7 @@ class OEResult:
 
 
 def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
-              cost_rtol=None, chi2_floor=None):
+              cost_rtol=None, chi2_floor=None, verbose=False):
     """Inner **adaptive Levenberg–Marquardt** OE solve on a fixed (normalized-depth)
     retrieval grid (Rodgers n-form, damped). Each iterate is projected onto the
     physical/table bounds (:meth:`RetrievalForward._clamp_state`).
@@ -949,11 +970,17 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     ``history`` logs the full OE cost ``J = ½‖y−F‖²_{Sε⁻¹} + ½‖x−x_a‖²_{Sa⁻¹}`` at the
     initial guess and each accepted iterate (monotone non-increasing).
     """
+    import time as _time
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
     y = np.asarray(y, float)
     m = max(len(y), 1)
     LM_MIN, LM_MAX, MAX_BACKTRACK = 1e-8, 1e8, 10
+    _t0 = _time.time()
+
+    def _log(msg):                                            # timestamped progress (verbose)
+        if verbose:
+            print(f"      [gn +{_time.time()-_t0:6.0f}s] {msg}", flush=True)
 
     def _cost(xv, Fxv):
         r = y - np.asarray(Fxv, float)
@@ -962,17 +989,22 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         return J, dchi2, r
 
     x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
-    Fx = np.asarray(fwd.forward(x, s_nodes), float)
-    K = np.asarray(fwd.jacobian(x, s_nodes), float)           # (m, p)
+    _tf = _time.time(); Fx = np.asarray(fwd.forward(x, s_nodes), float)
+    _t_fwd0 = _time.time() - _tf
+    _tj = _time.time(); K = np.asarray(fwd.jacobian(x, s_nodes), float)   # (m, p)
+    _t_jac0 = _time.time() - _tj
     J, dchi2, r = _cost(x, Fx)
     phi = np.sqrt(dchi2)
     history = [J]
     converged = False
     lm_cur = max(float(lm), LM_MIN)
-    for _ in range(n_iter):
+    _log(f"init: p={K.shape[1]} J={J:.4g} chi2_red={dchi2/m:.3g} "
+         f"(forward {_t_fwd0:.1f}s, jacobian {_t_jac0:.1f}s [compile-incl])")
+    for _it in range(n_iter):
         lhs_base = K.T @ Se_inv @ K
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
         accepted = False
+        _tb = _time.time()
         for _bt in range(MAX_BACKTRACK):                      # damp until the step lowers J
             dx = np.linalg.solve(lhs_base + (1.0 + lm_cur) * Sa_inv, rhs)
             x_new = fwd._clamp_state(x + dx, s_nodes)          # projected step
@@ -983,15 +1015,21 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
                 break
             lm_cur = min(lm_cur * 4.0, LM_MAX)                # reject → more damping
         if not accepted:                                      # can't descend → at a min
+            _log(f"iter {_it}: no-descent after {MAX_BACKTRACK} backtracks "
+                 f"({_time.time()-_tb:.1f}s) → converged")
             converged = True
             break
         phi_new = np.sqrt(dchi2_new)
         rel = (phi - phi_new) / max(phi, 1e-300)              # ≥0 (monotone by construction)
         step_small = np.linalg.norm(dx) < xtol * (np.linalg.norm(x_new) + xtol)
         x, Fx, r, J, dchi2, phi = x_new, Fx_new, r_new, J_new, dchi2_new, phi_new
+        _tj = _time.time(); _t_bt = _tj - _tb       # backtrack (forward evals) wall time
         K = np.asarray(fwd.jacobian(x, s_nodes), float)
+        _t_jac = _time.time() - _tj                 # jacobian wall time
         history.append(J)
         lm_cur = max(lm_cur * 0.5, LM_MIN)                    # accept → ease toward pure GN
+        _log(f"iter {_it}: J={J:.4g} chi2_red={dchi2/m:.3g} rel={rel:.2e} "
+             f"({_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
         if cost_rtol is not None and rel < cost_rtol:
             converged = True
             break
@@ -1012,7 +1050,7 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     cost_rtol=None, chi2_floor=None,
                     max_n_outer=2, prior_builder=None, filter_threshold=0.5,
-                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True):
+                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True, verbose=False):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
     The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
@@ -1054,7 +1092,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
 
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol,
-                                     cost_rtol=cost_rtol, chi2_floor=chi2_floor)
+                                     cost_rtol=cost_rtol, chi2_floor=chi2_floor,
+                                     verbose=verbose)
     full_hist = list(hist)
 
     def _chi2_red():
@@ -1121,7 +1160,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
         s_nodes = new_s
         x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                          n_iter=n_iter, lm=lm, xtol=xtol,
-                                         cost_rtol=cost_rtol, chi2_floor=chi2_floor)
+                                         cost_rtol=cost_rtol, chi2_floor=chi2_floor,
+                                         verbose=verbose)
         full_hist += hist
         n_outer += 1
 

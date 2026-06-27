@@ -82,6 +82,7 @@ DATA = os.environ.get('VOCALS_DATA',
 NQ = int(os.environ.get('ENSEMBLE_NQUAD', '48'))
 OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band.npz'))
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))             # BP crit-1 (tuned); chi2_floor INACTIVE
+VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')  # per-stage + per-GN-iter timing logs
 N_PHYS = NQ // 2
 mu0, NLeg_all, v_eff = 0.9, 128, 0.10
 # 10-band instrument superset (ascending λ) — the §15 superset, verbatim.
@@ -102,6 +103,7 @@ def build_forward_and_obs(truth, clim, *, optics_cache=OPTICS_CACHE):
     azimuthal mode count and the QRCP retrieval grid (all at the climatology first
     guess). Returns ``(fwd, y, Se, s_grid, pb_phys, pb_log)`` — the pieces SHARED by
     both prior configs (one compiled forward)."""
+    _t = time.time()
     re_table = ot.build_or_load_table(BANDS, 2.0, 25.0, 32, v_eff,
                                       cache_path=optics_cache, NLeg=NLeg_all, n_radii=600)
     opt = [ot.select_channel(re_table, i) for i in range(NB)]
@@ -111,10 +113,15 @@ def build_forward_and_obs(truth, clim, *, optics_cache=OPTICS_CACHE):
         view_mu=VIEW_MU, view_phi=VIEW_PHI, BDRF_bands=[[ALBEDO]] * NB,
         NLeg_all=NLeg_all, state_space='log', jac_mode='fwd',
         retrieve_tau_bot=True, retrieve_r_base=True)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] optics table + RetrievalForward ready", flush=True)
 
     # NOISELESS OSSE: y = F(x_truth); Se = assumed weighting only.
+    _t = time.time()
     y = roe.osse_observation(fwd, truth.tau, truth.r_e)
     Se = roe.make_Se(fwd, y, NOISE)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] osse_observation (1st forward, compile-incl)", flush=True)
 
     # PHYSICAL prior builder drives the noise-aware grid filter (dimensionally correct,
     # and ≈ invariant to the log reparam since diag(r)·diag(σ_log) ≈ diag(σ_phys));
@@ -123,11 +130,18 @@ def build_forward_and_obs(truth, clim, *, optics_cache=OPTICS_CACHE):
     pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
 
     # mode count + QRCP grid at the (encoded) climatology first guess
+    _t = time.time()
     x_ref = fwd._encode_state(roe.make_climatology_prior(S_REF_MODES, clim)[0])
     roe.select_num_modes(fwd, x_ref, S_REF_MODES, Se)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] select_num_modes -> K={fwd.K_list}", flush=True)
+    _t = time.time()
     x_fg = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
     s_grid, _, _ = roe.select_retrieval_grid(
         fwd, x_fg, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] select_retrieval_grid "
+              f"(grid-selection Jacobian) -> k={len(s_grid)}", flush=True)
     return fwd, y, Se, s_grid, pb_phys, pb_log
 
 
@@ -138,12 +152,19 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
     differ between configs are x_a / x0 / Sa; everything else (fwd, y, Se, s_grid) is
     shared. No grid move (max_n_outer=1) — only a structural-misfit warning."""
     k = len(s_grid)
+    if VERBOSE:
+        print(f"  [{index}] config {config}: GN retrieve on k={k} grid ...", flush=True)
+    _t = time.time()
     with warnings.catch_warnings(record=True) as wlog:
         warnings.simplefilter("always")
         res = roe.gauss_newton_oe(
             fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
             cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-            max_n_outer=1, prior_builder=pb_log, remesh_if_chi2_red_gt=2.0, warn=True)
+            max_n_outer=1, prior_builder=pb_log, remesh_if_chi2_red_gt=2.0, warn=True,
+            verbose=VERBOSE)
+    if VERBOSE:
+        print(f"  [{index}] config {config}: GN done in {time.time()-_t:.0f}s "
+              f"({len(res.cost_history)} accepted iters, converged={res.converged})", flush=True)
     structural_misfit = any(isinstance(w.message, roe.RemeshWarning) for w in wlog)
 
     post = roe.posterior_diagnostics(res.K, res.Sa, res.Se)         # log-space Ŝ/A/DOFS/SIC

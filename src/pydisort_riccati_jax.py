@@ -512,7 +512,7 @@ def riccati_setup(
 # ======================================================================
 
 def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
-                   *, num_modes, return_grid):
+                   *, num_modes, return_grid, Leg_coeffs_tms_func=None):
     """Run the Fourier-mode solve for ``num_modes`` modes (the shared core).
 
     Both the one-shot ``pydisort_riccati_jax`` (``return_grid=True``) and the
@@ -537,6 +537,12 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
     N = setup.N
     NLeg = setup.NLeg
     K = num_modes
+    # (B) The discrete-ordinate solve below uses ``Leg_coeffs_func`` (only the first
+    # NLeg+1 moments), while the NT/TMS correction uses ``Leg_coeffs_tms_func`` (the
+    # full NLeg_all moments). Callers split them so the ODE hot loop doesn't interpolate
+    # the 1024-moment phase function it never uses; default keeps the legacy single-leg.
+    if Leg_coeffs_tms_func is None:
+        Leg_coeffs_tms_func = Leg_coeffs_func
 
     # Delta-M scaled cumulative depth tau*(tau) (azimuth-mode independent: built
     # once, before the mode map). tau_bot may be traced.
@@ -609,7 +615,7 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
     tms_data = None
     if setup.NT_cor:
         tms_data = _precompute_tms(
-            omega_func, Leg_coeffs_func, tau_star_eval, tau_bot,
+            omega_func, Leg_coeffs_tms_func, tau_star_eval, tau_bot,   # (B) full NLeg_all moments
             setup.mu0, setup.phi0, setup.I0_orig_div_4pi, NLeg, setup.NLeg_all,
             setup.NT_quad_order,
         )
@@ -617,7 +623,8 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
     return SolveResult(u_modes=u_modes_arr, tms_data=tms_data, tau_grid=tau_grid_m0)
 
 
-def riccati_solve(setup, omega_func, Leg_coeffs_func, tau_bot, num_modes=None):
+def riccati_solve(setup, omega_func, Leg_coeffs_func, tau_bot, num_modes=None,
+                  Leg_coeffs_tms_func=None):
     """Traceable, jit-able Riccati solve (the retrieval forward model).
 
     A pure function of the traced inputs (``tau_bot`` and the ``omega_func`` /
@@ -655,6 +662,7 @@ def riccati_solve(setup, omega_func, Leg_coeffs_func, tau_bot, num_modes=None):
     return _fourier_solve(
         setup, omega_func, Leg_coeffs_func, tau_bot,
         num_modes=num_modes, return_grid=False,
+        Leg_coeffs_tms_func=Leg_coeffs_tms_func,
     )
 
 
