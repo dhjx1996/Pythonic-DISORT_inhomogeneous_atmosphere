@@ -19,10 +19,11 @@ Prepared 2026-06-28.*
    of the profiles, is why the first rad run stalled. Fixed with an atomic disjoint per-node
    core-slot claim. Commits **`8fc43cf`** + **`a5ab9a7`** (pushed to `main`). Verified live:
    **115 tasks / 39 nodes, zero slot collisions.**
-3. **Rad batch — 124/125 done.** First run (8610566) got 10/125 then stalled; cancelled +
-   resubmitted the 115 missing indices (8612305) with the fix → 124/125 complete. **One
-   straggler remains: index 20** (the thickest RF03 profile, ~7.5 h and counting).
-   Consolidation/bundle is deferred until it lands (or is re-run).
+3. **Rad batch — 124/125, consolidated + bundled.** First run (8610566) got 10/125 then
+   stalled; cancelled + resubmitted the 115 missing indices (8612305) with the fix → 124/125.
+   **Index 20 TIMED OUT at the 8 h wall** (thickest RF03 profile); per the primary it is being
+   sourced elsewhere, so **124 is final**. Consolidated → `osse_radiances.npz` (sig
+   `543eee296e1022f7`) and bundled to `osse_radiances_bundle.zip` (582K).
 
 ---
 
@@ -105,19 +106,23 @@ batch then completed 124/125 (vs 10/125 thrashing) — the fix is confirmed in p
 | Original job | 8610566 — 10/125, then thrash-stalled; **cancelled** |
 | Resubmit | 8612305 — 115 missing indices, with the affinity fix |
 | Completed | **124 / 125** productive npz (idx 0 = RF01 τ≈1585 auto-skip, JSON present) |
-| Outstanding | **index 20** (RF03) still RUNNING on g066 |
+| Index 20 | **TIMED OUT** at the 8 h wall on g066 (thickest RF03); sourced elsewhere by primary → **124 final** |
 | Signature | every npz carries `543eee296e1022f7` (asserted at consolidate) |
 | Per-task wall | completed tasks ranged **28 min – 4 h 11 m** |
+| Consolidated | `docs/cached_results/osse_radiances.npz` — 124 profiles, sig `543eee296e1022f7`, skipped [] (idx 0 has no npz) |
+| Bundle | `cloud_profile_retrieval/osse_radiances_bundle.zip` (582K) — npz + JSON sidecars + slurm logs |
 
-**The straggler, index 20.** Running ~7.5 h with no output past the affinity line — i.e. still
-in the long compile/integration of the thickest/jaggedest RF03 column (most native nodes →
-biggest XLA compile + most ODE steps). It is **not** thrashing (its node drained; it owns its
-cores). It has <40 min of the 8 h wall left, so it will either just finish or TIMEOUT. Per the
-standing rule I have **not** cancelled it. If it TIMEOUTs I will resubmit **index 20 alone**
-with a longer wall (e.g. 16 h) — a single thick forward is the one case the 8 h ceiling can
-miss. **Consolidate + signature-check + bundle are deferred until 125/125.**
+**The straggler, index 20 — resolved (TIMEOUT).** It ran the full **8 h wall** with no output
+past the affinity line: the thickest/jaggedest RF03 column (most native nodes → biggest XLA
+compile + most ODE steps). It was **not** thrashing (its node had drained; it owned its cores)
+— it is simply the one profile a single 8 h forward can't clear. Per the primary's call we do
+**not** resubmit it (index 20 will be sourced elsewhere); 124 is final. Consolidate ran on a
+compute node → `osse_radiances.npz` (124 profiles, sig `543eee296e1022f7`); bundle zipped to
+`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K).
 
 10 valid npz preserved from the first run: indices 1, 2, 3, 11, 12, 18, 19, 53, 64, 110.
+(If index 20 is regenerated later, drop its `osse_20.npz` into `_rad_parts/` and re-run
+`consolidate` — it merges whatever sidecars are present, so 124 → 125 is a one-command top-up.)
 
 ---
 
@@ -127,8 +132,9 @@ miss. **Consolidate + signature-check + bundle are deferred until 125/125.**
   CPU `lax.scan` for the CPU batches). Memory and correctness are non-issues.
 - **Affinity fix:** please review `8fc43cf`+`a5ab9a7`; it's the difference between 10/125 and
   124/125. Roll it into the IC and fr batch submissions (same `--cpus-per-task` packing).
-- **Index 20:** the lone open item on this batch; being monitored to completion/TIMEOUT.
+- **Index 20:** TIMED OUT; per your call it's sourced elsewhere, so the batch is closed at 124.
 
-*Next: monitor index 20; on success run `consolidate` → assert `543eee296e1022f7` → zip to
-`cloud_profile_retrieval/osse_radiances_bundle.zip`; on TIMEOUT resubmit index 20 with a
-longer wall. Will report when the batch is fully closed.*
+*Rad batch 1 of 3 is **closed** — 124/125 consolidated (sig `543eee296e1022f7`) and bundled to
+`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K). GPU **probe #2** (bands×modes vmap,
+job 8614739) is queued for an A100; its verdict (does batching the 10 bands on top of the 24
+modes add value, or does the adaptive lock-step eat it?) will be appended here when it lands.*
