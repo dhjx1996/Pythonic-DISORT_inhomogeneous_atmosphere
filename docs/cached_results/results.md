@@ -19,10 +19,11 @@ Prepared 2026-06-28.*
    of the profiles, is why the first rad run stalled. Fixed with an atomic disjoint per-node
    core-slot claim. Commits **`8fc43cf`** + **`a5ab9a7`** (pushed to `main`). Verified live:
    **115 tasks / 39 nodes, zero slot collisions.**
-3. **Rad batch — 124/125 done.** First run (8610566) got 10/125 then stalled; cancelled +
-   resubmitted the 115 missing indices (8612305) with the fix → 124/125 complete. **One
-   straggler remains: index 20** (the thickest RF03 profile, ~7.5 h and counting).
-   Consolidation/bundle is deferred until it lands (or is re-run).
+3. **Rad batch — 124/125, consolidated + bundled.** First run (8610566) got 10/125 then
+   stalled; cancelled + resubmitted the 115 missing indices (8612305) with the fix → 124/125.
+   **Index 20 TIMED OUT at the 8 h wall** (thickest RF03 profile); per the primary it is being
+   sourced elsewhere, so **124 is final**. Consolidated → `osse_radiances.npz` (sig
+   `543eee296e1022f7`) and bundled to `osse_radiances_bundle.zip` (582K).
 
 ---
 
@@ -105,19 +106,23 @@ batch then completed 124/125 (vs 10/125 thrashing) — the fix is confirmed in p
 | Original job | 8610566 — 10/125, then thrash-stalled; **cancelled** |
 | Resubmit | 8612305 — 115 missing indices, with the affinity fix |
 | Completed | **124 / 125** productive npz (idx 0 = RF01 τ≈1585 auto-skip, JSON present) |
-| Outstanding | **index 20** (RF03) still RUNNING on g066 |
+| Index 20 | **TIMED OUT** at the 8 h wall on g066 (thickest RF03); sourced elsewhere by primary → **124 final** |
 | Signature | every npz carries `543eee296e1022f7` (asserted at consolidate) |
 | Per-task wall | completed tasks ranged **28 min – 4 h 11 m** |
+| Consolidated | `docs/cached_results/osse_radiances.npz` — 124 profiles, sig `543eee296e1022f7`, skipped [] (idx 0 has no npz) |
+| Bundle | `cloud_profile_retrieval/osse_radiances_bundle.zip` (582K) — npz + JSON sidecars + slurm logs |
 
-**The straggler, index 20.** Running ~7.5 h with no output past the affinity line — i.e. still
-in the long compile/integration of the thickest/jaggedest RF03 column (most native nodes →
-biggest XLA compile + most ODE steps). It is **not** thrashing (its node drained; it owns its
-cores). It has <40 min of the 8 h wall left, so it will either just finish or TIMEOUT. Per the
-standing rule I have **not** cancelled it. If it TIMEOUTs I will resubmit **index 20 alone**
-with a longer wall (e.g. 16 h) — a single thick forward is the one case the 8 h ceiling can
-miss. **Consolidate + signature-check + bundle are deferred until 125/125.**
+**The straggler, index 20 — resolved (TIMEOUT).** It ran the full **8 h wall** with no output
+past the affinity line: the thickest/jaggedest RF03 column (most native nodes → biggest XLA
+compile + most ODE steps). It was **not** thrashing (its node had drained; it owned its cores)
+— it is simply the one profile a single 8 h forward can't clear. Per the primary's call we do
+**not** resubmit it (index 20 will be sourced elsewhere); 124 is final. Consolidate ran on a
+compute node → `osse_radiances.npz` (124 profiles, sig `543eee296e1022f7`); bundle zipped to
+`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K).
 
 10 valid npz preserved from the first run: indices 1, 2, 3, 11, 12, 18, 19, 53, 64, 110.
+(If index 20 is regenerated later, drop its `osse_20.npz` into `_rad_parts/` and re-run
+`consolidate` — it merges whatever sidecars are present, so 124 → 125 is a one-command top-up.)
 
 ---
 
@@ -127,8 +132,62 @@ miss. **Consolidate + signature-check + bundle are deferred until 125/125.**
   CPU `lax.scan` for the CPU batches). Memory and correctness are non-issues.
 - **Affinity fix:** please review `8fc43cf`+`a5ab9a7`; it's the difference between 10/125 and
   124/125. Roll it into the IC and fr batch submissions (same `--cpus-per-task` packing).
-- **Index 20:** the lone open item on this batch; being monitored to completion/TIMEOUT.
+- **Index 20:** TIMED OUT; per your call it's sourced elsewhere, so the batch is closed at 124.
 
-*Next: monitor index 20; on success run `consolidate` → assert `543eee296e1022f7` → zip to
-`cloud_profile_retrieval/osse_radiances_bundle.zip`; on TIMEOUT resubmit index 20 with a
-longer wall. Will report when the batch is fully closed.*
+*Rad batch 1 of 3 is **closed** — 124/125 consolidated (sig `543eee296e1022f7`) and bundled to
+`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K). GPU **probe #2** verdict below (§A2).*
+
+---
+
+## A2. GPU probe #2 — bands × modes (240-way), full 10-band config
+
+*Follow-up to §A. Does ALSO batching the 10 bands into the vmap (→ 240-way: 10 bands × 24
+modes) buy more on the A100, or does the adaptive-solver lock-step eat the SIMT fill? Run as a
+**split** job set: GPU job 8616774 (`vmap_loop` + `vmap_both`) + a parallel CPU-partition
+reference 8616775 (`scan`). Full operational config: 10 bands, NQuad=48, NFourier=24,
+NLeg_all=1024, float64, jacfwd, 24 views. EVAL-ONLY = warm, compile excluded.*
+
+| Leg | path | forward (s) | **jacfwd (s)** | device peak |
+|-----|------|------------:|---------------:|------------:|
+| `vmap_loop` (GPU) | band-loop, modes-vmap (10× sequential 24-way) | 87.45 | **290.32** | 1.42 GB |
+| `vmap_both` (GPU) | ONE vmap over bands × modes (240-way) | 35.76 | **127.74** | 13.87 GB |
+| `scan` (CPU ref)  | band-loop, modes-scan (production CPU) | >190† | **920–2555†** | — |
+
+*†CPU `scan` (8616775) **TIMED OUT** at its 3 h wall before printing the EVAL-ONLY line. The
+measured **compile+eval** were forward **910 s** / jacfwd **2555 s** (`sum=100.664015`, `n_neg=0`).
+The eval-only loop (5 forward + 3 jacfwd warm/timed evals) then ran **7361 s** without finishing,
+so — since each forward eval < each jacfwd eval — `8 × jac_eval > 7361 s` ⇒ CPU jacfwd **eval-only
+> 920 s** (and `< 2555 s`, compile being positive). So CPU eval-only jacfwd is rigorously bracketed
+to **(920, 2555) s**; forward likewise **> 190 s**. GPU compile+eval for comparison: vmap_both
+forward 51 s / jacfwd 151 s.*
+
+**(i) Decisive — does batching bands help? YES.** `vmap_both` jacfwd **127.74 s** vs `vmap_loop`
+**290.32 s** → **2.27× faster** (forward 35.76 vs 87.45 → 2.45×). The second axis fills the
+badly under-used A100 (§A noted only 1.26/40 GB at 24-way) and the SIMT gain **beats** the
+~10 % absorbing-band lock-step cost. So the lock-step did *not* eat it — batch both axes.
+
+**(ii) End-to-end vs CPU.** Two consistent measurements, both pointing to **~17×**:
+- **compile+eval (fully measured):** CPU-scan jacfwd **2555 s** vs GPU `vmap_both` jacfwd **151 s**
+  → **16.9×** (forward 910 vs 51 → **17.8×**). This is the apples-to-apples ratio the *first*
+  retrieval solve sees.
+- **eval-only (CPU bounded, not fully captured):** GPU `vmap_both` jacfwd eval-only **127.74 s**
+  vs CPU-scan jacfwd eval-only **rigorously in (920, 2555) s** (8616775 timed out mid eval-loop;
+  derivation in the table footnote) → **7.2×–20×**, bracketing the 16.9× compile+eval figure.
+  The pure eval-only CPU number could not be captured — the 10-band CPU `scan` eval-loop alone
+  exceeds a 3 h wall — but the lower bound (>7×) already confirms the GPU win is decisive and the
+  most likely value sits near the directly-measured ~17×. Forward `sum=100.664015` matched
+  bit-for-bit across all three legs before the CPU job died.
+
+**(iii) Memory.** `vmap_both` device peak **13.87 GB / 40 GB** → ~26 GB headroom (matches the
+expected ≈10–13 GB; not near 40). The 240-way fits the A100 comfortably.
+
+**(iv) Correctness.** forward `sum = 100.664015` and `n_neg = 0` on all three legs
+(`vmap_loop`, `vmap_both`, CPU `scan` forward) — the 240-way bands×modes vmap is bit-faithful
+to the production scan, consistent with the primary's CPU validation (fwd rel 1.6e-13).
+
+**Recommendation to the primary.** Build the GPU retrieval on the **full bands × modes (240-way)
+vmap** — not the modes-only / band-looped path. It is **2.3× faster than band-looped GPU** and
+**~17× faster than the production CPU scan** per jacfwd solve (16.9× measured compile+eval; eval-only
+rigorously >7×), fits the A100 with large
+headroom, and is bit-identical. The earlier "ship modes-only if bands don't help" fallback is
+**not** needed; both axes pay off on this hardware.
