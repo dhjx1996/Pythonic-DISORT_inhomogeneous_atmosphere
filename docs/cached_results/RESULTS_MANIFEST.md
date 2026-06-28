@@ -5,28 +5,30 @@ canonical or superseded." Rule: **rather re-run than mix corrupted results.** Da
 are delivered by zip/bundle and are NOT committed; this manifest (committed) tracks them. Updated
 2026-06-28.*
 
-## Signature scheme (the anti-mixing gate)
+## Signature scheme — observing-system GATE + tol/precision TAGS (corrected 2026-06-28)
 
-`osse_config.signature()` fingerprints the observing system + forward settings; `load_radiance`
-asserts a match before use. **`tol` is now IN the signature** (2026-06-28) so radiances at different
-ODE tolerances can never share a hash:
+Two distinct concerns, deliberately separated (an earlier attempt folded `tol` into the gate and
+broke the tiered load — the cache is at truth-tol while the retrieval forward runs at operational
+tol, so they legitimately differ):
 
-| setting | signature hash | notes |
-|---|---|---|
-| f64, tol=1e-3 | `f37f3314846eb928` | current scheme |
-| f64, tol=1e-4 | `4edc7c26ebebc6a9` | Part-B canary radiances |
-| f64, tol=1e-5 | *(compute on use)* | gold / truth tier |
-| f64, tol=1e-3, **pre-tol-scheme** | `543eee296e1022f7` | the rad-batch cache (tol was NOT yet in the payload) |
+- **`osse_config.signature()` = the GATE** — fingerprints what `y` *means* (bands, views, geometry,
+  NFourier, optics, delta_M, NT_cor). Identical across accuracy tiers. The standard config hashes to
+  **`543eee296e1022f7`** (tol/precision are NOT in it). `load_radiance` asserts this matches.
+- **`tol` (and precision) = accuracy TAGS** — how accurately `y` was computed. Stored ON the cache
+  (`generate_osse_radiances` writes `tol`; `consolidate` asserts **one tol per cache** + records it;
+  `load_radiance` returns it). The retrieval worker verifies the cache's tol == its expected
+  `RADIANCE_TOL` (truth tol) and refuses a wrong-accuracy cache — anti-mixing preserved — while
+  running its forward at its OWN (operational) `SOLVER_TOL`.
 
-The `543…` cache therefore no longer validates under the current scheme — **intended**: it is the
-provisional under-converged batch, to be replaced by the tol\* re-gen.
+So a tol=1e-4 and a tol=1e-3 cache share the gate hash but are distinguished by the tol tag; they
+can never be consolidated together or loaded as the wrong accuracy.
 
 ## Radiance caches (truth tier — `y = F(truth)`)
 
 | file | source | n | precision/tol | signature | status |
 |---|---|---|---|---|---|
 | `rad_bundle/osse_radiances.npz` | HPC (job 8612305) | 124 | f64 / tol=1e-3 | `543…` | superseded |
-| `rad_bundle/osse_radiances_125.npz` | HPC 124 + **idx-20 jovyan** | 125 | f64 / tol=1e-3 | `543…` | **PROVISIONAL** — thick profiles ~1–2 % under-converged; orphaned by the tol-in-signature change; use only for tol=1e-3 work |
+| `rad_bundle/osse_radiances_125.npz` | HPC 124 + **idx-20 jovyan** | 125 | f64 / tol=1e-3 (UN-tagged) | `543…` | **PROVISIONAL** — thick profiles ~1–2 % under-converged; loadable (gate matches `543…`) but tol-tag absent (pre-tag; known tol=1e-3). Superseded by the tol\* re-gen. |
 | *(future)* tol\* re-gen | HPC GPU (dual pipeline) | 125 | f64 / **tol\*≈3e-5** | new (tol in payload) | **CANONICAL once produced** |
 
 - idx-20 (RF03, τ=1.5, 21 nodes) was computed on jovyan; cross-verified class (it is in the
@@ -62,11 +64,13 @@ adaptive-step-sequence divergence on hard profiles (the tol issue, not a bug).
 - `osse_config.build_forward` + `generate_osse_radiances` now take `tol` (via `SOLVER_TOL`) +
   `mode_map` (via `MODE_MAP`); tol is in `signature()`.
 
-## OPEN flags (must clear before batch-3)
+## Status / open flags
 
-- **`retrieval_worker.py` is STALE**: `NLeg_all=128` (pre-TMS-fix) + wrong default table → would
-  corrupt short bands. MUST refactor onto `osse_config` (task #31) before any real retrieval batch.
-  (`retrieval_precision_probe.py` is osse_config-based and unaffected.)
+- **`retrieval_worker.py` DE-STALED (2026-06-28, task #31 retrieval half)**: now osse_config-based —
+  NLeg_all=1024, the irregular 24-view fan, and it **loads the radiance cache** (truth) instead of
+  regenerating, inverting at operational `SOLVER_TOL`/precision/`MODE_MAP`. The old NLeg_all=128 is
+  gone. Probe #3 *is* this worker run with knobs, so it validates it. *(ic_worker_* still pending the
+  same refactor.)*
 - **GPU pool unverified beyond A100**: V100S (likely OK), RTX 8000 / A40 (crippled FP64, diffrax
   compatibility doubtful) — probe #3 Part B settles it.
 - **Accuracy tiers**: radiances + IC at high accuracy (f64, tol\*); retrievals at operational

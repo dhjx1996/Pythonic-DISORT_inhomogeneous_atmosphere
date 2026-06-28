@@ -117,8 +117,14 @@ def signature():
         retrieval_view_idx=[int(i) for i in RETRIEVAL_VIEW_IDX],   # the 24 operational columns
         view_phi=round(float(VIEW_PHI_FULL[0]), 6),                # single-sided principal plane
         nfourier=[int(v) for v in NFOURIER],
-        delta_M=True, NT_cor=True, x64=True, tol=SOLVER_TOL,
+        delta_M=True, NT_cor=True, x64=True,
     )
+    # NB: tol / operational precision are deliberately NOT in this gate. The gate
+    # fingerprints what y *means* (the observing system), which is identical across
+    # accuracy tiers; tol/precision are how *accurately* y was computed and legitimately
+    # differ between the truth cache (tol*) and the operational retrieval forward. tol is
+    # carried as an accuracy TAG on the cache instead (load_radiance returns it; consolidate
+    # asserts one tol per cache) — so it cannot be mixed, without breaking the tiered load.
     h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return payload, h
 
@@ -176,5 +182,10 @@ def load_radiance(cache_path, index):
             f"!= config={want}. The cache was generated with a different observing "
             f"system / NFourier; regenerate with generate_osse_radiances.py.")
     idx = int(index)
-    return {k: d[f"{idx}_{k}"] for k in
-            ("y", "tau", "re", "r_base", "tau_bot", "lwc", "altitude", "flight")}
+    rec = {k: d[f"{idx}_{k}"] for k in
+           ("y", "tau", "re", "r_base", "tau_bot", "lwc", "altitude", "flight")}
+    # accuracy tag: the tol this TRUTH cache was generated at (None for pre-tag caches,
+    # e.g. the 543… tol=1e-3 batch). The caller verifies it is the expected truth tol;
+    # the operational retrieval forward runs at its OWN (looser) tol independently.
+    rec["tol"] = float(d["tol"]) if "tol" in d.files and d["tol"].item() is not None else None
+    return rec

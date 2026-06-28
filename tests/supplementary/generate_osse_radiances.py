@@ -74,7 +74,7 @@ def generate_one(index, out_dir):
         dt = time.time() - t0
         sidecar = dict(
             index=int(index), flight=str(flight), signature_hash=sig_hash,
-            signature_json=json.dumps(sig_payload),
+            signature_json=json.dumps(sig_payload), tol=float(oc.SOLVER_TOL),
             y=np.asarray(y, float),
             tau=np.asarray(truth.tau, float), re=np.asarray(truth.r_e, float),
             r_base=float(truth.r_base), tau_bot=float(truth.tau_bot),
@@ -96,7 +96,7 @@ def consolidate(out_dir, out_npz):
     reads this). Asserts every sidecar shares the current observing-system signature."""
     out_dir = Path(out_dir)
     _, want = oc.signature()
-    merged, present, skipped = {"signature_hash": want}, [], []
+    merged, present, skipped, tols = {"signature_hash": want}, [], [], set()
     for f in sorted(out_dir.glob("osse_*.npz")):
         d = np.load(f, allow_pickle=True)
         idx = int(d["index"])
@@ -105,12 +105,16 @@ def consolidate(out_dir, out_npz):
         got = str(d["signature_hash"])
         if got != want:
             raise ValueError(f"{f.name}: signature {got} != current {want}; regenerate.")
+        tols.add(round(float(d["tol"]), 12) if "tol" in d else None)  # accuracy tag
         for k in FIELDS:
             merged[f"{idx}_{k}"] = d[k]
         present.append(idx)
+    if len(tols) > 1:                                   # never mix tolerances in one cache
+        raise ValueError(f"sidecars span multiple tol {sorted(tols)}; one tol per cache.")
+    merged["tol"] = tols.pop() if tols else None        # the cache's accuracy tag
     np.savez(Path(out_npz), **merged)
-    print(f"consolidated {len(present)} profiles -> {out_npz} (sig {want}); "
-          f"skipped {sorted(skipped)}", flush=True)
+    print(f"consolidated {len(present)} profiles -> {out_npz} (sig {want}, "
+          f"tol={merged['tol']}); skipped {sorted(skipped)}", flush=True)
 
 
 def main():

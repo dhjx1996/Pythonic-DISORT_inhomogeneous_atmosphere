@@ -60,68 +60,82 @@ import numpy as np
 _here = Path(__file__).resolve().parent
 _src = _here.parents[1] / "src"
 sys.path.insert(0, str(_src))
+sys.path.insert(0, str(_here))
 import vocals_io as vio                                              # noqa: E402
 import retrieval_oe as roe                                          # noqa: E402
 import noise_model as nm                                            # noqa: E402
-import optics_table as ot                                          # noqa: E402
+import osse_config as oc                                            # noqa: E402
 import jax.numpy as _jnp                                            # noqa: E402
 
-# float64 is REQUIRED (set PYDISORT_RICCATI_JAX_X64=1): at float32 the dense in-situ
-# truth forward and steep GN iterates hit the adaptive solver's max_steps on the
-# NQuad=48 optics (DESIGN §15). Warn loudly rather than fail silently into a SKIP.
-if _jnp.result_type(float) != _jnp.float64:
-    print("WARNING: running in float32 — set PYDISORT_RICCATI_JAX_X64=1; the NQuad=48 "
-          "retrieval is expected to hit max_steps at float32 (DESIGN §15).", flush=True)
+# Accuracy tiers: the radiance CACHE (truth) is high-accuracy (float64, tol*); the
+# RETRIEVAL here may run at OPERATIONAL precision/tol (PYDISORT_RICCATI_JAX_X64=0/1,
+# SOLVER_TOL) — a cheaper, KNOWN, accepted bias (the operationally-realistic setup).
+# float32 viability is being measured (probe #3): higher error is fine, de-stabilization
+# (NaN / max_steps / non-convergence) is not. The truth tier always runs float64/tol*.
+_PREC = "float64" if _jnp.result_type(float) == _jnp.float64 else "float32"
 
 # ---------------------------------------------------------------------------
-# Fixed observing system / numerics (identical to the §15 IC "fullview" system)
+# Observing system / numerics — SINGLE SOURCE OF TRUTH = osse_config (the radiance
+# cache, the IC run, and this worker MUST share it). This replaces the old standalone
+# block whose NLeg_all=128 was the pre-TMS-fix value (garbage short bands).
 # ---------------------------------------------------------------------------
 DATA = os.environ.get('VOCALS_DATA',
                       '/home/jovyan/cloud_profile_retrieval/'
                       'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-NQ = int(os.environ.get('ENSEMBLE_NQUAD', '48'))
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band.npz'))
-COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))             # BP crit-1 (tuned); chi2_floor INACTIVE
-VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')  # per-stage + per-GN-iter timing logs
-N_PHYS = NQ // 2
-mu0, NLeg_all, v_eff = 0.9, 128, 0.10
-# 10-band instrument superset (ascending λ) — the §15 superset, verbatim.
-BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
-NB = len(BANDS)
-ALBEDO = 0.06                                                     # Lambertian sea-surface (BDRF)
+OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1024_re20.npz'))
+RADIANCE_CACHE = Path(os.environ.get('RADIANCE_CACHE', _here.parents[2]
+                                     / 'rad_bundle' / 'osse_radiances_125.npz'))
+SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
+MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
+COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
+VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')
+NQ, N_PHYS, NB = oc.NQUAD, oc.N_PHYS, oc.NB                        # 48, 24, 10
+BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
 NOISE = nm.oci_swir()                                             # OCI 2 % calibration-relative + 1e-3 floor
-# Principal-plane fan: exactly NQuad//2 = 24 views, μ 0.95 → 0.25 (no under-sampling).
-VIEW_MU, VIEW_PHI = np.linspace(0.95, 0.25, N_PHYS), np.full(N_PHYS, pi)
+VIEW_MU, VIEW_PHI = oc.VIEW_MU, oc.VIEW_PHI                        # the irregular 24-view operational fan
 S_REF_MODES = np.linspace(0.0, 1.0, 5)[:-1]                       # coarse grid for mode selection
 S_COARSE = np.linspace(0.0, 1.0, 6)[:-1]                          # first-guess pool grid for QRCP
 S_DENSE = np.linspace(0.0, 1.0, 50)                              # thickness-neutral RMSE / LWP grid
 TAU_BOT_OK = (0.3, 100.0)                                         # degenerate-profile guard
 
 
-def build_forward_and_obs(truth, clim, *, optics_cache=OPTICS_CACHE):
-    """Build the log-space forward, the noiseless observation + Se, select the
-    azimuthal mode count and the QRCP retrieval grid (all at the climatology first
-    guess). Returns ``(fwd, y, Se, s_grid, pb_phys, pb_log)`` — the pieces SHARED by
-    both prior configs (one compiled forward)."""
+def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
+    """Build the log-space OPERATIONAL forward (precision via env, tol=SOLVER_TOL,
+    mode_map=MODE_MAP), LOAD the high-accuracy radiance observation from the cache (the
+    truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
+    QRCP retrieval grid at the climatology first guess. Returns ``(fwd, y, Se, s_grid,
+    pb_phys, pb_log)`` — shared by both prior configs (one compiled forward)."""
     _t = time.time()
-    re_table = ot.build_or_load_table(BANDS, 2.0, 25.0, 32, v_eff,
-                                      cache_path=optics_cache, NLeg=NLeg_all, n_radii=600)
-    opt = [ot.select_channel(re_table, i) for i in range(NB)]
-    fwd = roe.RetrievalForward(
-        opt, NQuad=NQ, mu0=mu0, I0=1.0, phi0=0.0,
-        tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],    # leak-free first-guess anchor
-        view_mu=VIEW_MU, view_phi=VIEW_PHI, BDRF_bands=[[ALBEDO]] * NB,
-        NLeg_all=NLeg_all, state_space='log', jac_mode='fwd',
-        retrieve_tau_bot=True, retrieve_r_base=True)
+    opt = oc.load_optics(optics_cache)                               # canonical NLeg_all=1024 table
+    fwd = oc.build_forward(
+        opt, tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],  # leak-free anchor
+        views="retrieval", state_space="log", jac_mode="fwd",
+        tol=SOLVER_TOL, mode_map=MODE_MAP)
     if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] optics table + RetrievalForward ready", flush=True)
+        print(f"    [build +{time.time()-_t:.0f}s] optics + RetrievalForward "
+              f"({_PREC}, tol={SOLVER_TOL:.0e}, mode_map={MODE_MAP}) ready", flush=True)
 
-    # NOISELESS OSSE: y = F(x_truth); Se = assumed weighting only.
+    # OBSERVATION = the precomputed high-accuracy radiance cache (signature-gated incl.
+    # tol), NOT regenerated at the operational precision. select the 24 retrieval views
+    # from the 32-view superset. Cross-check the cache row is the SAME profile (catches
+    # index/cache misalignment) — rigor over results.
     _t = time.time()
-    y = roe.osse_observation(fwd, truth.tau, truth.r_e)
+    rec = oc.load_radiance(RADIANCE_CACHE, index)
+    if abs(float(rec["tau_bot"]) - float(truth.tau_bot)) > 1e-6:
+        raise ValueError(f"cache/truth mismatch idx {index}: cache tau_bot="
+                         f"{float(rec['tau_bot']):.4f} != VOCALS {float(truth.tau_bot):.4f}")
+    truth_tol = rec.get("tol")                                       # the cache's accuracy tag
+    _exp = os.environ.get("RADIANCE_TOL")                            # expected truth tol (optional gate)
+    if _exp is not None and truth_tol is not None \
+            and abs(truth_tol - float(_exp)) > 1e-12:
+        raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp} "
+                         f"— wrong-accuracy cache; refusing (rigor over results).")
+    y = oc.select_retrieval_views(rec["y"])
     Se = roe.make_Se(fwd, y, NOISE)
     if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] osse_observation (1st forward, compile-incl)", flush=True)
+        print(f"    [build +{time.time()-_t:.0f}s] loaded radiance cache "
+              f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
+              f"retrieval forward tol={SOLVER_TOL:.0e} ({_PREC})", flush=True)
 
     # PHYSICAL prior builder drives the noise-aware grid filter (dimensionally correct,
     # and ≈ invariant to the log reparam since diag(r)·diag(σ_log) ≈ diag(σ_phys));
@@ -142,7 +156,7 @@ def build_forward_and_obs(truth, clim, *, optics_cache=OPTICS_CACHE):
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] select_retrieval_grid "
               f"(grid-selection Jacobian) -> k={len(s_grid)}", flush=True)
-    return fwd, y, Se, s_grid, pb_phys, pb_log
+    return fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol
 
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
@@ -252,7 +266,8 @@ def main():
     flight = getattr(truth, 'flight', '?')
 
     rec = dict(index=index, flight=flight, NQuad=NQ, cost_rtol=COST_RTOL,
-               state_space='log')
+               state_space='log', precision=_PREC, tol=SOLVER_TOL, mode_map=MODE_MAP,
+               radiance_cache=RADIANCE_CACHE.name)
     try:
         if not (TAU_BOT_OK[0] <= float(truth.tau_bot) <= TAU_BOT_OK[1]) \
                 or len(np.asarray(truth.tau)) < 5:
@@ -261,7 +276,8 @@ def main():
         clim = vio.vocals_climatology(profiles, exclude_flight=flight)
 
         t0 = time.time()
-        fwd, y, Se, s_grid, pb_phys, pb_log = build_forward_and_obs(truth, clim)
+        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol = build_forward_and_obs(truth, clim, index)
+        rec["radiance_tol"] = truth_tol
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "
               f"grid({len(s_grid)}) in s={np.round(s_grid,3)}, K={fwd.K_list} "
               f"[{time.time()-t0:.0f}s]", flush=True)
