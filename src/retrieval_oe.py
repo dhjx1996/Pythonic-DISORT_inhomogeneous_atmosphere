@@ -184,6 +184,19 @@ class RetrievalForward:
             for bdrf, nf in zip(BDRF_bands, NF_list)
         ]
         self.K_list = [s.NFourier for s in self.setups]
+        # Can the bands SHARE ONE SETUP inside the vmap? True iff their setups differ
+        # only by optics — i.e. same NFourier ceiling (→ same per-mode tensor shapes)
+        # and identical BDRF/albedo (→ same surface arrays). Then the second SIMT axis
+        # (bands × modes) batches; optics (omega/leg) is the per-band axis vmap maps over.
+        #   NB: this is a STATIC-SHAPE/surface test, NOT about ODE step counts. The
+        #   adaptive Kvaerno5 step count DOES differ per band (absorbing bands take a few
+        #   more: per-band m=0 21/21/22/22/23 over 0.55→3.7 µm) — but a vmapped while_loop
+        #   handles that by lock-stepping to the max and masking converged bands (~10%
+        #   penalty, the same one the A100 modes-vmap 7× already pays). Step-count spread
+        #   does NOT make bands non-shareable; only per-band NFourier/BDRF does (→ loop).
+        self._bands_share_setup = (
+            len(set(NF_list)) == 1
+            and all(list(b) == list(BDRF_bands[0]) for b in BDRF_bands))
         self._fwd_jit = None
         self._jac_jit = None
         self._jac_grid_jit = None
@@ -365,8 +378,38 @@ class RetrievalForward:
         flux_up = 2.0 * jnp.pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, u0)
         return flux_up / (self.mu0 * self.I0)                  # plane albedo (scalar)
 
+    def _forward_raw_vmap_bands(self, s_knots, vals, tau_bot):
+        """GPU second axis: vmap the band solve over the stacked per-band optics.
+
+        Bands differ ONLY in (omega, leg); the setup (quadrature, BDRF, mode
+        tensors) is shared (asserted shareable by ``_bands_share_setup`` + a uniform
+        ``K_list``). vmapping ``_band_reflectance`` over the (B, ...) optics nests the
+        modes-vmap inside (setup.mode_map=='vmap') → one (bands x modes) SIMT batch
+        instead of ``n_bands`` sequential mode-vmaps. Bit-identical to the band loop
+        (validated fwd + jacfwd); a win only on GPU (fills the under-used A100), a
+        bigger no-win batch on CPU — hence guarded by mode_map=='vmap'. Output order
+        matches the loop's concatenate (band-major: band0 all views, band1, ...)."""
+        setup, K, o0 = self.setups[0], self.K_list[0], self.opt_bands[0]
+        re_min, dr, n_re = o0["re_min"], o0["dr"], o0["n_re"]
+        omega_stack = jnp.stack([jnp.asarray(o["omega"]) for o in self.opt_bands])
+        leg_stack = jnp.stack([jnp.asarray(o["leg"]) for o in self.opt_bands])
+
+        def one_band(omega_b, leg_b):
+            opt_b = {"re_min": re_min, "dr": dr, "n_re": n_re,
+                     "omega": omega_b, "leg": leg_b}
+            return self._band_reflectance(opt_b, setup, K, s_knots, vals, tau_bot)
+
+        R = jax.vmap(one_band)(omega_stack, leg_stack)         # (n_bands, n_view)
+        return R.reshape(-1)                                   # (n_bands*n_view,)
+
     def _forward_raw(self, x, s_nodes):
         s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
+        # GPU: batch bands x modes in one vmap when bands are interchangeable. Else
+        # (scan, or non-uniform bands) the Python band loop — which still vmaps the
+        # modes per band when mode_map=='vmap' (graceful, just not bands-batched).
+        if (self.mode_map == "vmap" and self._bands_share_setup
+                and len(set(self.K_list)) == 1):
+            return self._forward_raw_vmap_bands(s_knots, vals, tau_bot)
         return jnp.concatenate([
             self._band_reflectance(opt, setup, K, s_knots, vals, tau_bot)
             for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)

@@ -1,66 +1,82 @@
-# Delegated task — A100 GPU probe: does batching the Fourier modes beat CPU?
+# Delegated task — A100 GPU probe #2: does batching the BANDS (on top of modes) add more?
 
 *(Short hand-off for a Sonnet agent. Read-only experiment — **no commits, no changes to the production JAX
 env**. Report numbers back; the primary decides. 2026-06-28.)*
 
 ## Why
 
-We have a `jax.vmap`-over-Fourier-modes variant of the solver that is **bit-correct and composes with the
-forward-mode adjoint**, but on **CPU it runs ~3× slower** than the production `lax.scan` (XLA-CPU does not
-parallelize a batched implicit ODE solve; jovyan, 8 threads, warm: scan fwd 67 s / jac 206 s vs vmap fwd
-181 s / jac 639 s). Batching independent small solves is a **GPU** pattern (SIMT over the batch), and the
-A100 has real float64 (we are locked to float64). **Question: does GPU-vmap beat CPU-scan?** If yes, a GPU
-retrieval path is worth building; if not, we ship the existing 2-day CPU batch and move on.
+Your probe #1 settled the first axis: vmap-over-**modes** jacfwd **28.3 s vs CPU-scan 197.3 s (~7×)** on one
+band, beating GPU-scan ~2× — batching the azimuthal modes is a GPU (SIMT-over-batch) win. The full A100 peak
+was only **1.26 / 40 GB** → the GPU was *badly* under-used at 24-way. So the follow-up: does ALSO batching the
+**10 bands** into the same vmap (→ **240-way: 10 bands × 24 modes**) buy *more*, or does the adaptive solver's
+lock-step eat it?
+
+The tension this probe resolves: batching bands forces the vmapped `while_loop` to run to the **max** adaptive
+step count across bands, masking the bands that converged early. The absorbing bands take a few more steps
+(per-band m=0: **21/21/22/22/23** over 0.55→3.7 µm → ~10 % lock-step idle). So it's {SIMT-fill gain} vs
+{~10 % lock-step cost}. The modes-vmap 7× *already pays* the same kind of penalty (per-mode steps 17–19) and
+still won, so the prior is "bands help too" — but it's unmeasured, hence this probe. The primary has built and
+**CPU-validated** the bands×modes path bit-identical to scan (forward rel 1.6e-13, jacfwd rel 3.1e-12,
+n_neg=0); only the GPU *speed* is open.
 
 ## Paths
 
 - Repo: `/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere`.
-  **Sync first:** `git fetch origin && git reset --hard origin/main`.
+  **Sync first:** `git fetch origin && git reset --hard origin/main` (the bands×modes code + this probe are on
+  `main`).
 - `PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python` · `ROOT=<repo above>`.
-- Benchmark (already in the repo after sync): `tests/supplementary/vmap_probe.py`.
+- Benchmark (in the repo after sync): `tests/supplementary/vmap_probe_bands.py`.
 
-## Step 1 — get an A100 + a CUDA-enabled JAX
+## Step 1 — A100 + GPU JAX (you solved this in probe #1; reuse it)
 
 ```bash
-salloc -C a100 --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=00:30:00
+salloc -C a100 --gres=gpu:1 --cpus-per-task=8 --mem=48G --time=01:00:00
 cd $ROOT && git fetch origin && git reset --hard origin/main
 $PY -c "import jax; print(jax.devices())"          # must show a CudaDevice
 ```
-If that prints only CPU, the env has no CUDA JAX. **Do not `pip install` into the production `JAX` env** (it
-runs the CPU batches). Instead get a GPU JAX in *isolation*: prefer a cluster module (`module avail jax`/
-`module load cuda`), else make a throwaway venv —
-`python -m venv /tmp/jaxgpu && /tmp/jaxgpu/bin/pip install -U "jax[cuda12]" numpy scipy diffrax miepython numba`
-— and use `PYG=/tmp/jaxgpu/bin/python` for the GPU runs only. Match the cluster's CUDA major version
-(cuda12 vs cuda11). Confirm `…  -c "import jax; print(jax.devices())"` shows the A100 before proceeding.
+Per your results.md §A, the conda `JAX` env has all the `nvidia-*-cu12` libs + jaxlib **0.10.2** but the
+`jax-cuda12-plugin`/`-pjrt` are **0.9.2** (so JAX disables the plugin). Your fix — a `--system-site-packages`
+**overlay venv** reusing the conda libs + jaxlib and installing only the matching **0.10.2** plugin/pjrt —
+worked; rebuild it the same way and use `PYG=<overlay>/bin/python` for the cuda runs (the production env stays
+untouched). Confirm `… -c "import jax; print(jax.devices())"` shows the A100 before proceeding.
 
-## Step 2 — build the optics table once (~3–4 min, CPU; the probe also self-builds if absent)
+## Step 2 — optics table (built once in probe #1; the probe self-loads it)
 
-```bash
-$PY - <<EOF
-import sys; sys.path.insert(0,'$ROOT/src'); sys.path.insert(0,'$ROOT/tests/supplementary')
-import osse_config as oc; oc.load_optics('$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz')
-print("optics OK")
-EOF
-```
+The probe loads `tests/supplementary/optics_table_10band_nleg1024_re20.npz` (already present from the rad
+batch). No action unless it's missing (then rebuild as in `AGENT_all125_rad.md`).
 
-## Step 3 — run the three probes (each ~5–12 min incl. compile)
+## Step 3 — run the three probes (full 10-band config; each ~10–20 min incl. compile)
 
-Use the **GPU** python (`PYG`, or `$PY` if it already saw the A100) for the cuda runs, `$PY` for the CPU run:
+The full forward is 10 bands × NQuad=48 × NLeg_all=1024 → the jacfwd compile is heavier than probe #1; give it
+time. Use the **GPU** python (`PYG`) for the two vmap runs, `$PY` (CPU) for the scan reference:
 
 ```bash
 cd $ROOT
-echo "=== GPU vmap ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe.py vmap
-echo "=== GPU scan ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe.py scan
-echo "=== CPU scan ==="; JAX_PLATFORMS=cpu  PYDISORT_RICCATI_JAX_X64=1 OMP_NUM_THREADS=8 $PY tests/supplementary/vmap_probe.py scan
+echo "=== CPU scan (reference) ===";   JAX_PLATFORMS=cpu  PYDISORT_RICCATI_JAX_X64=1 OMP_NUM_THREADS=8 $PY  tests/supplementary/vmap_probe_bands.py scan
+echo "=== GPU vmap_loop (modes only) ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe_bands.py vmap_loop
+echo "=== GPU vmap_both (bands x modes) ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe_bands.py vmap_both
 ```
 
-Each prints a `[mode] JAX backend:` line, a `forward …` line (with `y[:3]`/`sum`/`n_neg`), and the key
-`[mode] EVAL-ONLY: forward Xs  jacfwd Ys` + a mem line.
+- `scan` = production CPU path (band-loop, modes-scan) — the number to beat.
+- `vmap_loop` = GPU, axis 1 only (band-loop, modes-vmap; 10 sequential 24-way solves).
+- `vmap_both` = GPU, axis 2 (one vmap over bands × modes; 240-way) — the target.
+
+Each prints a `path =` line, a `forward …` line (`sum`/`n_neg`), the key `EVAL-ONLY: forward Xs jacfwd Ys`,
+and a `device peak … GB` line.
 
 ## Report back
 
-Paste the three `EVAL-ONLY` lines, the backend/device lines, and the mem lines. The decisive comparison is
-**GPU-vmap `jacfwd` vs CPU-scan `jacfwd`** (jovyan CPU-scan was 206 s): a large GPU win (e.g. ≲ 50 s) means a
-GPU retrieval path is worth designing; roughly-equal-or-worse means it isn't on this hardware. Also confirm
-the `forward` `sum=` agrees across all three (bit-identity of vmap vs scan, modulo cross-backend rounding) and
-that `n_neg=0` everywhere. Then **stop** — no further action; the primary decides next steps.
+Paste the three `EVAL-ONLY` lines, the backend/device lines, and the mem lines. The decisive comparisons:
+
+- **(i) Does batching bands help?** `vmap_both` jacfwd **vs** `vmap_loop` jacfwd. If `vmap_both` is clearly
+  faster, the second axis (filling the under-used A100) beats the lock-step cost → build the full bands×modes
+  GPU retrieval. If they're ~equal or `vmap_both` is slower, the lock-step ate the fill → ship axis-1 only
+  (modes-vmap, bands looped), which already gives the 7×.
+- **(ii) End-to-end:** `vmap_both` (or the winner) jacfwd **vs** CPU-scan jacfwd — the real per-solve speedup
+  the retrieval will see.
+- **Memory:** the `vmap_both` `device peak` — confirm the 240-way fits the A100 with headroom (expected ≈
+  10–13 GB; flag if it's near 40).
+- **Correctness:** confirm `forward sum` agrees across all three (modulo cross-backend rounding) and `n_neg=0`
+  everywhere.
+
+Then **stop** — no further action; the primary designs the GPU retrieval worker from these numbers.
