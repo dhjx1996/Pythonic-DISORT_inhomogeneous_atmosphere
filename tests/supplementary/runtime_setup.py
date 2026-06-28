@@ -95,7 +95,8 @@ def _try_take(path, pid):
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.write(fd, str(pid).encode())
-        os.close(fd)
+        os.fsync(fd)                                             # flush PID to the shared FS
+        os.close(fd)                                             # before any racer can read it
         return True
     except FileExistsError:
         return False
@@ -104,18 +105,24 @@ def _try_take(path, pid):
 
 
 def _owner_dead(path):
+    # CONSERVATIVE: only a file holding a parseable, confirmed-DEAD pid is reclaimable.
+    # An empty/unreadable file is the brief window between a racer's O_EXCL create and its
+    # fsync'd pid write -> treat it as OCCUPIED (alive), never steal it. (Treating empty as
+    # stale caused the O_EXCL loser to delete+recreate a slot the winner already owned, so
+    # two co-located tasks pinned to the SAME core range.) A slot leaked by a task killed
+    # before it wrote its pid is lost for this array-job, which is harmless (>=8 slots).
     try:
         with open(path) as f:
             owner = int(f.read().strip())
     except (ValueError, FileNotFoundError, OSError):
-        return True                                               # unreadable/empty -> stale
+        return False                                             # empty/just-created -> occupied
     try:
-        os.kill(owner, 0)                                         # signal 0 = liveness probe
-        return False                                             # alive
+        os.kill(owner, 0)                                        # signal 0 = liveness probe
+        return False                                            # alive
     except ProcessLookupError:
-        return True                                              # gone -> reclaimable
+        return True                                             # gone -> reclaimable
     except PermissionError:
-        return False                                             # alive (someone else's)
+        return False                                            # alive (someone else's)
     except OSError:
         return False
 
