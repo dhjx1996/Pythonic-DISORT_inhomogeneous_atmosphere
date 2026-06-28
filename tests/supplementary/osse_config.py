@@ -19,7 +19,15 @@ conservative.
 from math import pi
 import hashlib
 import json
+import os
 import numpy as np
+
+# Adaptive Kvaerno5 ODE tolerance for the TRUTH tier (radiances + IC). Default 1e-3 is
+# the legacy float32-era point; the tol-convergence study found it ~1% under-converged on
+# jagged native profiles (over the practical-significance bar), so the canonical re-gen
+# targets tol*≈3e-5. tol is part of signature() — radiances at different tol get DIFFERENT
+# hashes and can never be mixed (the prior 543... cache predates this and was tol=1e-3).
+SOLVER_TOL = float(os.environ.get("SOLVER_TOL", "1e-3"))
 
 # --- the fixed observing system -------------------------------------------------
 BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
@@ -109,18 +117,25 @@ def signature():
         retrieval_view_idx=[int(i) for i in RETRIEVAL_VIEW_IDX],   # the 24 operational columns
         view_phi=round(float(VIEW_PHI_FULL[0]), 6),                # single-sided principal plane
         nfourier=[int(v) for v in NFOURIER],
-        delta_M=True, NT_cor=True, x64=True,
+        delta_M=True, NT_cor=True, x64=True, tol=SOLVER_TOL,
     )
     h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
     return payload, h
 
 
 def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space="log",
-                  jac_mode="fwd", retrieve_tau_bot=True, retrieve_r_base=True):
+                  jac_mode="fwd", retrieve_tau_bot=True, retrieve_r_base=True,
+                  tol=SOLVER_TOL, mode_map="scan"):
     """Construct the canonical ``RetrievalForward`` (per-band NFourier). ``views`` selects
     the angular fan: ``'full'`` = the 32-view superset (radiance GENERATION + IC sweep);
     ``'retrieval'`` = the 24 operational views (the retrieval). ``tau_bot`` / ``r_base``
-    are the leak-free first-guess anchors (climatology), not the truth."""
+    are the leak-free first-guess anchors (climatology), not the truth.
+
+    ``tol`` = the adaptive Kvaerno5 ODE tolerance (default 1e-3 = the legacy float32-era
+    point; the tol-convergence study showed it ~1% under-converged on jagged native
+    profiles → tol*≈3e-5 for the truth/radiance/IC tier). ``mode_map`` = 'scan' (CPU) |
+    'vmap' (GPU bands×modes 240-way; ~17× per jacfwd). Both are threaded so the radiance
+    re-gen and the GPU path can dial precision/speed without touching call sites."""
     import retrieval_oe as roe
     vm, vp = (VIEW_MU_FULL, VIEW_PHI_FULL) if views == "full" else (VIEW_MU, VIEW_PHI)
     return roe.RetrievalForward(
@@ -128,7 +143,7 @@ def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space=
         view_mu=vm, view_phi=vp, BDRF_bands=[[ALBEDO]] * NB,
         NLeg_all=NLEG_ALL, NFourier=NFOURIER, re_class=RE_CLASS, state_space=state_space,
         jac_mode=jac_mode, retrieve_tau_bot=retrieve_tau_bot,
-        retrieve_r_base=retrieve_r_base, re_bounds=RE_BOUNDS)
+        retrieve_r_base=retrieve_r_base, re_bounds=RE_BOUNDS, tol=tol, mode_map=mode_map)
 
 
 def select_retrieval_views(y_full):

@@ -62,8 +62,11 @@ def generate_one(index, out_dir):
         # retrieval (its 24-subset, via osse_config.select_retrieval_views).
         # jac_mode='rev' (default adjoint): radiance generation is a pure forward — no
         # derivatives needed — and the adjoint choice does not affect the primal y.
+        # tol flows from osse_config.SOLVER_TOL (env SOLVER_TOL) and is in the signature;
+        # MODE_MAP='vmap' routes the 240-way bands×modes GPU path (re-gen / canary).
         fwd = oc.build_forward(opt, tau_bot=float(truth.tau_bot), r_base=float(truth.r_base),
-                               views='full', state_space='log', jac_mode='rev')
+                               views='full', state_space='log', jac_mode='rev',
+                               mode_map=os.environ.get('MODE_MAP', 'scan'))
         t0 = time.time()
         # EXACT synthetic measurement: y = F(truth) at native in-situ resolution, full
         # per-band modes (K_list defaults to the per-band NFourier ceiling).
