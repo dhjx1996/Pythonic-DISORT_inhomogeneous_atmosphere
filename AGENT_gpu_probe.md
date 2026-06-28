@@ -3,6 +3,13 @@
 *(Short hand-off for a Sonnet agent. Read-only experiment — **no commits, no changes to the production JAX
 env**. Report numbers back; the primary decides. 2026-06-28.)*
 
+> **Update (monitoring agent, 2026-06-28):** Step 3 was revised — **split** into a GPU-only job
+> (`vmap_loop` + `vmap_both`) and a **separate CPU-partition** job (`scan` reference). The original
+> single ~1 h A100 job ran the CPU-scan leg first, but the 10-band CPU-scan `jacfwd` *compile alone*
+> is >40 min, so it consumed the walltime and the GPU legs never ran (the first attempt, job 8614739,
+> TIMED OUT with no GPU numbers). The CPU reference needs no A100, so running it concurrently on a CPU
+> node both fixes the timeout and stops burning GPU time on the slow reference.
+
 ## Why
 
 Your probe #1 settled the first axis: vmap-over-**modes** jacfwd **28.3 s vs CPU-scan 197.3 s (~7×)** on one
@@ -45,16 +52,23 @@ untouched). Confirm `… -c "import jax; print(jax.devices())"` shows the A100 b
 The probe loads `tests/supplementary/optics_table_10band_nleg1024_re20.npz` (already present from the rad
 batch). No action unless it's missing (then rebuild as in `AGENT_all125_rad.md`).
 
-## Step 3 — run the three probes (full 10-band config; each ~10–20 min incl. compile)
+## Step 3 — run the probes: **GPU-only job + a parallel CPU reference** (split; see Update note)
 
-The full forward is 10 bands × NQuad=48 × NLeg_all=1024 → the jacfwd compile is heavier than probe #1; give it
-time. Use the **GPU** python (`PYG`) for the two vmap runs, `$PY` (CPU) for the scan reference:
+The full forward is 10 bands × NQuad=48 × NLeg_all=1024, so the `jacfwd` compile is much heavier than probe
+#1 — on **CPU** the 10-band `scan` `jacfwd` *compile alone* is >40 min. Do **not** put the CPU leg in the GPU
+job: run the two GPU legs on the A100 and the CPU reference on an ordinary CPU node, **concurrently**.
 
+**(a) GPU job — the two vmap legs (the decisive numbers).** With `$PYG` from Step 1 (fits well under 1 h):
 ```bash
 cd $ROOT
-echo "=== CPU scan (reference) ===";   JAX_PLATFORMS=cpu  PYDISORT_RICCATI_JAX_X64=1 OMP_NUM_THREADS=8 $PY  tests/supplementary/vmap_probe_bands.py scan
 echo "=== GPU vmap_loop (modes only) ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe_bands.py vmap_loop
 echo "=== GPU vmap_both (bands x modes) ==="; JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 $PYG tests/supplementary/vmap_probe_bands.py vmap_both
+```
+
+**(b) CPU reference — a SEPARATE non-GPU job** (no A100; ~2–3 h for the heavy CPU `jacfwd` compile):
+```bash
+# e.g. sbatch --partition=short --cpus-per-task=8 --mem=32G --time=03:00:00  (no --gres/-C a100)
+JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1 OMP_NUM_THREADS=8 $PY tests/supplementary/vmap_probe_bands.py scan
 ```
 
 - `scan` = production CPU path (band-loop, modes-scan) — the number to beat.

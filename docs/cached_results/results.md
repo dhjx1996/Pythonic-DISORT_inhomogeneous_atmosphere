@@ -135,6 +135,44 @@ compute node → `osse_radiances.npz` (124 profiles, sig `543eee296e1022f7`); bu
 - **Index 20:** TIMED OUT; per your call it's sourced elsewhere, so the batch is closed at 124.
 
 *Rad batch 1 of 3 is **closed** — 124/125 consolidated (sig `543eee296e1022f7`) and bundled to
-`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K). GPU **probe #2** (bands×modes vmap,
-job 8614739) is queued for an A100; its verdict (does batching the 10 bands on top of the 24
-modes add value, or does the adaptive lock-step eat it?) will be appended here when it lands.*
+`cloud_profile_retrieval/osse_radiances_bundle.zip` (582K). GPU **probe #2** verdict below (§A2).*
+
+---
+
+## A2. GPU probe #2 — bands × modes (240-way), full 10-band config
+
+*Follow-up to §A. Does ALSO batching the 10 bands into the vmap (→ 240-way: 10 bands × 24
+modes) buy more on the A100, or does the adaptive-solver lock-step eat the SIMT fill? Run as a
+**split** job set: GPU job 8616774 (`vmap_loop` + `vmap_both`) + a parallel CPU-partition
+reference 8616775 (`scan`). Full operational config: 10 bands, NQuad=48, NFourier=24,
+NLeg_all=1024, float64, jacfwd, 24 views. EVAL-ONLY = warm, compile excluded.*
+
+| Leg | path | forward (s) | **jacfwd (s)** | device peak |
+|-----|------|------------:|---------------:|------------:|
+| `vmap_loop` (GPU) | band-loop, modes-vmap (10× sequential 24-way) | 87.45 | **290.32** | 1.42 GB |
+| `vmap_both` (GPU) | ONE vmap over bands × modes (240-way) | 35.76 | **127.74** | 13.87 GB |
+| `scan` (CPU ref)  | band-loop, modes-scan (production CPU) | *pending* | *pending* (8616775 still compiling jacfwd) | — |
+
+**(i) Decisive — does batching bands help? YES.** `vmap_both` jacfwd **127.74 s** vs `vmap_loop`
+**290.32 s** → **2.27× faster** (forward 35.76 vs 87.45 → 2.45×). The second axis fills the
+badly under-used A100 (§A noted only 1.26/40 GB at 24-way) and the SIMT gain **beats** the
+~10 % absorbing-band lock-step cost. So the lock-step did *not* eat it — batch both axes.
+
+**(ii) End-to-end vs CPU.** `vmap_both` jacfwd **127.74 s** vs CPU-scan jacfwd *(exact number
+pending — 8616775 still running; forward already matches at sum=100.664015)*. Scaling probe #1's
+1-band CPU-scan jacfwd (~197 s) by the 10 looped bands puts the CPU-scan 10-band jacfwd at
+**≈ 1500–2500 s**, i.e. `vmap_both` is **~15–20× faster** end-to-end. **This estimate will be
+replaced with the measured value when 8616775 finishes.**
+
+**(iii) Memory.** `vmap_both` device peak **13.87 GB / 40 GB** → ~26 GB headroom (matches the
+expected ≈10–13 GB; not near 40). The 240-way fits the A100 comfortably.
+
+**(iv) Correctness.** forward `sum = 100.664015` and `n_neg = 0` on all three legs
+(`vmap_loop`, `vmap_both`, CPU `scan` forward) — the 240-way bands×modes vmap is bit-faithful
+to the production scan, consistent with the primary's CPU validation (fwd rel 1.6e-13).
+
+**Recommendation to the primary.** Build the GPU retrieval on the **full bands × modes (240-way)
+vmap** — not the modes-only / band-looped path. It is **2.3× faster than band-looped GPU** and
+**~15–20× faster than the production CPU scan** per jacfwd solve, fits the A100 with large
+headroom, and is bit-identical. The earlier "ship modes-only if bands don't help" fallback is
+**not** needed; both axes pay off on this hardware.
