@@ -27,8 +27,13 @@ can never be consolidated together or loaded as the wrong accuracy.
 
 | file | source | n | precision/tol | signature | status |
 |---|---|---|---|---|---|
-| `rad_bundle/osse_radiances.npz` | HPC (job 8612305) | 124 | f64 / tol=1e-3 | `543…` | superseded |
-| `rad_bundle/osse_radiances_125.npz` | HPC 124 + **idx-20 jovyan** | 125 | f64 / tol=1e-3 (UN-tagged) | `543…` | **PROVISIONAL** — thick profiles ~1–2 % under-converged; loadable (gate matches `543…`) but tol-tag absent (pre-tag; known tol=1e-3). Superseded by the tol\* re-gen. |
+| `rad_bundle/osse_radiances.npz` | HPC (job 8612305) | 124 | f64 / tol=1e-3 ✓tag | `543…` | superseded |
+| `rad_bundle/osse_radiances_125.npz` | HPC 124 + **idx-20 jovyan** | 125 | f64 / tol=1e-3 ✓tag | `543…` | **PROVISIONAL** — thick profiles ~1–2 % under-converged; loadable (gate `543…`, tol-tag=1e-3). Superseded by the tol\* re-gen. |
+
+*Retroactive tagging (2026-06-28):* the rad-batch caches above + the 29 jovyan per-index sidecars
+(`scratchpad/.../rad_jovyan/`) predate the tol-tag, so they were stamped **tol=1e-3** in place
+(they were all computed at the default tol=1e-3). Originals backed up as `*.pre_tol_tag.bak`.
+`load_radiance` now returns `tol=1e-3` for them (was `None`).
 | *(future)* tol\* re-gen | HPC GPU (dual pipeline) | 125 | f64 / **tol\*≈3e-5** | new (tol in payload) | **CANONICAL once produced** |
 
 - idx-20 (RF03, τ=1.5, 21 nodes) was computed on jovyan; cross-verified class (it is in the
