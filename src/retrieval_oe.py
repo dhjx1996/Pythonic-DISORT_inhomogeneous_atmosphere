@@ -69,7 +69,7 @@ class RetrievalForward:
                  tol=1e-3, re_class="re5-linear", state_space="linear",
                  jac_mode="rev", retrieve_tau_bot=False, retrieve_r_base=False,
                  re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0),
-                 delta_M_scaling=True, NT_cor=True):
+                 delta_M_scaling=True, NT_cor=True, mode_map="scan"):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
         # (the joint retrieval). When True the corresponding quantity is read
@@ -169,11 +169,18 @@ class RetrievalForward:
             if len(NF_list) != self.n_bands:
                 raise ValueError(f"per-band NFourier length {len(NF_list)} != "
                                  f"n_bands {self.n_bands}")
+        # mode_map='scan' (default, CPU) | 'vmap' (GPU): how _fourier_solve maps the
+        # Fourier modes. vmap batches them (SIMT) — ~7x on an A100, ~3x slower on CPU;
+        # bit-faithful either way. Keep 'scan' for the CPU batches; flip to 'vmap'
+        # only on GPU. See pydisort_riccati_jax.SetupData.mode_map.
+        if mode_map not in ("scan", "vmap"):
+            raise ValueError(f"mode_map must be 'scan' or 'vmap', got {mode_map!r}")
+        self.mode_map = mode_map
         self.setups = [
             riccati_setup(NQuad, I0, phi0, mu0, NFourier=nf,
                           NLeg_all=NLeg_all, BDRF_Fourier_modes=bdrf,
                           delta_M_scaling=delta_M_scaling, NT_cor=NT_cor, tol=tol,
-                          adjoint=_adjoint)
+                          adjoint=_adjoint, mode_map=mode_map)
             for bdrf, nf in zip(BDRF_bands, NF_list)
         ]
         self.K_list = [s.NFourier for s in self.setups]

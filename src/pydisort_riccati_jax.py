@@ -175,6 +175,20 @@ class SetupData(NamedTuple):
     NT_cor: bool
     NT_quad_order: int
     adjoint: Any
+    mode_map: str = "scan"
+    """How the Fourier modes are mapped in :func:`_fourier_solve`:
+
+    - ``"scan"`` (default) — ``lax.scan`` over the per-mode stacks. The mode body
+      compiles once; modes run sequentially. **The CPU path** (XLA-CPU does not
+      parallelize a batched implicit solve, so a batch is bigger *work*, not parallel
+      work — measured ~3x slower than scan).
+    - ``"vmap"`` — ``jax.vmap`` batches the modes into one solve. **The GPU path**
+      (SIMT over the batch): on an A100 the K=24 batch is ~7x faster than CPU-scan
+      and ~2x faster than GPU-scan (probe `docs/cached_results/results.md`). Bit-
+      faithful to scan (validated fwd + jacfwd, ``n_neg=0``) — only the backend that
+      makes it a win differs. Used only for ``return_grid=False`` (the jit-able
+      retrieval forward); the offline ``return_grid=True`` grid-pool path always scans.
+    """
 
 
 class SolveResult(NamedTuple):
@@ -315,6 +329,7 @@ def riccati_setup(
     NT_quad_order=128,
     tol=1e-3,
     adjoint=None,
+    mode_map="scan",
 ):
     """Build the host-side :class:`SetupData` for a Riccati solve (run once).
 
@@ -504,6 +519,7 @@ def riccati_setup(
         m_is_zero=m_is_zero,
         delta_M_scaling=delta_M_scaling, NT_cor=NT_cor,
         NT_quad_order=NT_quad_order, adjoint=adjoint,
+        mode_map=mode_map,
     )
 
 
@@ -596,16 +612,26 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
         u_m, _ = one_mode(*x, save_grid=False)
         return carry, u_m
 
+    def one_mode_u(*x):                                          # u-only (no grid)
+        u_m, _ = one_mode(*x, save_grid=False)
+        return u_m
+
     tau_grid_m0 = None
     if return_grid:
         # Recover the m=0 ODE grid in a small un-scanned branch (offline; needs a
         # host sync, so it cannot live inside the scan). Scan the remaining modes.
+        # (Offline grid-pool path: always scans, never vmaps.)
         u0, tau_grid_m0 = one_mode(*(s[0] for s in stacks), save_grid=True)
         if K > 1:
             _, u_rest = lax.scan(_scan_body, (), tuple(s[1:] for s in stacks))
             u_modes_arr = jnp.concatenate([u0[None, :], u_rest], axis=0)
         else:
             u_modes_arr = u0[None, :]
+    elif setup.mode_map == "vmap":
+        # GPU path: batch the K modes into one solve (SIMT over the batch). Bit-
+        # faithful to scan (validated fwd + jacfwd); a win only on GPU — see the
+        # ``mode_map`` field doc. Composes with diffrax ForwardMode (jacfwd).
+        u_modes_arr = jax.vmap(one_mode_u)(*stacks)              # (K, N)
     else:
         _, u_modes_arr = lax.scan(_scan_body, (), stacks)        # (K, N)
 
