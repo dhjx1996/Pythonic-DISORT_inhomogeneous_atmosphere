@@ -169,28 +169,38 @@ answers the precision/tol/GPU questions for batch-3.)*
 
 ## Note for the main agent (2026-06-29, monitoring agent) — situational upgrade → please file under `docs/OUTSTANDING.md`
 
-**Idea:** decouple **discretization selection** from the GN-solve precision. Run
-`select_num_modes` (K-list) and `select_retrieval_grid` (retrieval grid) **once at f64** and
-*supply* them to the operational retrieval (which may run f32), instead of re-deriving them inside
-the f32 forward each time.
+**Idea (robust form): PRECISION-DECOUPLE selection from the GN solve.** Run the discretization
+selection — `select_num_modes` (K-list) and `select_retrieval_grid` (retrieval grid) — at **f64**,
+then run the GN solve at **f32**. This is valid whether selection is precomputed or done online, and
+it does **not** depend on the prior methodology, so it generalizes.
 
 **Why it helps (Probe #3 evidence):**
 - Removes the f32 **upfront cost**. On idx-20 the f32 grid+mode selection ran ~2242 s (a near-stall
   in the selection Jacobian) vs ~810 s at f64 — and that penalty lives entirely in *selection*, not
-  the GN solve. The true radiances being cached/supplied does **not** address it (radiance load is
-  ~free); precomputing *selection* at f64 is what erases it.
+  the GN solve. Supplying the true radiances does **not** address it (radiance load is ~free); doing
+  *selection* at f64 is what erases it.
 - Also fixes f32 **mode under-resolution** — f32 selection picked K=17 vs f64's 23–24 (the
-  `overflow encountered in cast` corrupts the choice). f32 noise should not be choosing the angular
-  discretization; selection belongs at f64 regardless of the solve precision.
+  `overflow encountered in cast` corrupts the choice). f32 noise should not pick the angular
+  discretization; selection belongs at f64 regardless of solve precision.
 - Isolates the *real* f32 question to the **GN forward solves themselves** (the per-iteration
   near-stall, "mode 1") — cleaning up the thin-profile viability call.
 
-**Enabling observation / why it's cheap:** under the current **LOO climatology prior** the prior
-set is small (~13 distinct held-out priors), so the per-prior selection products are a bounded,
-precomputable/cacheable set — cheap to generate offline at f64.
+**What can / can't be lifted out of the loop (verified against `retrieval_worker.py` +
+`retrieval_oe.py`, 2026-06-29):**
+- `select_num_modes` keys off the **noise `Se`** and a reference state — measurement-*independent*
+  (CLAUDE.md intends it *offline*). Safe to precompute/supply.
+- `select_retrieval_grid` (the QRCP node trim) **never reads `y`** in the current worker — it is
+  linearized at the **climatology first guess** (`x_fg`), so today it too is measurement-independent
+  and a deterministic function of (climatology prior, geometry, `Se`). **But that is an artifact of
+  pinning selection to the climatology mean.** With a **measurement-informed first guess** (the
+  realistic operational choice, and load-bearing for `tau_bot`, which normalizes the whole
+  `s=τ/τ_bot` grid), the trim becomes measurement-dependent and **must stay in the online pipeline**.
+  So treat the retrieval-grid trim as an in-loop step in general — just run it at f64.
 
-**Caveat → why "situational" (primary's own flag):** this leverages the *small, fixed* LOO prior
-set and does **not** generalize if the prior methodology changes — there are many ways to choose
-priors and LOO may not be the final one; a per-pixel or continuous-prior family would blow up the
-precompute set and remove the leverage. File as a **situational** upgrade: valuable under the
-current LOO scheme, revisit if the prior design changes.
+**Situational sub-optimization (primary's own flag — handle with care):** *while* selection stays
+linearized at the measurement-independent climatology mean, the per-prior selection products are a
+bounded set (under LOO, ~13 distinct priors) → precomputable/cacheable offline at f64. This is a
+**situational** win only: it bakes in the climatology-first-guess assumption and the specific LOO
+prior scheme (many ways to choose priors; LOO may not be final). It evaporates the moment the first
+guess becomes measurement-informed or the prior design changes. Prefer the precision-decouple form
+above as the durable upgrade; treat caching as an opportunistic extra.
