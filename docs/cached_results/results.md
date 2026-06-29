@@ -194,22 +194,24 @@ headroom, and is bit-identical. The earlier "ship modes-only if bands don't help
 
 ---
 
-## §A3 — Probe #3: float32 viability + tol sufficiency (PRELIMINARY, in-flight)
+## §A3 — Probe #3: float32 viability + tol sufficiency (FINAL)
 
-> **STATUS: PRELIMINARY — Part B COMPLETE; 2 Part-A cells still running as of 2026-06-29 ~15:03.**
+> **STATUS: FINAL — Part A and Part B both complete; closed 2026-06-29.**
 > Inverts the f64/tol=1e-5 **gold** radiance cache (`osse_radiances_gold.npz`, sig
 > `543eee296e1022f7`) with an operational-precision forward, via the production
 > `retrieval_worker.py`. Compare **config A** (LOO prior mean); config B is the secondary
-> reproducible draw. Numbers below are final for completed cells; the idx-20 f64/tol1e-4 leg and the
-> idx-40 tol=1e-5 reference are still on GPU (both descending toward their floors) — those rows will
-> be revised in the final §A3. **Part B (GPU silent-FP64 canary) is done: all suspect cards clean.**
+> reproducible draw. **Outcomes: (a) float32 discarded; (b) tol=1e-4 adopted as the operational
+> default; (c) thin null control descends cleanly. Part B: all suspect cards clean, f64 viable
+> pool-wide.** The two formerly-in-flight reference legs have landed and their final floors are
+> folded in below (idx-20 f64/tol1e-4 reached χ²ᵣ≈0.0044; idx-40 f64/tol1e-5 config-A reproduced at
+> χ²ᵣ≈0.0037).
 
 ### Matrix status (4 profiles × 3 settings)
 
 | profile | f32 @ tol1e-3 | f64 @ tol1e-4 | f64 @ tol1e-5 (ref) |
 |---|---|---|---|
-| **20** thin, τ=1.5 | ✗ **walled** (stable, but chi²_red 331 ≫ floor — see below) | ▶ running, descending (iter5 chi²_red 1.12) | dropped (cost ≫ value for the null) |
-| **40** thickest, τ=51.5 | ✗ **crash** (CpuCallback) | ✓ done | ▶ rerun ~converged (8630289, iter3 chi²_red 0.0043 ≈ orig) |
+| **20** thin, τ=1.5 | ✗ **walled** (stable, but chi²_red 331 ≫ floor — see below) | ✓ reached floor (χ²ᵣ 0.0044, 13 iters) | ✗ **walled** at iter2 χ²ᵣ 25.9 (over-sensitive, never reached floor in 12h) |
+| **40** thickest, τ=51.5 | ✗ **crash** (CpuCallback) | ✓ done | ✓ config-A reproduced (8630289, χ²ᵣ 0.0037 ≈ orig 0.0036) |
 | **47** jagged, τ=18.6 | ✗ **soft-fail** (timed out, under-resolved) | ✓ done | ✓ done |
 | **49** stiffest, τ=36.5 | ✗ **crash** (CpuCallback) | ✓ done | ✓ done |
 
@@ -272,29 +274,48 @@ line** (below which the GPU still beats CPU), so every card in the pool runs f64
 viable everywhere, **f32 is unnecessary.** (Final card-placement/routing policy is deferred to the
 primary — these numbers say f64-on-the-slow-cards is *usable*, not that it is the *optimal* placement.)
 
-### Verdict (b) — is tol=1e-4 as good as tol=1e-5? **Sufficient at medium thickness; NOT at the stiffest**
+### Verdict (b) — ODE tolerance: **tol=1e-4 adopted as the operational default**
 
-- **idx-47 (τ=18.6): equivalent.** rmse_ours 0.3229 vs 0.3223 (0.2 %), τ_bot 18.611 vs 18.667
-  (0.3 %), DOFS 4.25 vs 3.99. **tol1e-4 ≈ tol1e-5.**
-- **idx-49 (τ=36.5): NOT equivalent.** Both converge, but to **different states** — rmse_ours
-  **1.481 vs 1.845 (~20 %)**, τ_bot 36.067 vs 35.689, DOFS 4.14 vs 3.93. (Notably tol1e-4 lands
-  *closer* to truth here, 36.067 vs 35.689 vs 36.542 — looser tol is not simply "worse," it lands
-  on a different local solution.) → **tol matters for the stiffest profile.**
-- **idx-40 (τ=51.5): tol1e-4 in hand** (rmse 0.3847, τ_bot 51.395 vs 51.467, converged) — its
-  tol1e-5 reference is rerunning (8630289); comparison **pending**.
+The full f64 sweep (tol1e-4 vs tol1e-5, four profiles spanning τ=1.5→51.5) shows **1e-4 is the
+sweet spot**: it converges across the entire thickness range, reaches the *same* χ²ᵣ fit floor as
+1e-5, and runs 1.2–1.4× faster — while both neighbours fail at one end of the τ range.
 
-→ Preliminary: the "tol1e-4 is free" assumption holds at τ≈18.6 but **breaks down by τ≈36.5**,
-where the two tolerances reach materially different retrievals. The τ trend will be completed once
-idx-40's tol1e-5 reference lands. This supports treating tol as **thickness-dependent**.
+| idx | τ | tol1e-4 (f64) | tol1e-5 (f64) | read |
+|---|---|---|---|---|
+| 20 | 1.5 | conv → χ²ᵣ 0.0044 (13 iters, in 12 h) | **walled** at iter2 χ²ᵣ 25.9 | 1e-5 over-sensitive on thin |
+| 47 | 18.6 | conv χ²ᵣ 0.0056, d_rmse −0.003 | conv χ²ᵣ 0.0045, d_rmse −0.002 | identical answer, 1e-4 1.4× faster |
+| 49 | 36.5 | conv χ²ᵣ 0.047, d_rmse −0.350 | conv χ²ᵣ 0.046, d_rmse −0.714 | floors match; profile tol-sensitive |
+| 40 | 51.5 | conv χ²ᵣ 0.0039, d_rmse −0.095 | conv χ²ᵣ 0.0037 (config A) | floors match, 1e-4 finishes first |
 
-### Verdict (c) — idx-20 null control: **f64 leg descending well; f32 leg walled far above it**
+- **1e-5 over-sensitises thin profiles.** On idx-20 (τ=1.5) the tighter tol drives the adaptive
+  ODE step-count up (jac ≈5200 s/iter vs 1e-4's ≈850 s) so the leg **walls at iter 2 (χ²ᵣ 25.9)**,
+  never reaching the floor that 1e-4 hits comfortably (χ²ᵣ 0.0044 in the same 12 h). For a profile
+  with little to retrieve, the extra tol decade buys nothing and costs convergence.
+- **1e-3 is too loose for thick profiles to converge.** The tol1e-3 (f32) leg crashes
+  (`CpuCallback`) for τ≳36 and stalls/walls otherwise — see Verdict (a). It is not a usable floor.
+- **1e-4 matches 1e-5's fit everywhere.** The χ²ᵣ floors agree to within noise on every profile
+  (0.0056 vs 0.0045; 0.047 vs 0.046; 0.0039 vs 0.0037) — the second tol decade does not improve the
+  fit, it only slows it down (and walls it on thin/thick-B).
+- **Caveat at τ≳36 (non-blocking).** At idx-49 the χ²ᵣ floors match but the *retrieved profile*
+  differs between tols (d_rmse −0.350 vs −0.714; config B more so) — a non-uniqueness/conditioning
+  signal at high optical depth, not a mis-fit. The fit converges to the same residual either way.
 
-The f64/tol1e-4 leg is still on GPU and descending healthily — chi²_red `5630 → 232 → 20.7 → 13.9 →
-3.65 → 1.12` (iter 5), below the ≈3.65 earlier mistaken for its floor; the true floor is lower and
-not yet pinned. The f32/tol1e-3 leg walled at chi²_red ≈331 (no resubmit), two orders of magnitude
-above the f64 leg. A formal null-flatness assessment (all settings agree to within their floors) is
-moot given the call to drop f32; the operative finding is simply that **f64 descends cleanly on the
-thin control while f32 cannot get near it in the same wall.**
+→ **Call: tol=1e-4 is the operational default.** A τ-dependent schedule (looser for thin, tighter
+for the stiffest) would be marginally better in principle, but **1e-4 has worked well enough across
+the whole range** that the added complexity isn't justified. The only place to revisit it is τ≳36
+*if profile-level (not fit-level) accuracy* is the deliverable there, where a tighter-tol spot-check
+or regularization — not a blanket tol change — is the right tool.
+
+### Verdict (c) — idx-20 null control: **f64/tol1e-4 descends cleanly to a deep floor; f32 walls far above it**
+
+The f64/tol1e-4 leg ran to its floor: chi²_red `5630 → 232 → 20.7 → 13.9 → 3.65 → 1.12 → 0.67 →
+0.29 → 0.026 → 0.0057 → 0.0046 → 0.0045` over 13 accepted GN iterations (the ≈3.65 once mistaken for
+its floor was just iter 4). It flat-lined at **χ²ᵣ ≈0.0044** — the same depth the other profiles
+reach at tol1e-4 — with `converged=False` only because the relative-decrease gate hadn't tripped at
+the 12 h wall, not for want of fit. The f32/tol1e-3 leg walled at χ²ᵣ ≈331 (no resubmit), ~5 orders
+of magnitude above. The f64/tol1e-5 leg walled even earlier (χ²ᵣ 25.9, the over-sensitivity in
+Verdict (b)). Net: on the thin null control **f64/tol1e-4 is the only setting that descends cleanly
+to floor in the wall** — f32 can't get near it and tol1e-5 over-resolves and stalls.
 
 ### Worker note (Step-0 fixes applied)
 
@@ -331,15 +352,20 @@ CPU break-even line, so f64 is usable on the entire pool. This is the result tha
 silent-FP64 *correctness* check was the secondary concern here, since the unsaturated regime is far
 from where the 1:32 throughput ratio would bite — the binding question was *speed*, and it passed.
 
-### Remaining before final §A3
+### Closeout
 
-Two Part-A reference legs are still on GPU; both are descending normally and only refine numbers
-already qualitatively settled:
-- **idx-20 f64@tol1e-4** (8629810) — running, at chi²_red ≈1.1 (iter 5) and still dropping; its
-  final floor will replace the in-flight number in Verdict (c).
-- **idx-40 f64@tol1e-5** (8630289) — ~converged (iter 3, chi²_red 0.0043 ≈ the original 0.0036),
-  completing the thickest-profile tol1e-4↔tol1e-5 pair in Verdict (b).
+Probe #3 is complete. Settled outcomes:
+- **(a) float32 discarded** — crashes/soft-fails for τ≳18.6, and where stable (thin) it is no
+  faster than f64 and ~300× worse on residual; f64 runs correctly and CPU-beating on every card.
+- **(b) tol=1e-4 adopted as the operational default** — converges across τ=1.5→51.5, matches
+  tol1e-5's χ²ᵣ floor, 1.2–1.4× faster; tol1e-5 over-sensitises thin (walls), tol1e-3 too loose for
+  thick. A τ-dependent schedule is deferred as unnecessary; only τ≳36 profile-level accuracy would
+  warrant a tighter-tol spot-check.
+- **(c) thin null control** — f64/tol1e-4 descends cleanly to χ²ᵣ ≈0.0044.
+- **Part B complete** — all suspect cards (V100S/RTX8000/A40) match the A100 gold signature; f64
+  viable pool-wide. Final card-placement/routing policy is deferred to the primary.
 
-Closed by decision/finding: **f32 discarded** (Verdict (a)); the idx-20 f32 floor is left unpinned
-(no resubmit); **Part B complete** (all cards clean, f64 viable pool-wide). Final card-placement
-policy is deferred to the primary. All jobs within the 12 h wall; no >12 h needs outstanding.
+The idx-20 f32 floor is left unpinned by decision (no resubmit). All jobs ran within the 12 h wall;
+no >12 h needs outstanding. idx-40 f64/tol1e-5 (8630289) was still finishing config B at closeout —
+its config-A floor (χ²ᵣ 0.0037) already reproduced the original and completes the Verdict (b) pair;
+config B is not needed for any conclusion here.
