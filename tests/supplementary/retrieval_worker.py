@@ -82,7 +82,7 @@ _PREC = "float64" if _jnp.result_type(float) == _jnp.float64 else "float32"
 DATA = os.environ.get('VOCALS_DATA',
                       '/home/jovyan/cloud_profile_retrieval/'
                       'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1024_re20.npz'))
+OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1536_re20.npz'))
 RADIANCE_CACHE = Path(os.environ.get('RADIANCE_CACHE', _here.parents[2]
                                      / 'rad_bundle' / 'osse_radiances_125.npz'))
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
@@ -103,22 +103,30 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
     """Build the log-space OPERATIONAL forward (precision via env, tol=SOLVER_TOL,
     mode_map=MODE_MAP), LOAD the high-accuracy radiance observation from the cache (the
     truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
-    QRCP retrieval grid at the climatology first guess. Returns ``(fwd, y, Se, s_grid,
-    pb_phys, pb_log)`` — shared by both prior configs (one compiled forward)."""
+    QRCP retrieval grid.
+
+    Two-phase grid selection: first select at the LOO-prior ``tau_bot_mean``, run a cheap
+    τ_bot pre-retrieval (:func:`retrieval_oe.retrieve_tau_bot`) on that grid to get a
+    per-profile estimate, then re-select at the updated ``tau_bot``. The pre-retrieval
+    pins r_e nodes tight and uses all bands — conservative-band (ω=1) rows dominate the
+    τ_bot signal through the prior weighting, achieving the same physical effect as a
+    VIS-only subset (``osse_config.VIS_BANDS`` is the documented physical motivation)
+    while reusing the already-compiled full forward (zero extra JIT cost).
+
+    Returns ``(fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre)``
+    — shared by both prior configs (one compiled forward). ``tau_bot_pre`` is the
+    pre-retrieved τ_bot (physical float) logged in the monitoring record."""
     _t = time.time()
-    opt = oc.load_optics(optics_cache)                               # canonical NLeg_all=1024 table
+    opt = oc.load_optics(optics_cache)                               # canonical NLeg_all=1536 table
     fwd = oc.build_forward(
-        opt, tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],  # leak-free anchor
+        opt, tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],
         views="retrieval", state_space="log", jac_mode="fwd",
         tol=SOLVER_TOL, mode_map=MODE_MAP)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] optics + RetrievalForward "
               f"({_PREC}, tol={SOLVER_TOL:.0e}, mode_map={MODE_MAP}) ready", flush=True)
 
-    # OBSERVATION = the precomputed high-accuracy radiance cache (signature-gated incl.
-    # tol), NOT regenerated at the operational precision. select the 24 retrieval views
-    # from the 32-view superset. Cross-check the cache row is the SAME profile (catches
-    # index/cache misalignment) — rigor over results.
+    # OBSERVATION — signature-gated, cross-checked against truth (rigor over results).
     _t = time.time()
     rec = oc.load_radiance(RADIANCE_CACHE, index)
     if abs(float(rec["tau_bot"]) - float(truth.tau_bot)) > 1e-6:
@@ -137,13 +145,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
               f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
               f"retrieval forward tol={SOLVER_TOL:.0e} ({_PREC})", flush=True)
 
-    # PHYSICAL prior builder drives the noise-aware grid filter (dimensionally correct,
-    # and ≈ invariant to the log reparam since diag(r)·diag(σ_log) ≈ diag(σ_phys));
-    # the LOG prior builder is the actual GN regulariser (and re-mesh rebuild).
-    pb_phys = lambda sn: roe.make_climatology_prior(sn, clim)
-    pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
-
-    # mode count + QRCP grid at the (encoded) climatology first guess
+    # MODE COUNT + INITIAL GRID at the climatology first guess.
     _t = time.time()
     x_ref = fwd._encode_state(roe.make_climatology_prior(S_REF_MODES, clim)[0])
     roe.select_num_modes(fwd, x_ref, S_REF_MODES, Se)
@@ -151,12 +153,36 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
         print(f"    [build +{time.time()-_t:.0f}s] select_num_modes -> K={fwd.K_list}", flush=True)
     _t = time.time()
     x_fg = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
-    s_grid, _, _ = roe.select_retrieval_grid(
-        fwd, x_fg, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys)
+    pb_phys0 = lambda sn: roe.make_climatology_prior(sn, clim)      # clim-prior builder for initial grid
+    s_grid_init, _, _ = roe.select_retrieval_grid(
+        fwd, x_fg, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys0)
     if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] select_retrieval_grid "
-              f"(grid-selection Jacobian) -> k={len(s_grid)}", flush=True)
-    return fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol
+        print(f"    [build +{time.time()-_t:.0f}s] initial select_retrieval_grid "
+              f"-> k={len(s_grid_init)}", flush=True)
+
+    # τ_BOT PRE-RETRIEVAL on the initial grid — reuses the compiled full forward (zero
+    # extra JIT cost). r_e nodes pinned tight; conservative-band rows dominate τ_bot.
+    _t = time.time()
+    _clim_tau_prior = clim["tau_bot_mean"]
+    tau_bot_pre, sigma_tau_pre = roe.retrieve_tau_bot(
+        fwd, y, Se, clim, s_grid_init)
+    clim = dict(clim, tau_bot_mean=tau_bot_pre, tau_bot_std=sigma_tau_pre)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] τ_bot pre-retrieval -> "
+              f"{tau_bot_pre:.2f} ± {sigma_tau_pre:.2f} "
+              f"(truth={truth.tau_bot:.2f}, clim_prior={_clim_tau_prior:.2f})", flush=True)
+
+    # FINAL GRID at the per-profile τ_bot anchor. Prior builders close over updated clim.
+    pb_phys = lambda sn: roe.make_climatology_prior(sn, clim)
+    pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
+    _t = time.time()
+    x_fg2 = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
+    s_grid, _, _ = roe.select_retrieval_grid(
+        fwd, x_fg2, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys)
+    if VERBOSE:
+        print(f"    [build +{time.time()-_t:.0f}s] final select_retrieval_grid "
+              f"(at tau_bot_pre={tau_bot_pre:.2f}) -> k={len(s_grid)}", flush=True)
+    return fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre
 
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
@@ -276,11 +302,13 @@ def main():
         clim = vio.vocals_climatology(profiles, exclude_flight=flight)
 
         t0 = time.time()
-        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol = build_forward_and_obs(truth, clim, index)
+        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = \
+            build_forward_and_obs(truth, clim, index)
         rec["radiance_tol"] = truth_tol
+        rec["tau_bot_pre"] = round(tau_bot_pre, 3)
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "
               f"grid({len(s_grid)}) in s={np.round(s_grid,3)}, K={fwd.K_list} "
-              f"[{time.time()-t0:.0f}s]", flush=True)
+              f"tau_bot_pre={tau_bot_pre:.2f} [{time.time()-t0:.0f}s]", flush=True)
 
         # shared LOG climatology prior on the selected grid (Sa_log shared by A & B)
         x_a_clim_log, Sa_log = roe.make_climatology_prior(s_grid, clim, log=True)

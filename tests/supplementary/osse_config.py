@@ -22,16 +22,30 @@ import json
 import os
 import numpy as np
 
-# Adaptive Kvaerno5 ODE tolerance for the TRUTH tier (radiances + IC). Default 1e-3 is
-# the legacy float32-era point; the tol-convergence study found it ~1% under-converged on
-# jagged native profiles (over the practical-significance bar), so the canonical re-gen
-# targets tol*≈3e-5. tol is part of signature() — radiances at different tol get DIFFERENT
-# hashes and can never be mixed (the prior 543... cache predates this and was tol=1e-3).
-SOLVER_TOL = float(os.environ.get("SOLVER_TOL", "1e-3"))
+# Adaptive Kvaerno5 ODE tolerance for the TRUTH tier (radiances + IC). STANDARD = 1e-4
+# (default here; every sbatch also re-exports SOLVER_TOL=1e-4). Basis — §A3 probe: tol=1e-4
+# is indistinguishable from tol=1e-5 at τ≲20 (0.2 % rmse); at the thickest profiles
+# (τ≈36–51) the two converge to retrievals ~0.4 µm rmse apart (both converged — tol=1e-4
+# was actually closer on τ_bot), within the practical-significance bar, so 1e-4 is adopted
+# truth-tier-wide. (Earlier 3e-5 was a margin the probe made unnecessary; legacy 1e-3, the
+# float32-era point, is retired. Caveat: §A3 measured the *retrieval*, not forward-radiance
+# accuracy directly — 1e-4 is the user-standardized tier, 2026-06-29.)
+#
+# tol is DELIBERATELY NOT in signature(): the gate fingerprints what y *means* (the observing
+# system, identical across accuracy tiers), whereas tol is *how accurately* y was computed and
+# may legitimately differ between the truth cache and a looser operational retrieval forward.
+# It is carried as an accuracy TAG on the cache (generate_osse_radiances writes it; load_radiance
+# returns it; the IC + retrieval workers assert it against env RADIANCE_TOL) so a wrong-tol cache
+# cannot be silently mixed in.
+SOLVER_TOL = float(os.environ.get("SOLVER_TOL", "1e-4"))
 
 # --- the fixed observing system -------------------------------------------------
 BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
 NB = len(BANDS)
+# Bands used for the τ_bot pre-retrieval (conservative scattering: ω=1.000 at
+# 0.55/0.67/0.86 µm → reflectance dominated by total optical depth, r_e coupling
+# only through g which is weak over the VOCALS r_e range).
+VIS_BANDS = (0, 1, 2)
 NQUAD = 48
 N_PHYS = NQUAD // 2                                  # = 24 operational retrieval views (= NQuad//2)
 N_VIEW_FULL = N_PHYS + 8                             # = 32 superset (8 extras = IC sanity check)
@@ -47,15 +61,20 @@ PHI0 = 0.0
 # reconstruction NEGATIVE, so TMS injected unphysical (min ≈ −2.5) radiances for EVERY
 # cloud at the short bands — contaminating the original capstone AND the §15 IC. For the
 # r_e≤20 clamp (truth max 18.1 µm + margin), the gamma-averaged 0.55 µm phase function
-# stays positive by ~768 moments and is converged by ~1024 (DESIGN: TMS NLeg_all study).
-# n_gl≥~2400 is required to PROJECT onto that many moments (1024 was too coarse).
-NLEG_ALL = 1024
-N_GL = 3072
+# stays positive by ~768 moments and is well-converged by ~1024. STANDARD = 1536, a
+# deliberate conservative margin that ALSO keeps the sharper r_e=25 phase function
+# (size parameter ~285 at 0.55 µm) positive and converged — so 1536 covers an r_e clamp
+# raised to 25 with no negative-radiance issue (DESIGN: TMS NLeg_all study). n_gl must be
+# ≥ ~2.35×NLeg_all to project accurately; 4096/1536≈2.67 satisfies this (3072 too coarse).
+NLEG_ALL = 1536
+N_GL = 4096
 V_EFF = 0.10
 ALBEDO = 0.06                                        # Lambertian sea-surface (BDRF)
-RE_BOUNDS = (2.0, 20.0)                              # optics-table support / GN clamp
-#                                                     (ensemble truth max r_e = 18.1 µm + ~2 margin;
-#                                                      r_e never exceeds 18 in VOCALS — 25 was excessive)
+RE_BOUNDS = (2.0, 20.0)                              # optics-table support / GN clamp. STANDARD = 20
+#   (VOCALS truth max r_e = 18.1 µm + ~2 margin; r_e never exceeds 18 in VOCALS). 25 also works with
+#   NO ISSUE — NLEG_ALL=1536 keeps the r_e=25 phase function positive & converged — so 20 is a
+#   sufficiency choice (avoid over-extending the table), NOT a correctness limit. (If the clamp is
+#   actually raised to 25, re-confirm NFOURIER: the mode study saw K≈27 at r_e=25 vs 24 tuned at 20.)
 RE_GRID_N = 32                                       # optics-table r_e grid points
 N_RADII = 600                                        # optics-table gamma-quadrature radii
 RE_CLASS = "re5-linear"
@@ -137,9 +156,8 @@ def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space=
     ``'retrieval'`` = the 24 operational views (the retrieval). ``tau_bot`` / ``r_base``
     are the leak-free first-guess anchors (climatology), not the truth.
 
-    ``tol`` = the adaptive Kvaerno5 ODE tolerance (default 1e-3 = the legacy float32-era
-    point; the tol-convergence study showed it ~1% under-converged on jagged native
-    profiles → tol*≈3e-5 for the truth/radiance/IC tier). ``mode_map`` = 'scan' (CPU) |
+    ``tol`` = the adaptive Kvaerno5 ODE tolerance (default SOLVER_TOL = 1e-4, the standardized
+    truth-tier point — see the SOLVER_TOL note). ``mode_map`` = 'scan' (CPU) |
     'vmap' (GPU bands×modes 240-way; ~17× per jacfwd). Both are threaded so the radiance
     re-gen and the GPU path can dial precision/speed without touching call sites."""
     import retrieval_oe as roe

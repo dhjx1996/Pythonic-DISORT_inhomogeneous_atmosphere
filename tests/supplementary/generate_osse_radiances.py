@@ -35,7 +35,7 @@ import osse_config as oc           # noqa: E402
 DATA = os.environ.get('VOCALS_DATA',
                       '/home/jovyan/cloud_profile_retrieval/'
                       'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band.npz'))
+OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1536_re20.npz'))
 TAU_BOT_OK = (0.3, 100.0)
 FIELDS = ("y", "tau", "re", "r_base", "tau_bot", "lwc", "altitude", "flight")
 
@@ -62,7 +62,8 @@ def generate_one(index, out_dir):
         # retrieval (its 24-subset, via osse_config.select_retrieval_views).
         # jac_mode='rev' (default adjoint): radiance generation is a pure forward — no
         # derivatives needed — and the adjoint choice does not affect the primal y.
-        # tol flows from osse_config.SOLVER_TOL (env SOLVER_TOL) and is in the signature;
+        # tol flows from osse_config.SOLVER_TOL (env SOLVER_TOL); it is an accuracy TAG on the
+        # cache (sidecar 'tol' below), NOT part of the signature — see osse_config.SOLVER_TOL.
         # MODE_MAP='vmap' routes the 240-way bands×modes GPU path (re-gen / canary).
         fwd = oc.build_forward(opt, tau_bot=float(truth.tau_bot), r_base=float(truth.r_base),
                                views='full', state_space='log', jac_mode='rev',

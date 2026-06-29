@@ -1356,6 +1356,54 @@ def make_Se(fwd: RetrievalForward, y, noise_model):
     return noise_model.Se(np.asarray(y, float), n_bands=fwd.n_bands)
 
 
+def retrieve_tau_bot(fwd, y, Se, clim, s_nodes, *,
+                     re_sigma_tight=0.1, n_iter=8, lm=1e-1, xtol=5e-3):
+    """Cheap τ_bot pre-retrieval on a fixed grid; r_e nodes pinned tight.
+
+    Runs a few Gauss–Newton iterations on the FULL observation vector ``y``
+    (all bands) with r_e nodes strongly pinned to the climatological prior mean
+    (``re_sigma_tight`` µm, default 0.1). With r_e frozen, the conservative
+    (ω≈1) bands dominate the remaining τ_bot signal — the same physical basis
+    as a VIS-only subset — without requiring a separately compiled forward.
+
+    ``fwd`` is the already-compiled full :class:`RetrievalForward` (shared with
+    the subsequent joint retrieval). ``s_nodes`` should be the retrieval grid
+    from an initial :func:`select_retrieval_grid` call so that the Jacobian
+    compilation at this shape is reused by the subsequent full retrieval (zero
+    extra compile cost). ``fwd.retrieve_r_base`` is inherited automatically; r_e
+    and r_base nodes are all pinned tight.
+
+    Returns ``(tau_bot_est, sigma_tau_bot)`` — physical floats. Feed them back
+    as ``clim['tau_bot_mean']`` / ``clim['tau_bot_std']`` before calling
+    :func:`select_retrieval_grid` a second time; τ_bot remains free in the full
+    joint retrieval so these just supply a better-informed prior anchor.
+    """
+    s_nodes = np.asarray(s_nodes, float)
+    log = (fwd.state_space == "log")
+    x_a, Sa = make_joint_prior(
+        s_nodes,
+        tau_bot_prior=clim["tau_bot_mean"],
+        r_top_prior=clim["r_top_mean"],
+        r_base_prior=clim["r_base_mean"],
+        retrieve_r_base=fwd.retrieve_r_base,
+        retrieve_tau_bot=True,
+        sigma_top=re_sigma_tight,
+        sigma_base=re_sigma_tight,
+        sigma_tau_bot=clim["tau_bot_std"],
+        log=log,
+    )
+    res = gauss_newton_oe(
+        fwd, y, s_nodes, x_a, Sa, Se,
+        n_iter=n_iter, lm=lm, xtol=xtol,
+        cost_rtol=None, max_n_outer=1, prior_builder=None,
+    )
+    _, _, tau_bot_est = fwd._split_state(res.x, s_nodes)
+    post = posterior_diagnostics(res.K, res.Sa, res.Se)
+    # S_hat is in log space (log-state fwd); delta-method → physical σ
+    sigma_tau_bot = float(tau_bot_est) * float(np.sqrt(post.S_hat[-1, -1]))
+    return float(tau_bot_est), sigma_tau_bot
+
+
 # ============================================================================
 # 7. Post-hoc oracle-adiabatic baseline (pure NumPy/SciPy — NO radiative transfer)
 # ============================================================================

@@ -46,36 +46,32 @@ import numpy as np
 _here = Path(__file__).resolve().parent
 _src = _here.parents[1] / "src"
 sys.path.insert(0, str(_src))
+sys.path.insert(0, str(_here))
+import runtime_setup                                                 # noqa: E402
+runtime_setup.setup()                                              # affinity pin BEFORE JAX
 import vocals_io as vio                                              # noqa: E402
 import retrieval_oe as roe                                          # noqa: E402
 import noise_model as nm                                            # noqa: E402
-import optics_table as ot                                          # noqa: E402
+import osse_config as oc                                            # noqa: E402
 from info_content import (jacobian_on_ode_grid, flux_jacobian_on_ode_grid,  # noqa: E402
                           info_spectrum)
 
 DATA = os.environ.get('VOCALS_DATA',                                # HPC: export VOCALS_DATA=/burg-archive/...
                       '/home/jovyan/cloud_profile_retrieval/'
                       'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
+OPTICS_CACHE = os.environ.get('OPTICS_CACHE',
+                              str(_here / 'optics_table_10band_nleg1536_re20.npz'))
+RADIANCE_CACHE = os.environ.get('RADIANCE_CACHE', '')             # required; asserted below
 NQ = int(os.environ.get('ENSEMBLE_NQUAD', '48'))
 IC_MODE = os.environ.get('IC_MODE', 'priormean')                   # priormean | draw
 SIGMA_WEAK = float(os.environ.get('IC_SIGMA_WEAK', '10'))         # set i: weak ~flat prior, σ≈10 µm (KV2012)
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band.npz'))
-N_PHYS = NQ // 2
-NV_MAX = N_PHYS + 8                                                 # views to N + a few beyond (TMS)
-mu0, NLeg_all, v_eff = 0.9, 128, 0.10
-# 10-band instrument superset (ascending λ; ordering is a post-hoc choice, NOT baked in):
-# 0.55/0.67/0.86 HARP2 VIS/NIR (0.67 = 60 view angles) · 1.038 OCI window · 1.24/1.64/2.13/2.26 OCI SWIR
-# · 3.7 NK1990 strong-absorption · 4.05 VIIRS M13 (ω≈0.87, operational MWIR, slightly more absorbing than
-# 3.7 — tests spectral headroom beyond 3.7).
-BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
-NB = len(BANDS)
-NOISE = nm.oci_swir()                                              # OCI 2 % calibration-relative + 1e-3 floor
-VIEW_MU, VIEW_PHI = np.linspace(0.95, 0.25, NV_MAX), np.full(NV_MAX, pi)
-s_ref = np.linspace(0.0, 1.0, 6)[:-1]                              # retrieval grid s=[0,.2,.4,.6,.8]
-
-
-def spread_idx(k):
-    return np.unique(np.linspace(0, NV_MAX - 1, k).round().astype(int))
+# Observing-system constants from the single source of truth (osse_config):
+BANDS  = oc.BANDS
+NB     = oc.NB
+N_PHYS = oc.N_PHYS          # = 24 operational retrieval views
+NV_MAX = oc.N_VIEW_FULL     # = 32 full IC superset
+NOISE  = nm.oci_swir()      # OCI 2 % calibration-relative + 1e-3 floor
+s_ref  = np.linspace(0.0, 1.0, 6)[:-1]    # retrieval grid s=[0,.2,.4,.6,.8]
 
 
 idx, out = int(sys.argv[1]), sys.argv[2]
@@ -88,15 +84,12 @@ try:
         raise ValueError(f"degenerate (tau_bot={truth.tau_bot:.2f}, npts={len(truth.tau)})")
     if IC_MODE not in ('priormean', 'draw'):
         raise ValueError(f"bad IC_MODE={IC_MODE!r}")
-    # Profile-independent miepython optics table: build once (cached), then load.
-    re_table = ot.build_or_load_table(BANDS, 2.0, 25.0, 32, v_eff,
-                                      cache_path=OPTICS_CACHE, NLeg=NLeg_all, n_radii=600)
-    opt = [ot.select_channel(re_table, i) for i in range(NB)]
+    # Profile-independent optics: build/load once (shared by all tasks via cache).
+    opt = oc.load_optics(OPTICS_CACHE)
     clim = vio.vocals_climatology(profiles, exclude_flight=flight)
-    fwd = roe.RetrievalForward(
-        opt, NQuad=NQ, mu0=mu0, I0=1.0, phi0=0.0, tau_bot=truth.tau_bot, r_base=truth.r_base,
-        view_mu=VIEW_MU, view_phi=VIEW_PHI, BDRF_bands=[[0.06]] * NB,
-        NLeg_all=NLeg_all, retrieve_tau_bot=True, retrieve_r_base=True, jac_mode='fwd')
+    fwd = oc.build_forward(opt, tau_bot=float(truth.tau_bot), r_base=float(truth.r_base),
+                           views='full', jac_mode='fwd',
+                           mode_map=os.environ.get('MODE_MAP', 'scan'))
 
     ts = np.asarray(truth.tau, float) / truth.tau_bot
     o = np.argsort(ts)
@@ -132,8 +125,16 @@ try:
         priors['loo2x'] = np.asarray(roe.make_climatology_prior(  # set vi: LOO with ℓ=1.0 (2× the 0.5 default)
             s_interior, clim, corr_length=1.0)[1])[:n, :n]
 
-    # Sₑ at the truth's radiance/flux via the OCI 2 % model (radiance + flux); store σ for post-hoc subsets.
-    y = roe.osse_observation(fwd, truth.tau, truth.r_e)
+    # Load truth radiance from the pre-computed cache (avoids native-profile-shape compile).
+    # The radiance MAGNITUDE sets the relative-noise Se below — Se is dictated by the
+    # measurement (the OSSE noise model), so the cache IS the operational measurement here.
+    _rrec = oc.load_radiance(RADIANCE_CACHE, idx)
+    truth_tol = _rrec.get("tol")                                  # cache accuracy tag (gen tol)
+    _exp_tol = os.environ.get("RADIANCE_TOL")                     # expected truth tol (optional gate)
+    if _exp_tol is not None and truth_tol is not None and abs(truth_tol - float(_exp_tol)) > 1e-12:
+        raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp_tol} "
+                         f"— wrong-accuracy cache; refusing (rigor over results).")
+    y = np.asarray(_rrec["y"])
     sig_full = NOISE.sigma(y, n_bands=NB)
     Se_full = np.diag(sig_full ** 2)
     y_flux = fwd.flux_reflectance(x_tru, s_ref)
@@ -143,19 +144,20 @@ try:
     # --- raw-Jacobian sidecar (the product; all ordering/subset/trade-off analysis is post-hoc) -----
     npz_path = Path(out).with_suffix('.npz')
     cache = dict(index=idx, flight=flight, tau_bot=float(truth.tau_bot), NQuad=NQ, ic_mode=IC_MODE,
-                 n_bands=NB, nv_max=NV_MAX, n_phys=N_PHYS, bands=np.asarray(BANDS), view_mu=VIEW_MU,
+                 n_bands=NB, nv_max=NV_MAX, n_phys=N_PHYS, bands=np.asarray(BANDS), view_mu=oc.VIEW_MU_FULL,
                  s_int=s, n_int=n, K_full=np.asarray(K_full), K_flux=np.asarray(K_flux),
                  sigma_full=sig_full, sigma_flux=sig_flux,
                  y_full=np.asarray(y), y_flux=np.asarray(y_flux),   # reflectance -> rebuild Se at any noise
                  x_lin=np.asarray(x_lin),
-                 lin=json.dumps(lin), sigma_weak=(SIGMA_WEAK if IC_MODE == 'priormean' else np.nan))
+                 lin=json.dumps(lin), sigma_weak=(SIGMA_WEAK if IC_MODE == 'priormean' else np.nan),
+                 radiance_tol=truth_tol)
     for nmk, Sa in priors.items():
         cache[f'Sa_{nmk}'] = Sa
     np.savez(npz_path, **cache)
 
     # --- slim JSON: headline scalars at the LOO prior, for monitoring + quick aggregation -----------
     nadir = np.array([b * NV_MAX + 0 for b in range(NB)])
-    full = np.array([b * NV_MAX + v for b in range(NB) for v in spread_idx(N_PHYS)])
+    full  = np.array([b * NV_MAX + v for b in range(NB) for v in oc.RETRIEVAL_VIEW_IDX])
 
     def metrics(K, sig, Sa):
         Se = np.diag(sig ** 2)
@@ -168,7 +170,7 @@ try:
     d_n, sic_n, dep_n = metrics(K_full[nadir], sig_full[nadir], Sa_loo)
     d_v, sic_v, dep_v = metrics(K_full[full], sig_full[full], Sa_loo)
     rec = dict(index=idx, flight=flight, tau_bot=float(truth.tau_bot), n_int=n, NQuad=NQ,
-               n_phys=N_PHYS, nv_max=NV_MAX, bands=BANDS, ic_mode=IC_MODE,
+               n_phys=N_PHYS, nv_max=NV_MAX, bands=BANDS, ic_mode=IC_MODE, radiance_tol=truth_tol,
                sigma_weak=(SIGMA_WEAK if IC_MODE == 'priormean' else None), lin=lin,
                npz=npz_path.name, priors=sorted(priors),
                loo=dict(dofs_albedo=d_a, dofs_nadir=d_n, dofs_fullview=d_v,

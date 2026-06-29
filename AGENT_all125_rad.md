@@ -1,136 +1,143 @@
 # Delegated task — precompute the OSSE radiances (synthetic L1B), all VOCALS profiles
 
-*(Hand-off for a Sonnet agent. Code moves by git (sync first); the **radiance cache moves two ways**:
-it STAYS on the cluster for the downstream IC/retrieval batches to load, AND a copy is zipped to the
-workspace root for the primary to download. Preserve this file as a handoff template — don't delete it.
-2026-06-27. This is **batch 1 of 3**: `rad` (this) → `ic` re-run → `fr` retrievals.)*
+*(Hand-off for a Sonnet agent. Code moves by git (sync first); the **radiance cache moves two
+ways**: it STAYS on the cluster for the downstream IC/retrieval batches, AND a copy is zipped
+to the workspace root for the primary to download. Preserve this file as a handoff template —
+don't delete it. This is **batch 1 of 3**: `rad` (this) → `ic` re-run → `fr` retrievals.)*
 
 ## What this is — and why it exists
 
-We are re-running the whole pipeline after fixing a **forward-model bug** and re-tuning two parameters —
-all captured in `tests/supplementary/osse_config.py`, the single source of truth (do **not** edit it):
-- **TMS fix (`NLeg_all=1024`):** the Nakajima–Tanaka single-scatter correction reconstructed the phase
-  function from only 128 Legendre moments, which Gibbs-rings for the sharp short-λ Mie peaks → it injected
-  **unphysical negative radiances** for every cloud at the short bands (contaminated the original capstone
-  AND the §15 IC). Fixed by carrying 1024 moments for the TMS (the solve still uses NLeg=NQuad=48).
-- **NFourier=24** (was 8): re-tuned on the *fixed* forward to the practically-significant threshold
-  (rel<1% / abs<1e-3, PythonicDISORT's tolerance) — the old 8 left ~10 % truncation in the short bands.
-- **r_e clamp = [2,20]** (was 25): the ensemble truth max is 18.1 µm, so 20 is +2 margin (table is finer).
-The optics table is rebuilt at `NLeg=1024, n_gl=3072` (Step 0 handles this).
+We compute `y = F(truth)` for every VOCALS profile **once** at the correct forward config, cache
+it, and all downstream workers load it instead of regenerating. Three bugs fixed vs the prior
+run (all captured in `tests/supplementary/osse_config.py`, the **single source of truth**):
 
-This batch computes the **synthetic measurement** `y = F(truth)` for every VOCALS profile, **once**, at the
-truth's native in-situ resolution (exact), and caches it. Downstream the IC and retrieval workers **load**
-`y` instead of recomputing it — which removes the per-profile-shape forward (14..111 nodes → 62 distinct
-XLA compiles) from their critical path entirely. In a real retrieval the radiances come from the
-instrument; only the OSSE manufactures them, so this is the natural place to do it. The cache embeds an
-**observing-system signature**; the downstream workers assert it matches before use.
+- **TMS fix (`NLeg_all=1536`, `n_gl=4096`):** the NT single-scatter correction needed 1536
+  Legendre moments (not 128 or 1024) to avoid Gibbs-ringing the short-λ Mie peaks NEGATIVE.
+- **NFourier=24** (was 8): re-tuned on the fixed forward; the old 8 left ~10 % truncation error
+  at the short bands.
+- **tol=1e-4**: §A3 probe showed tol=1e-4 is sufficient (indistinguishable from 1e-5 at τ≲20;
+  both converge at τ≈36). Set via `SOLVER_TOL=1e-4` in the sbatch.
 
-- **Worker:** `tests/supplementary/generate_osse_radiances.py <index> <out_dir>` — writes
-  `<out_dir>/osse_<index>.npz` (the measurement `y` + truth metadata + signature) and a slim `.json`.
-- **Consolidate:** `generate_osse_radiances.py consolidate <out_dir> <out.npz>` → one signed
-  `osse_radiances.npz` keyed by profile index (what the downstream workers load).
-- Each task is **one forward solve** (no Jacobian, no retrieval). Unique per-profile shape ⇒ the compile
-  cache does NOT help here (it does for the later batches), so each task compiles its own forward once.
+The optics table is rebuilt at `NLeg=1536, n_gl=4096` (Step 0). One forward per profile at
+native in-situ resolution (14–111 ODE nodes → unique XLA compile per task); the cache removes
+this from the IC and retrieval critical paths. **Run on GPU** (240-way bands×modes vmap; §A2
+probe: eval-only forward ~36 s on A100 vs ~1000 s CPU — even RTX8000 at 4.1× fits in 2 h).
 
 ## Repo & paths
 
-- Repo: `/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere`.
-  **Sync first** (may be force-pushed): `git fetch origin && git reset --hard origin/main`.
-- `PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python`
-- `ROOT=<repo path above>`
-- `VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data`
-- `OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz`
-- Radiance cache (output, **stays here** for batches 2–3): `$ROOT/docs/cached_results/osse_radiances.npz`
-- Deliverable copy = ONE zip in the workspace root `cloud_profile_retrieval/osse_radiances_bundle.zip`
-  (downloaded manually; **not** via git — do not commit/push any npz/json results).
-
-## Step 0 — optics table cache ONCE (shared, ~3–4 min)
-
 ```bash
-PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz
-$PY - <<EOF
-import sys; sys.path.insert(0,'$ROOT/src'); sys.path.insert(0,'$ROOT/tests/supplementary')
-import osse_config as oc
-opt = oc.load_optics('$OPTICS_CACHE'); print("optics OK; sig", oc.signature()[1])
-EOF
+PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
+VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
+OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 ```
 
-## Step 1 — env check
+Output stays at `$ROOT/docs/cached_results/osse_radiances.npz`; zip copy at
+`/burg-archive/home/dh3065/cloud_profile_retrieval/osse_radiances_bundle.zip`.
+
+## Step 0 — GPU env (one-time; skip if already done)
+
+The conda JAX env has `jaxlib=0.10.2` but `jax-cuda12-plugin/pjrt=0.9.2` (version mismatch
+found in probe #1 — JAX disables the GPU plugin). Upgrade to match:
 
 ```bash
+$PY -m pip install --quiet jax-cuda12-plugin==0.10.2 jax-cuda12-pjrt==0.10.2
+# Verify:
+JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
+# Expect: [CudaDevice(id=0)] (or similar). If "no CUDA device found", the upgrade didn't take.
+```
+
+## Step 1 — optics table (build once; ~4 min)
+
+```bash
+cd $ROOT && git fetch origin && git reset --hard origin/main
+export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-$PY - <<EOF
-import sys; sys.path.insert(0,'$ROOT/src'); sys.path.insert(0,'$ROOT/tests/supplementary')
-import jax, retrieval_oe, vocals_io, optics_table, osse_config, runtime_setup
-print("ENV OK", jax.__version__, "| signature", osse_config.signature()[1])
-print("per-band NFourier:", osse_config.NFOURIER)
-N=len(vocals_io.load_all_profiles('$VOCALS_DATA')); print("N profiles =", N)   # expect 126
+$PY - <<'EOF'
+import sys; sys.path.insert(0,'tests/supplementary'); sys.path.insert(0,'src')
+import osse_config as oc
+opt = oc.load_optics('tests/supplementary/optics_table_10band_nleg1536_re20.npz')
+print("optics OK; sig", oc.signature()[1])
 EOF
 ```
 
-## Step 2 — run the array (one forward per profile)
+## Step 2 — env check
 
-**Threading (the crew1 oversubscription fix, now built into the worker):** the worker imports
-`runtime_setup` and **pins CPU affinity to `SLURM_CPUS_PER_TASK`** *before* JAX starts (offset by
-`SLURM_LOCALID` so co-located tasks take disjoint cores) — this caps XLA's Eigen pool to the allocation
-instead of the whole node, which is what `--cpu-bind=cores` failed to do. So we **do NOT** need the
-single-thread XLA flag. Give each task a few real cores so the compile is multithreaded.
+```bash
+$PY - <<'EOF'
+import os, sys
+sys.path.insert(0,'src'); sys.path.insert(0,'tests/supplementary')
+import jax, osse_config as oc, vocals_io as vio
+print("ENV OK", jax.__version__, "| sig", oc.signature()[1])
+print("NLeg_all:", oc.NLEG_ALL, "| NFourier:", oc.NFOURIER[:3], "| tol (env):", oc.SOLVER_TOL)
+N = len(vio.load_all_profiles(os.environ['VOCALS_DATA'])); print("N profiles =", N)   # expect 126
+EOF
+```
 
-Use `--cpus-per-task=4` (≈500 cores at full 125-wide concurrency) **more cores per
-task barely helps** — the forward's azimuthal modes run under a *sequential* `lax.scan`, so the per-task
-cost doesn't parallelize beyond the ~10 independent bands. Spend the budget on **array width** (all 125
-in parallel), not per-task width. Each task is **one forward** at NFourier=24/NLeg_all=1024/NQuad=48 ×10
-bands. This batch is **one forward per profile** (no Jacobian, no GN loop). Measured locally on a thin
-native profile (RF11, 20 nodes) at **~38 min including compile** (on 14 cores). The thickest jagged
-profiles (up to ~111 native nodes → more ODE steps + a bigger compile, and the 4-core allocation compiles
-slower) run several× longer, so budget **`--time=08:00:00` (8 h)** — a conservative ceiling with large
-buffer (≈10× the thin datum) that still clears the 12-hour soft limit. With 125 tasks in parallel the
-*wall* time is ~one profile's time (a few hours at most); the 8 h just protects the thickest jagged
-profiles from being killed.
+## Step 3 — run the array (one forward per profile, GPU)
+
+**Affinity (already in the worker):** `runtime_setup.setup()` claims an atomic per-node core
+slot BEFORE JAX starts (commits 8fc43cf/a5ab9a7 — verified live: 39 nodes, 115 tasks, 0
+collisions). No `--cpu-bind=cores` or XLA single-thread flag needed.
+
+**GPU note:** `--partition=crew1,ocp_gpu,short` lists ALL eligible partitions so the scheduler
+picks the soonest-free node across dedicated + shared pools. A100 is fastest (1×); V100S ≈1.5×;
+A40 ≈3×; RTX8000 ≈4.1× A100 time — all pass the f64 canary and beat CPU by >5×. No `-C`
+constraint: let the scheduler allocate freely.
 
 ```bash
 cd $ROOT && git fetch origin && git reset --hard origin/main
 N=126
-mkdir -p docs/cached_results/_rad_parts
-cat > /tmp/rad.sbatch <<EOF
+mkdir -p docs/cached_results/_rad_parts docs/cached_results/_rad_logs
+cat > /tmp/rad.sbatch <<'SBATCH'
 #!/bin/bash
 #SBATCH --job-name=osse_rad
-#SBATCH --array=0-$((N-1))%250
+#SBATCH --account=crew
+#SBATCH --array=0-125%250
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=12G
-#SBATCH --time=08:00:00
-#SBATCH --output=$ROOT/docs/cached_results/_rad_logs/rad_%a.out
-export JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz
-export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-export OMP_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} MKL_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} NUMEXPR_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
-srun $PY tests/supplementary/generate_osse_radiances.py \$SLURM_ARRAY_TASK_ID \
-   docs/cached_results/_rad_parts
-EOF
-mkdir -p docs/cached_results/_rad_logs
+#SBATCH --gres=gpu:1
+#SBATCH --partition=crew1,ocp_gpu,short
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
+#SBATCH --output=__RADLOGS__/rad_%a.out
+
+export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4
+export OPTICS_CACHE=__ROOT__/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export VOCALS_DATA=__VOCALS__
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
+srun __PY__ tests/supplementary/generate_osse_radiances.py $SLURM_ARRAY_TASK_ID \
+     docs/cached_results/_rad_parts
+SBATCH
+
+# Substitute real paths:
+sed -i \
+  "s|__ROOT__|$ROOT|g; s|__PY__|$PY|g; \
+   s|__VOCALS__|$VOCALS_DATA|g; \
+   s|__RADLOGS__|$ROOT/docs/cached_results/_rad_logs|g" \
+  /tmp/rad.sbatch
 sbatch /tmp/rad.sbatch
 ```
 
-Logs go to a **shared FS** path (`_rad_logs/rad_%a.out`) so you can watch progress live: a healthy task
-prints `[idx] FLIGHT tau=..: y=240 (native N nodes) in <S>s | sig=<hash>`. (Each task pins affinity and
-prints `[runtime] pinned affinity to 4 cores …` — if you instead see a task silent for many minutes with
-`affinity ≫ 4`, the pin failed; see Troubleshooting.)
+A healthy task prints `[idx] FLIGHT tau=..: y=320 (native N nodes) in <S>s | sig=<hash>`.
+GPU forward eval is ~36 s on A100 (eval-only, 10 bands); compile adds ~2–5 min per task
+(unique per native-profile shape, but GPU compile is ~10× faster than CPU). Budget 2 h covers
+RTX8000 on the stiffest profiles with comfortable margin. Index 20 (thickest RF03) previously
+timed out at 8 h on CPU; GPU handles it.
 
-## Step 3 — consolidate + sanity-check
+## Step 4 — consolidate + sanity-check
 
 ```bash
 cd $ROOT
 $PY tests/supplementary/generate_osse_radiances.py consolidate \
    docs/cached_results/_rad_parts docs/cached_results/osse_radiances.npz
-# expect: "consolidated 125 profiles -> ... (sig <hash>); skipped [0]"  (index 0 = RF01 τ≈1585)
+# Expect: "consolidated 125 profiles -> ... (sig <hash>); skipped [0]"  (index 0 = RF01 τ≈1585)
 ```
 
-The signature in the consolidated file MUST equal `osse_config.signature()[1]` — `consolidate` asserts it.
-Leave `osse_radiances.npz` in place at `$ROOT/docs/cached_results/` — **batches 2–3 load it from there.**
+The signature in the consolidated file MUST equal `osse_config.signature()[1]`. Leave
+`osse_radiances.npz` in place — **batches 2–3 load it from there.**
 
-## Step 4 — bundle a copy for the primary (record; NOT git)
+## Step 5 — bundle a copy for the primary (record; NOT git)
 
 ```bash
 cd $ROOT
@@ -145,20 +152,21 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/osse_radiances_bundle.z
 
 ## Troubleshooting
 
-- **Task silent / very slow + `affinity ≫ cpus-per-task`** → the affinity pin didn't take. Check the
-  worker printed `[runtime] pinned affinity to N cores`. As a fallback add to the sbatch exports:
-  `export FR_PIN_CORES=\${SLURM_CPUS_PER_TASK}` (forces the pin) and, if still thrashing,
-  `export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"` (single-thread XLA — slower compile but no
-  thrash; last resort).
-- **Signature mismatch on consolidate** → some sidecars were generated against a different
-  `osse_config` (stale code). Re-sync the repo and re-run the offending indices.
-- **Degenerate profiles** auto-write `{"skipped": ...}` — **expect exactly 1** (index 0, RF01, τ≈1585).
-- **`optics_table_10band.npz` missing** → re-run Step 0 (don't let 125 tasks race to build it).
+- **"no CUDA device" / GPU not visible** → Step 0 plugin upgrade didn't apply. Check
+  `$PY -m pip show jax-cuda12-plugin` — version must be 0.10.2. If `pip install` silently
+  skipped (already-satisfied), force: `$PY -m pip install --upgrade --force-reinstall jax-cuda12-plugin==0.10.2 jax-cuda12-pjrt==0.10.2`.
+- **Task silent or very slow** → affinity pin should already print `[runtime] pinned N cores`.
+  Fallback: add `export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"` to the sbatch.
+- **Signature mismatch on consolidate** → some sidecars were generated against a stale
+  `osse_config` (different NLeg_all or NFourier). Re-sync the repo (`git reset --hard
+  origin/main`) and re-run the offending indices.
+- **Degenerate profiles** auto-write `{"skipped": ...}` — **expect exactly 1** (index 0,
+  RF01, τ≈1585).
 
 ## Report back
 
-After the array + consolidate finish, report: (1) profiles consolidated vs skipped (expect 125 / 1);
-(2) the **signature hash** (must match `osse_config.signature()[1]`); (3) per-task wall-time range and
-cpus-per-task used (a real datum for sizing batches 2–3); (4) the bundle path + size; (5) any errors.
-Then **stop and wait** — batch 2 (the IC re-run) is a separate hand-off once the primary confirms the
-radiances.
+After the array + consolidate finish: (1) profiles consolidated vs skipped (expect 125 / 1);
+(2) the **signature hash** (must match `osse_config.signature()[1]`); (3) per-task wall-time
+range (A100 vs slower cards) and which GPU types were used; (4) bundle path + size; (5) any
+errors. Then **stop and wait** — batch 2 (IC re-run) is a separate hand-off once the primary
+confirms the radiances.
