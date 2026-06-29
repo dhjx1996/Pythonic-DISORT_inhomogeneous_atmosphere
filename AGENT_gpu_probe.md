@@ -5,6 +5,24 @@
 `precision_probe_out.zip` — do NOT commit npz/json data. The primary decides + consolidates.
 2026-06-28.)*
 
+> **Update (monitoring agent, 2026-06-28) — two operational corrections from the primary's env:**
+>
+> 1. **V100S is fully f64-viable, alongside A100** (user ruling). Part A's "A100 only" is
+>    relaxed: run the f64 gold/reference/retrieval tier on **a100 OR v100s** (`-C "a100|v100s"`).
+>    Both are full-rate (1:2) FP64; RTX 8000 + A40 are 1:32 (correct but ~32× slow) → still f32-only
+>    candidates, which is what this probe decides.
+> 2. **Account/partition map (verified via `sacctmgr`/`sinfo`, not folklore).** The `crew` and
+>    `apam` accounts are identical in QOS/priority/fairshare — the only difference is the **private
+>    partitions** they unlock. **GPU jobs → `--account=crew`**, which opens two *less-contended* GPU
+>    partitions the shared `short` pool doesn't: **`crew1`** (dedicated: 2×v100s, 2×rtx8000, 1×a40)
+>    and **`ocp_gpu`** (shared w/ ~11 labs: 2×v100s, 2×rtx8000) — both **MaxTime 7 d** vs short's
+>    12 h. **A100 lives ONLY in shared `short`/`burst`** (none in crew1/ocp_gpu). `apam` only unlocks
+>    `apam1` = **CPU-only** (mem192). Recommended GPU submit:
+>    `--account=crew --partition=crew1,ocp_gpu,short -C "<feature>"` (scheduler picks soonest-free;
+>    keep `--time ≤ 12h` to keep `short` eligible, or drop `short` for v100s-only runs needing >12 h).
+>    → Route v100s/rtx8000/a40 work to **crew1+ocp_gpu** (dedicated, 7-day wall); use `short` only
+>    when you specifically need an **a100**.
+
 ## Why (accuracy tiers — keep straight)
 
 - **Truth tier** (radiances + IC) = high accuracy (float64, tol\*≈3e-5). Already set.
