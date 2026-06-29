@@ -164,3 +164,33 @@ FP64); RTX 8000 the doubtful one (Turing + diffrax implicit FP64). These sidecar
 *(`retrieval_worker.py` was just de-staled onto osse_config — NLeg_all=1024, the irregular 24-view
 fan, the radiance cache. The old NLeg_all=128 is gone. This probe both validates that worker and
 answers the precision/tol/GPU questions for batch-3.)*
+
+---
+
+## Note for the main agent (2026-06-29, monitoring agent) — situational upgrade → please file under `docs/OUTSTANDING.md`
+
+**Idea:** decouple **discretization selection** from the GN-solve precision. Run
+`select_num_modes` (K-list) and `select_retrieval_grid` (retrieval grid) **once at f64** and
+*supply* them to the operational retrieval (which may run f32), instead of re-deriving them inside
+the f32 forward each time.
+
+**Why it helps (Probe #3 evidence):**
+- Removes the f32 **upfront cost**. On idx-20 the f32 grid+mode selection ran ~2242 s (a near-stall
+  in the selection Jacobian) vs ~810 s at f64 — and that penalty lives entirely in *selection*, not
+  the GN solve. The true radiances being cached/supplied does **not** address it (radiance load is
+  ~free); precomputing *selection* at f64 is what erases it.
+- Also fixes f32 **mode under-resolution** — f32 selection picked K=17 vs f64's 23–24 (the
+  `overflow encountered in cast` corrupts the choice). f32 noise should not be choosing the angular
+  discretization; selection belongs at f64 regardless of the solve precision.
+- Isolates the *real* f32 question to the **GN forward solves themselves** (the per-iteration
+  near-stall, "mode 1") — cleaning up the thin-profile viability call.
+
+**Enabling observation / why it's cheap:** under the current **LOO climatology prior** the prior
+set is small (~13 distinct held-out priors), so the per-prior selection products are a bounded,
+precomputable/cacheable set — cheap to generate offline at f64.
+
+**Caveat → why "situational" (primary's own flag):** this leverages the *small, fixed* LOO prior
+set and does **not** generalize if the prior methodology changes — there are many ways to choose
+priors and LOO may not be the final one; a per-pixel or continuous-prior family would blow up the
+precompute set and remove the leverage. File as a **situational** upgrade: valuable under the
+current LOO scheme, revisit if the prior design changes.
