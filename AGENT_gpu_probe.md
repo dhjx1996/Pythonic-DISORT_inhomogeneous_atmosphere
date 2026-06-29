@@ -19,9 +19,19 @@
 >    12 h. **A100 lives ONLY in shared `short`/`burst`** (none in crew1/ocp_gpu). `apam` only unlocks
 >    `apam1` = **CPU-only** (mem192). Recommended GPU submit:
 >    `--account=crew --partition=crew1,ocp_gpu,short -C "<feature>"` (scheduler picks soonest-free;
->    keep `--time ≤ 12h` to keep `short` eligible, or drop `short` for v100s-only runs needing >12 h).
->    → Route v100s/rtx8000/a40 work to **crew1+ocp_gpu** (dedicated, 7-day wall); use `short` only
->    when you specifically need an **a100**.
+>    keep `--time ≤ 12h` to keep `short` eligible, or drop `short` only for runs needing >12 h).
+>
+> > **CORRECTION (monitoring agent, 2026-06-29) — supersedes the routing advice that was here.**
+> > The earlier guidance ("route v100s/rtx8000/a40 to crew1+ocp_gpu; use short only for a100") was
+> > **wrong and caused a real stall** — the Part-B rtx8000/a40 canaries sat PENDING for hours on
+> > `--partition=crew1,ocp_gpu` (a tiny dedicated slice: rtx8000 only on g097/g098, a40 only on
+> > g184) while ~25 idle/mixed rtx8000+a40 nodes in `short` went unconsidered. Verified via
+> > `sinfo -N`: **`short` carries rtx8000 (g041–g101) and a40 (g184–g282) in quantity** — A100 is
+> > the *only* card exclusive to `short`/`burst`; crew1/ocp_gpu are merely *extra* (7-day) pools,
+> > not the *only* homes of v100s/rtx8000/a40. **Standing rule: every job lists ALL eligible
+> > partitions** (`--partition=crew1,ocp_gpu,short`) to maximize backfill; the sole exception is a
+> > genuine **>12 h** need, which forfeits `short`. Adding `short` to the stalled canaries scheduled
+> > them instantly. Do **not** restrict partitions as a contention heuristic.
 
 ## Why (accuracy tiers — keep straight)
 

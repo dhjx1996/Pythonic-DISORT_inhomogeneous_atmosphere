@@ -196,19 +196,20 @@ headroom, and is bit-identical. The earlier "ship modes-only if bands don't help
 
 ## §A3 — Probe #3: float32 viability + tol sufficiency (PRELIMINARY, in-flight)
 
-> **STATUS: PRELIMINARY — 4 of 11 matrix cells still running as of 2026-06-29 ~10:54.**
+> **STATUS: PRELIMINARY — Part B COMPLETE; 2 Part-A cells still running as of 2026-06-29 ~15:03.**
 > Inverts the f64/tol=1e-5 **gold** radiance cache (`osse_radiances_gold.npz`, sig
 > `543eee296e1022f7`) with an operational-precision forward, via the production
 > `retrieval_worker.py`. Compare **config A** (LOO prior mean); config B is the secondary
-> reproducible draw. Numbers below are final for completed cells; idx-20 (both legs) and the
-> idx-40 tol=1e-5 reference are still on GPU — those rows will be revised in the final §A3.
+> reproducible draw. Numbers below are final for completed cells; the idx-20 f64/tol1e-4 leg and the
+> idx-40 tol=1e-5 reference are still on GPU (both descending toward their floors) — those rows will
+> be revised in the final §A3. **Part B (GPU silent-FP64 canary) is done: all suspect cards clean.**
 
 ### Matrix status (4 profiles × 3 settings)
 
 | profile | f32 @ tol1e-3 | f64 @ tol1e-4 | f64 @ tol1e-5 (ref) |
 |---|---|---|---|
-| **20** thin, τ=1.5 | ▶ running (init+iter0 clean) | ▶ running (init only) | dropped (cost ≫ value for the null) |
-| **40** thickest, τ=51.5 | ✗ **crash** (CpuCallback) | ✓ done | ▶ rerun running (8630289) |
+| **20** thin, τ=1.5 | ✗ **walled** (stable, but chi²_red 331 ≫ floor — see below) | ▶ running, descending (iter5 chi²_red 1.12) | dropped (cost ≫ value for the null) |
+| **40** thickest, τ=51.5 | ✗ **crash** (CpuCallback) | ✓ done | ▶ rerun ~converged (8630289, iter3 chi²_red 0.0043 ≈ orig) |
 | **47** jagged, τ=18.6 | ✗ **soft-fail** (timed out, under-resolved) | ✓ done | ✓ done |
 | **49** stiffest, τ=36.5 | ✗ **crash** (CpuCallback) | ✓ done | ✓ done |
 
@@ -222,7 +223,7 @@ headroom, and is bit-identical. The earlier "ship modes-only if bands don't help
 | 49 tol1e-4 | ✓ | 6 | 0.0470 | 1.4811 | 36.067 (36.542) | 4.14 | −0.3501 |
 | 40 tol1e-4 | ✓ | 7 | 0.0039 | 0.3847 | 51.395 (51.467) | 4.20 | −0.0948 |
 
-### Verdict (a) — float32 viability: **NO for τ≳18.6; thin (τ=1.5) promising but unconfirmed**
+### Verdict (a) — float32 viability: **NO — discarded** (crashes for τ≳18.6; thin is stable but no faster than f64, and f64 runs fine on every card)
 
 f32 carries the same fingerprint in every run: the angular field is **mode-truncated to K=17**
 (vs f64's 23–24) and `RuntimeWarning: overflow encountered in cast` fires during grid selection —
@@ -236,15 +237,40 @@ f32 runs at the edge of its dynamic range here.
   ~1 600 s neighbours — adaptive ODE step-count explosion, *not* hardware), and (iii) plateaus at a
   **residual floor chi²_red ≈ 16** (vs f64's ≈0.005, ~3000× worse) — the f32/tol1e-3 forward cannot
   reproduce the f64 gold radiance. Did not converge in 8 h. **Marginal → effectively non-viable.**
-- **Thin — idx-20 (τ=1.5): in progress, encouraging.** Through init + iter 0 cleanly
-  (chi²_red 6.06e3 → 1.5e3, rel 0.50, 1 backtrack, **monotone, no crash**) — it has already passed
-  the iter-0/1 point where the thick profiles crashed. Same f32 fingerprints present (K=17,
-  overflow-in-cast). **Too early to confirm convergence or rule out late oscillation** — the full
-  GN trace is pending.
+- **Thin — idx-20 (τ=1.5): STABILITY PASS, but never reached the floor (walled).** Eight GN
+  iterations, monotone, **no crash, no oscillation, no mode-1 ODE near-stall:**
+  chi²_red `6060 → 1500 → 1300 → 1130 → 929 → 492 → 481 → 349 → 331`, then hit its 6 h wall (job
+  cancelled at iter 7, chi²_red 331). Jacobian wall-times stay **bounded (848–1891 s)** — they do
+  *not* inflate monotonically — so there is no mode-1 ODE near-stall. Same f32 fingerprints present
+  (K=17 vs f64 K=23–24, overflow-in-cast at grid selection) but they degrade *gracefully*, not
+  catastrophically. **This is the stability behaviour the thick/medium profiles failed to show** —
+  but it walled at chi²_red 331, an order of magnitude short of where the f64 leg already sits
+  (≈1.1 and still dropping, see below).
+- **…but f32 is not convincingly faster end-to-end — the line search and iteration count eat the
+  per-iteration edge.** Although a single f32-on-RTX8000 iteration is cheaper than an f64-on-A100
+  iteration (~1200–3800 s vs ~2300–5400 s), f32 pays it back two ways: (i) **noisier line search** —
+  f64 takes a steady 1 backtrack/iter, whereas f32 spikes to **8 backtracks / 2627 s at iter 5** and
+  **2 backtracks at iter 7**, the GN step direction being unreliable under f32 residual noise; and
+  (ii) **more iterations for less progress** — the f64 leg passes chi²_red ≈3.65 by iter 4 and is at
+  **≈1.1 by iter 5** (~18.9 ks, still dropping), while f32 after **8 GN iterations (~17.4 ks)** is
+  still at chi²_red ≈331 with steps shrunk to rel ≈0.03, nowhere near plateau. Net: f32 buys a
+  marginally cheaper iteration but needs many more of them and lands ~300× worse on residual, so the
+  wall-clock advantage that is f32's entire reason for existing **does not materialise** here.
+- **f32 accuracy floor unresolved — and, per decision, left that way.** At its 6 h wall the f32 leg
+  is at chi²_red ≈331, two orders of magnitude above where the f64 leg already sits (≈1.1, still
+  descending). **No resubmit** (user decision) — pinning the f32 floor is not worth the spend, the
+  speed finding having already removed f32's only advantage.
 
-→ Shaping up: **f32 is viable only for genuinely thin clouds; the viability boundary sits below
-τ=18.6.** This is consistent with the two-tier hypothesis (thin → f32/looser-tol, thick →
-f64/tighter-tol), pending idx-20's completed trace.
+→ **Call: f32 is discarded.** It crashes/soft-fails for τ≳18.6, and for the thin case where it *is*
+stable it is no faster than f64 and far less accurate — no net advantage at any thickness. The
+deciding datum was whether the nominally "f32-slow" GPUs (RTX8000, A40 — 1:32 FP64 rate) are usable
+at f64 in this **latency-bound** retrieval, and Part B answers **yes**: f64 runs *correctly* on
+every card (all signatures match the A100 gold — no silent FP64 defect) and *fast enough* —
+**RTX8000 4.1× and A40 3.0× the A100 time**, nowhere near the nominal 32× (the 1:32 throughput ratio
+doesn't bite in this small, unsaturated workload). Both are far under the **~20× CPU break-even
+line** (below which the GPU still beats CPU), so every card in the pool runs f64 acceptably. With f64
+viable everywhere, **f32 is unnecessary.** (Final card-placement/routing policy is deferred to the
+primary — these numbers say f64-on-the-slow-cards is *usable*, not that it is the *optimal* placement.)
 
 ### Verdict (b) — is tol=1e-4 as good as tol=1e-5? **Sufficient at medium thickness; NOT at the stiffest**
 
@@ -261,10 +287,14 @@ f64/tighter-tol), pending idx-20's completed trace.
 where the two tolerances reach materially different retrievals. The τ trend will be completed once
 idx-40's tol1e-5 reference lands. This supports treating tol as **thickness-dependent**.
 
-### Verdict (c) — idx-20 null control: **in progress**
+### Verdict (c) — idx-20 null control: **f64 leg descending well; f32 leg walled far above it**
 
-Both legs (f64/tol1e-4, f32/tol1e-3) running; the f32 leg is descending cleanly so far. Full
-null-flatness assessment (all settings ~identical for the thin control) **pending GN completion**.
+The f64/tol1e-4 leg is still on GPU and descending healthily — chi²_red `5630 → 232 → 20.7 → 13.9 →
+3.65 → 1.12` (iter 5), below the ≈3.65 earlier mistaken for its floor; the true floor is lower and
+not yet pinned. The f32/tol1e-3 leg walled at chi²_red ≈331 (no resubmit), two orders of magnitude
+above the f64 leg. A formal null-flatness assessment (all settings agree to within their floors) is
+moot given the call to drop f32; the operative finding is simply that **f64 descends cleanly on the
+thin control while f32 cannot get near it in the same wall.**
 
 ### Worker note (Step-0 fixes applied)
 
@@ -276,9 +306,40 @@ null-flatness assessment (all settings ~identical for the thin control) **pendin
   npz/json is persisted **the moment that config converges**. (Behavior-preserving: same files,
   written earlier.)
 
+### Part B — GPU silent-FP64 canary: **COMPLETE — all cards clean, f64 viable everywhere**
+
+Known-answer forward (f64 / tol=1e-4 / vmap) on a fixed profile, run on each card; a card with a
+silent FP64 defect would diverge from the A100 gold signature `543eee296e1022f7`. "Factor" is the
+card's f64 walltime ÷ the **same-profile** A100 reference; **<20× still beats CPU** (the GPU path is
+~21× CPU, so a card under 20× nets out ahead of CPU — usable, if not optimal placement).
+
+| card | profile | walltime | factor vs A100 | signature | verdict |
+|---|---|---|---|---|---|
+| A100 (ref) | 115 | 331 s | 1.0× | `543eee296e1022f7` | gold |
+| A100 (ref) | 120 | 246 s | 1.0× | `543eee296e1022f7` | gold |
+| A100 (ref) | 121 | 276 s | 1.0× | `543eee296e1022f7` | gold |
+| V100S (1:2) | 115 | 487 s | **1.5×** | `543eee296e1022f7` | **clean** — beats CPU |
+| RTX8000 (1:32) | 120 | 1015 s | **4.1×** | `543eee296e1022f7` | **clean** — beats CPU |
+| A40 (1:32) | 121 | 817 s | **3.0×** | `543eee296e1022f7` | **clean** — beats CPU |
+
+**Every card matches the A100 gold signature exactly — no silent FP64 defect on any card**, including
+the Turing RTX8000 and Ampere A40. And every card runs f64 *fast enough*: the slow cards land at
+**4.1× (RTX8000)** and **3.0× (A40)** the A100 — nowhere near their nominal **32×** ratio, because
+this small, latency-bound retrieval never saturates FP64 throughput. Both sit far under the ~20×
+CPU break-even line, so f64 is usable on the entire pool. This is the result that retires f32
+(Verdict (a)): with f64 correct and CPU-beating on the "f32-slow" cards, **f32 buys nothing.** The
+silent-FP64 *correctness* check was the secondary concern here, since the unsaturated regime is far
+from where the 1:32 throughput ratio would bite — the binding question was *speed*, and it passed.
+
 ### Remaining before final §A3
 
-idx-20 f32@tol1e-3 (8629811) + idx-20 f64@tol1e-4 (8629810) GN traces to completion (the
-oscillation/null question); idx-40 f64@tol1e-5 reference (8630289) for the thickest-profile tol
-comparison. All current jobs are within the 12 h wall; no >12 h needs outstanding. Part B
-(GPU silent-FP64 canary) not yet started.
+Two Part-A reference legs are still on GPU; both are descending normally and only refine numbers
+already qualitatively settled:
+- **idx-20 f64@tol1e-4** (8629810) — running, at chi²_red ≈1.1 (iter 5) and still dropping; its
+  final floor will replace the in-flight number in Verdict (c).
+- **idx-40 f64@tol1e-5** (8630289) — ~converged (iter 3, chi²_red 0.0043 ≈ the original 0.0036),
+  completing the thickest-profile tol1e-4↔tol1e-5 pair in Verdict (b).
+
+Closed by decision/finding: **f32 discarded** (Verdict (a)); the idx-20 f32 floor is left unpinned
+(no resubmit); **Part B complete** (all cards clean, f64 viable pool-wide). Final card-placement
+policy is deferred to the primary. All jobs within the 12 h wall; no >12 h needs outstanding.
