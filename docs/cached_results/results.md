@@ -191,3 +191,94 @@ vmap** — not the modes-only / band-looped path. It is **2.3× faster than band
 rigorously >7×), fits the A100 with large
 headroom, and is bit-identical. The earlier "ship modes-only if bands don't help" fallback is
 **not** needed; both axes pay off on this hardware.
+
+---
+
+## §A3 — Probe #3: float32 viability + tol sufficiency (PRELIMINARY, in-flight)
+
+> **STATUS: PRELIMINARY — 4 of 11 matrix cells still running as of 2026-06-29 ~10:54.**
+> Inverts the f64/tol=1e-5 **gold** radiance cache (`osse_radiances_gold.npz`, sig
+> `543eee296e1022f7`) with an operational-precision forward, via the production
+> `retrieval_worker.py`. Compare **config A** (LOO prior mean); config B is the secondary
+> reproducible draw. Numbers below are final for completed cells; idx-20 (both legs) and the
+> idx-40 tol=1e-5 reference are still on GPU — those rows will be revised in the final §A3.
+
+### Matrix status (4 profiles × 3 settings)
+
+| profile | f32 @ tol1e-3 | f64 @ tol1e-4 | f64 @ tol1e-5 (ref) |
+|---|---|---|---|
+| **20** thin, τ=1.5 | ▶ running (init+iter0 clean) | ▶ running (init only) | dropped (cost ≫ value for the null) |
+| **40** thickest, τ=51.5 | ✗ **crash** (CpuCallback) | ✓ done | ▶ rerun running (8630289) |
+| **47** jagged, τ=18.6 | ✗ **soft-fail** (timed out, under-resolved) | ✓ done | ✓ done |
+| **49** stiffest, τ=36.5 | ✗ **crash** (CpuCallback) | ✓ done | ✓ done |
+
+### Completed config-A state metrics
+
+| run | conv | n_gn | chi²_red | rmse_ours | τ_bot_ret (truth) | DOFS | d_rmse |
+|---|---|---|---|---|---|---|---|
+| 47 tol1e-5 | ✓ | 6 | 0.0045 | 0.3223 | 18.667 (18.643) | 3.99 | −0.0022 |
+| 47 tol1e-4 | ✓ | 9 | 0.0056 | 0.3229 | 18.611 (18.643) | 4.25 | −0.0028 |
+| 49 tol1e-5 | ✓ | 6 | 0.0461 | 1.8445 | 35.689 (36.542) | 3.93 | −0.7135 |
+| 49 tol1e-4 | ✓ | 6 | 0.0470 | 1.4811 | 36.067 (36.542) | 4.14 | −0.3501 |
+| 40 tol1e-4 | ✓ | 7 | 0.0039 | 0.3847 | 51.395 (51.467) | 4.20 | −0.0948 |
+
+### Verdict (a) — float32 viability: **NO for τ≳18.6; thin (τ=1.5) promising but unconfirmed**
+
+f32 carries the same fingerprint in every run: the angular field is **mode-truncated to K=17**
+(vs f64's 23–24) and `RuntimeWarning: overflow encountered in cast` fires during grid selection —
+f32 runs at the edge of its dynamic range here.
+
+- **Thick — idx-40 (τ=51.5) & idx-49 (τ=36.5): hard de-stabilization.** GN steps into a stiffer
+  state at iter 0/1 → `INTERNAL: CpuCallback error` (the diffrax/equinox implicit-solver guard).
+  Not a bias, a **stability failure** → f32 is unusable here.
+- **Medium — idx-47 (τ=18.6): soft-fail.** Does *not* crash, but (i) under-resolves (K=17, grid
+  k=5 vs f64's k=4), (ii) suffers intermittent **8–20× Jacobian blow-ups** (iter-1 jac 13 278 s vs
+  ~1 600 s neighbours — adaptive ODE step-count explosion, *not* hardware), and (iii) plateaus at a
+  **residual floor chi²_red ≈ 16** (vs f64's ≈0.005, ~3000× worse) — the f32/tol1e-3 forward cannot
+  reproduce the f64 gold radiance. Did not converge in 8 h. **Marginal → effectively non-viable.**
+- **Thin — idx-20 (τ=1.5): in progress, encouraging.** Through init + iter 0 cleanly
+  (chi²_red 6.06e3 → 1.5e3, rel 0.50, 1 backtrack, **monotone, no crash**) — it has already passed
+  the iter-0/1 point where the thick profiles crashed. Same f32 fingerprints present (K=17,
+  overflow-in-cast). **Too early to confirm convergence or rule out late oscillation** — the full
+  GN trace is pending.
+
+→ Shaping up: **f32 is viable only for genuinely thin clouds; the viability boundary sits below
+τ=18.6.** This is consistent with the two-tier hypothesis (thin → f32/looser-tol, thick →
+f64/tighter-tol), pending idx-20's completed trace.
+
+### Verdict (b) — is tol=1e-4 as good as tol=1e-5? **Sufficient at medium thickness; NOT at the stiffest**
+
+- **idx-47 (τ=18.6): equivalent.** rmse_ours 0.3229 vs 0.3223 (0.2 %), τ_bot 18.611 vs 18.667
+  (0.3 %), DOFS 4.25 vs 3.99. **tol1e-4 ≈ tol1e-5.**
+- **idx-49 (τ=36.5): NOT equivalent.** Both converge, but to **different states** — rmse_ours
+  **1.481 vs 1.845 (~20 %)**, τ_bot 36.067 vs 35.689, DOFS 4.14 vs 3.93. (Notably tol1e-4 lands
+  *closer* to truth here, 36.067 vs 35.689 vs 36.542 — looser tol is not simply "worse," it lands
+  on a different local solution.) → **tol matters for the stiffest profile.**
+- **idx-40 (τ=51.5): tol1e-4 in hand** (rmse 0.3847, τ_bot 51.395 vs 51.467, converged) — its
+  tol1e-5 reference is rerunning (8630289); comparison **pending**.
+
+→ Preliminary: the "tol1e-4 is free" assumption holds at τ≈18.6 but **breaks down by τ≈36.5**,
+where the two tolerances reach materially different retrievals. The τ trend will be completed once
+idx-40's tol1e-5 reference lands. This supports treating tol as **thickness-dependent**.
+
+### Verdict (c) — idx-20 null control: **in progress**
+
+Both legs (f64/tol1e-4, f32/tol1e-3) running; the f32 leg is descending cleanly so far. Full
+null-flatness assessment (all settings ~identical for the thin control) **pending GN completion**.
+
+### Worker note (Step-0 fixes applied)
+
+- **Full-traceback capture** in the worker's except-block — characterizes f32 de-stabilization
+  (gave us the `CpuCallback` signature above) instead of a 200-char truncation.
+- **Config-A write-ordering fix:** the worker previously wrote `_A`/`_B` artifacts *only after
+  config B finished*, so a config-B wall/timeout erased an already-converged config A — this is how
+  the original idx-40 tol1e-5 reference (config A converged at 19 544 s) was lost. Now each config's
+  npz/json is persisted **the moment that config converges**. (Behavior-preserving: same files,
+  written earlier.)
+
+### Remaining before final §A3
+
+idx-20 f32@tol1e-3 (8629811) + idx-20 f64@tol1e-4 (8629810) GN traces to completion (the
+oscillation/null question); idx-40 f64@tol1e-5 reference (8630289) for the thickest-profile tol
+comparison. All current jobs are within the 12 h wall; no >12 h needs outstanding. Part B
+(GPU silent-FP64 canary) not yet started.
