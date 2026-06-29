@@ -151,32 +151,32 @@ NLeg_all=1024, float64, jacfwd, 24 views. EVAL-ONLY = warm, compile excluded.*
 |-----|------|------------:|---------------:|------------:|
 | `vmap_loop` (GPU) | band-loop, modes-vmap (10× sequential 24-way) | 87.45 | **290.32** | 1.42 GB |
 | `vmap_both` (GPU) | ONE vmap over bands × modes (240-way) | 35.76 | **127.74** | 13.87 GB |
-| `scan` (CPU ref)  | band-loop, modes-scan (production CPU) | >190† | **920–2555†** | — |
+| `scan` (CPU ref)  | band-loop, modes-scan (production CPU) | 1029.02† | **2691.31†** | — |
 
-*†CPU `scan` (8616775) **TIMED OUT** at its 3 h wall before printing the EVAL-ONLY line. The
-measured **compile+eval** were forward **910 s** / jacfwd **2555 s** (`sum=100.664015`, `n_neg=0`).
-The eval-only loop (5 forward + 3 jacfwd warm/timed evals) then ran **7361 s** without finishing,
-so — since each forward eval < each jacfwd eval — `8 × jac_eval > 7361 s` ⇒ CPU jacfwd **eval-only
-> 920 s** (and `< 2555 s`, compile being positive). So CPU eval-only jacfwd is rigorously bracketed
-to **(920, 2555) s**; forward likewise **> 190 s**. GPU compile+eval for comparison: vmap_both
-forward 51 s / jacfwd 151 s.*
+*†CPU `scan` EVAL-ONLY now **captured** by the 12 h rerun **8617956** (the original 3 h job 8616775
+timed out mid eval-loop; the earlier rigorous bracket (920, 2555) s is superseded by this direct
+measurement). EVAL-ONLY forward **1029.02 s** / jacfwd **2691.31 s** (`sum=100.664015`, `n_neg=0`,
+bit-matching both GPU legs). NOTE 8617956 ran on a **slower CPU node** than the compile+eval/GPU
+baseline — its compile+eval were 1325 s / 3140 s vs 8616775's 910 s / 2555 s (~1.23× slower
+silicon); normalizing the eval-only to that faster node → forward ≈ 837 s / jacfwd ≈ 2190 s. GPU
+`vmap_both` eval-only for comparison: forward 35.76 s / jacfwd 127.74 s.*
 
 **(i) Decisive — does batching bands help? YES.** `vmap_both` jacfwd **127.74 s** vs `vmap_loop`
 **290.32 s** → **2.27× faster** (forward 35.76 vs 87.45 → 2.45×). The second axis fills the
 badly under-used A100 (§A noted only 1.26/40 GB at 24-way) and the SIMT gain **beats** the
 ~10 % absorbing-band lock-step cost. So the lock-step did *not* eat it — batch both axes.
 
-**(ii) End-to-end vs CPU.** Two consistent measurements, both pointing to **~17×**:
-- **compile+eval (fully measured):** CPU-scan jacfwd **2555 s** vs GPU `vmap_both` jacfwd **151 s**
-  → **16.9×** (forward 910 vs 51 → **17.8×**). This is the apples-to-apples ratio the *first*
-  retrieval solve sees.
-- **eval-only (CPU bounded, not fully captured):** GPU `vmap_both` jacfwd eval-only **127.74 s**
-  vs CPU-scan jacfwd eval-only **rigorously in (920, 2555) s** (8616775 timed out mid eval-loop;
-  derivation in the table footnote) → **7.2×–20×**, bracketing the 16.9× compile+eval figure.
-  The pure eval-only CPU number could not be captured — the 10-band CPU `scan` eval-loop alone
-  exceeds a 3 h wall — but the lower bound (>7×) already confirms the GPU win is decisive and the
-  most likely value sits near the directly-measured ~17×. Forward `sum=100.664015` matched
-  bit-for-bit across all three legs before the CPU job died.
+**(ii) End-to-end vs CPU — measured ~17–21×.** Two consistent measurements:
+- **compile+eval:** CPU-scan jacfwd **2555 s** vs GPU `vmap_both` jacfwd **151 s** → **16.9×**
+  (forward 910 vs 51 → **17.8×**) — the ratio the *first* (compile-paying) retrieval solve sees.
+- **eval-only (now measured, 8617956):** GPU `vmap_both` jacfwd eval-only **127.74 s** vs CPU-scan
+  jacfwd eval-only **2691.31 s** → **21.1×** (forward 35.76 vs 1029.02 → **28.8×**). The CPU node
+  here was ~1.23× slower than the compile+eval baseline node; normalizing to that faster node →
+  jacfwd ≈ 2190 s → **~17.1×**, matching the compile+eval figure. Either basis, the per-`jacfwd`
+  GPU speedup the retrieval loop repeatedly sees is **~17–21×**.
+
+`sum = 100.664015` and `n_neg = 0` are **bit-identical across all three legs** (`vmap_loop`,
+`vmap_both`, CPU `scan`) — the 240-way GPU path is faithful to the production scan.
 
 **(iii) Memory.** `vmap_both` device peak **13.87 GB / 40 GB** → ~26 GB headroom (matches the
 expected ≈10–13 GB; not near 40). The 240-way fits the A100 comfortably.
