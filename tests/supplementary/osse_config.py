@@ -22,14 +22,22 @@ import json
 import os
 import numpy as np
 
-# Adaptive Kvaerno5 ODE tolerance for the TRUTH tier (radiances + IC). STANDARD = 1e-4
-# (default here; every sbatch also re-exports SOLVER_TOL=1e-4). Basis — §A3 probe: tol=1e-4
-# is indistinguishable from tol=1e-5 at τ≲20 (0.2 % rmse); at the thickest profiles
-# (τ≈36–51) the two converge to retrievals ~0.4 µm rmse apart (both converged — tol=1e-4
-# was actually closer on τ_bot), within the practical-significance bar, so 1e-4 is adopted
-# truth-tier-wide. (Earlier 3e-5 was a margin the probe made unnecessary; legacy 1e-3, the
-# float32-era point, is retired. Caveat: §A3 measured the *retrieval*, not forward-radiance
-# accuracy directly — 1e-4 is the user-standardized tier, 2026-06-29.)
+# Adaptive Kvaerno5 ODE tolerance for the TRUTH tier (radiances + IC). STANDARD = 1e-4.
+# §A3 FINAL (Probe #3, closed 2026-06-29) adopted 1e-4 as the operational default. The probe
+# inverted the tol=1e-5 gold radiances with BOTH a tol=1e-4 and a tol=1e-5 forward, across the full
+# VOCALS thickness range (τ=1.5→51.5, four profiles): the two reach the SAME χ²ᵣ fit floor
+# everywhere — i.e. the 1e-4↔1e-5 forward difference sits below the 2 % measurement noise — while
+# 1e-4 runs 1.2–1.4× faster. 1e-4 is also the only setting that converges at BOTH ends:
+#   • tol=1e-5 OVER-sensitises thin profiles — on idx-20 (τ=1.5) the tighter tol inflates the
+#     adaptive step count (~5200 vs ~850 s/Jacobian) and the leg WALLS at χ²ᵣ≈26, never reaching the
+#     floor 1e-4 hits comfortably (χ²ᵣ≈0.0044);
+#   • tol=1e-3 (the retired float32-era point) is too loose for the thick end — it crashes
+#     (CpuCallback) for τ≳36.
+# The second tol decade does not improve the FIT, only slows it. (At τ≳36 the floors match but the
+# retrieved PROFILE differs between tols — a non-uniqueness/conditioning signal at high optical
+# depth, not a mis-fit; revisit there only with a tighter-tol spot-check or regularization if
+# profile-level accuracy is the deliverable, never a blanket tol change.) Default here; every sbatch
+# also re-exports SOLVER_TOL=1e-4.
 #
 # tol is DELIBERATELY NOT in signature(): the gate fingerprints what y *means* (the observing
 # system, identical across accuracy tiers), whereas tol is *how accurately* y was computed and

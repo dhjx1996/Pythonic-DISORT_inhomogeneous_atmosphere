@@ -52,26 +52,27 @@ post-hoc computation the primary runs on jovyan (`retrieval_analysis.py`) from t
   `cloud_profile_retrieval/fr_bundle.zip`, **downloaded manually** (NOT via Git — do not commit/push any
   result JSON or npz). It contains `_fr_parts/` (all `<i>_{A,B}.npz` + `<i>_{A,B}.json` + `<i>.json`) and
   the SLURM logs.
-- Code (present after sync, **don't modify**): `tests/supplementary/retrieval_worker.py`
-  (`ENSEMBLE_NQUAD` default 48, `OPTICS_CACHE`, `COST_RTOL` default 0.01), `src/retrieval_oe.py`,
-  `src/optics_table.py`, `src/vocals_io.py`, `src/noise_model.py`.
+- Code (present after sync, **don't modify** except to implement the checkpoint/resume plan below):
+  `tests/supplementary/retrieval_worker.py` (`ENSEMBLE_NQUAD` default 48, `OPTICS_CACHE`, `COST_RTOL`
+  default 0.01), `src/retrieval_oe.py`, `src/optics_table.py`, `src/vocals_io.py`, `src/noise_model.py`.
 
 ## Step 0 — build the optics table cache ONCE (shared, ~3–4 min)
 
-The miepython optics table is **profile-independent** and is the **same 10-band table as the IC run**
-(identical signature `re=[2,25]/32 veff=0.1 NLeg=128`) — if `optics_table_10band.npz` from the IC run is
-still present it is **reused** (signature-checked); otherwise build it once to a shared path so the array
-tasks **load** it (don't let 125 tasks race to build it):
+The miepython optics table is **profile-independent** and is the **same 10-band table as the IC batch-2
+run** (signature `d71a8559…`: `re=[2,20]/32 veff=0.1 NLeg=1536`, `n_gl=4096`) — if
+`optics_table_10band_nleg1536_re20.npz` is present it is **reused** (signature-checked); otherwise build
+it once to a shared path so the array tasks **load** it (don't let 125 tasks race to build it). Build
+through `osse_config.load_optics` (the single source of truth that fixes NLeg/re/n_gl) — do **NOT**
+hand-pass `NLeg=128` / `re=[2,25]` (the pre-fix values that Gibbs-ring the short bands NEGATIVE):
 ```bash
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band.npz
+export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 $PY - <<EOF
-import sys; sys.path.insert(0,'$ROOT/src')
-import optics_table as ot
-t = ot.build_or_load_table([0.55,0.67,0.86,1.038,1.24,1.64,2.13,2.26,3.7,4.05],
-                           2.0,25.0,32,0.10, cache_path='$OPTICS_CACHE', NLeg=128, n_radii=600)
-print("optics cache OK:", t['omega'].shape, "->", '$OPTICS_CACHE')
+import sys; sys.path.insert(0,'$ROOT/src'); sys.path.insert(0,'$ROOT/tests/supplementary')
+import osse_config as oc
+oc.load_optics('$OPTICS_CACHE')      # builds-or-loads the canonical NLeg=1536 / re=[2,20] / n_gl=4096 table
+print("optics cache OK ->", '$OPTICS_CACHE')
 EOF
 ```
 **Export `OPTICS_CACHE` in every sbatch** (already wired below). `miepython` and `numba` must be in the
@@ -105,15 +106,36 @@ N=$($PY -c "import sys;sys.path.insert(0,'/burg-archive/home/dh3065/cloud_profil
 echo "N=$N profiles"
 ```
 
+## Checkpoint / resume + compile cache — implement FIRST (`FR_CHECKPOINT_RESUME_PLAN.md`)
+
+Before the production sweep, implement (and test) the checkpoint/resume + resume-scoped compile cache
+specified in **`FR_CHECKPOINT_RESUME_PLAN.md`** (repo root — the original is on Git; you may revise it as
+you see fit). It makes a walled task **resumable** (a wall loses ≤1 GN iteration, not the whole task), so
+you can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to fit `short`) and run
+aggressive walls without losing work — the right insurance given per-task time is unpredictable and the
+slow tail can be the **thin** profiles.
+
+- **⚠️ Checkpoints + the compile cache MUST live on shared, persistent storage** (`/burg-archive/…`,
+  mirror the `_*_parts/` convention), **never** node-local `/local` or `$SCRATCH` — a dying node wipes
+  node-local state, which is the exact event resume exists to survive.
+- **To resume:** resubmit the same indices — each task loads its last checkpoint (per `(index, config)`)
+  and continues; completed configs/profiles are skipped.
+- **Checkpoints are portable** across CPU↔GPU and GPU types (plain numpy) — a profile may start on GPU
+  and resume on CPU (CPU spill). Only the **compile cache** is backend-specific: a cross-card resume
+  recompiles (correct, just slower); pin the card (`-C`) for guaranteed cache hits.
+- Gate it on a **resume-equivalence test** (a resumed run must match an uninterrupted one) before
+  trusting a chunked production sweep.
+
 ## Step 2 — run it (Venue A: a SINGLE SLURM array)
 
-Per-task ≈ **1.5–3 h** at `--cpus-per-task=1` (both configs A+B reuse the one JAX compile) — the dense
-in-situ truth OSSE forward and the float64 grid-selection Jacobian *compiles* dominate (build ≈ 80 min at
-NQ=48 float64; the GN retrievals on the smooth ~6-node grid are fast), exactly as in the IC run; thick
-profiles run longer. The 8 h `--time` has ample margin. The worker prints `built fwd + selected grid…`
-then `… DONE`. A task silent for *hours* is the
-thread-oversubscription bug (Troubleshooting). **cpt=1**, **--mem=12G**, **--time=08:00:00**, **%250**
-concurrency. Don't change NQuad (48), bands, views, `COST_RTOL`, or worker physics.
+**Scheduling — venue (CPU/GPU), cores, `--time`, partition, concurrency — is YOUR call**, informed by the
+IC batch-2 report's measured per-card walls and the **checkpoint/resume** capability above (which lets a
+long retrieval be split into shorter resumable jobs — e.g. to fit `short`). Per-task time is
+**unpredictable from cheap metadata** (IC report: `r(time,τ)=0.004`; the **thin profiles can be the
+slowest**) — so **do not pre-sort fast/slow by τ/nodes**, size walls defensively, and lean on resume for
+the tail. The worker prints `built fwd + selected grid…` then `… DONE`; a task silent for *hours* on CPU
+is the thread-oversubscription bug (Troubleshooting). Don't change NQuad (48), bands, views, `COST_RTOL`,
+or worker physics. The sbatch below is a **CPU example** — adjust venue/resources to your plan.
 
 ```bash
 cd /burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
@@ -128,7 +150,7 @@ cat > /tmp/fr.sbatch <<EOF
 #SBATCH --output=/tmp/fr_%a.out
 export JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # REQUIRED: single-thread XLA (cpt=1) — see Troubleshooting
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band.npz
+export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export OMP_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} MKL_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} NUMEXPR_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 srun --cpu-bind=cores $PY tests/supplementary/retrieval_worker.py \$SLURM_ARRAY_TASK_ID \
@@ -143,7 +165,7 @@ stem** `…/_fr_parts/$SLURM_ARRAY_TASK_ID` — no extension.)
 ```bash
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band.npz
+export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # single-thread XLA (see Troubleshooting)
 mkdir -p docs/cached_results/_fr_parts
@@ -171,17 +193,18 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
 
 - **Hang on the first forward/Jacobian** → Troubleshooting (thread oversubscription — the main risk; the
   `XLA_FLAGS` default in the sbatch fixes it).
-- **Thick-profile timeout:** single-thread XLA (cpt=1) runs each task at true 1-CPU speed (~1–3 h, IC
-  scale), but the thickest dense-truth profiles (**idx 40, 42, 119**) are slowest and could approach the
-  8 h `--time`. If a *few* of those time out, raise `--time` (cluster permitting) and resubmit only those
-  indices (e.g. `sbatch --array=40,42,119 …`) — don't re-run the whole array.
+- **Timeout / wall:** per-task time is **unpredictable from metadata** and the **thin profiles can be the
+  slowest** (IC report — do NOT assume the thick `idx 40/42/119` are the tail). Either raise `--time`
+  (cluster permitting) and resubmit only the walled indices (e.g. `sbatch --array=… …`), or — with the
+  checkpoint/resume above implemented — just resubmit and they continue from their last checkpoint. Don't
+  re-run the whole array.
 - **OOM** (exit 137; unlikely at `--mem=12G`): raise `--mem`, or on Venue B lower `-P`.
 - **Degenerate profiles** auto-write `{"skipped": ...}` in `<i>.json` (no `_A`/`_B` sidecars) — **expect
   exactly 1** (index 0, RF01, τ≈1585). Any other skip is worth a glance but not a failure.
 - **Non-converged retrievals** are NOT failures — the worker flags `converged:false` / `structural_misfit`
   in the sidecar (the primary analyses these); let the task finish and write its sidecar.
-- **`optics_table_10band.npz` missing / signature mismatch** → re-run Step 0 (a task will otherwise build
-  it itself, wasting ~4 min and risking a write race — pre-build it).
+- **`optics_table_10band_nleg1536_re20.npz` missing / signature mismatch** → re-run Step 0 (a task will
+  otherwise build it itself, wasting ~4 min and risking a write race — pre-build it).
 - Do **not** change NQuad (48), bands, views, `COST_RTOL`, the `X64` setting, or the worker physics.
 
 ## Troubleshooting: a single forward/Jacobian hangs for hours (thread oversubscription)
@@ -207,7 +230,8 @@ Results are delivered **as the zip (Step 3), NOT via Git** — do **not** commit
 the array finishes and the bundle is built, report: (1) records vs `skipped` (expect 1 skip — RF01
 τ≈1585); (2) the **`npz in bundle` count** (≈250 = 125×{A,B}) and the bundle path + size; (3) how many
 retrievals flagged `converged:false` or `structural_misfit:true` (per config); (4) **per-task wall times —
-min / median / max, and specifically the thickest profiles (idx 40, 42, 119; τ≈42–51)** — so the primary
-can judge whether `--time` needs raising for any re-run; (5) venue + whether the `XLA_FLAGS` single-thread
-fix held (no hung tasks); (6) any errors / timed-out task indices. The primary downloads
-`cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`) on jovyan.
+min / median / max, and which indices walled / needed resume** (NOT pre-judged by τ — thin can be the
+slowest) — so the primary can judge scheduling; (5) venue + whether the `XLA_FLAGS` single-thread fix held
+(no hung tasks) + whether checkpoint/resume was exercised; (6) any errors / timed-out task indices. The
+primary downloads `cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`)
+on jovyan.
