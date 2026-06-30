@@ -58,6 +58,11 @@ RADIANCE_CACHE=$ROOT/docs/cached_results/osse_radiances.npz
 
 ```bash
 $PY -m pip install --quiet jax-cuda12-plugin==0.10.2 jax-cuda12-pjrt==0.10.2
+# FIX (batch-1 lesson): prepend the pip nvidia CUDA lib dirs — the login profile's
+# ~/cuda-12.6/lib64 on LD_LIBRARY_PATH shadows them and breaks cuSPARSE at 0.10.2, so the
+# 'cuda' backend silently disappears (['cpu','tpu'] only). Required in EVERY GPU job below too.
+NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
+export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 ```
 
@@ -84,8 +89,10 @@ EOF
 
 **Timing (from §A2/A3 probes):** GPU jacfwd = ~128 s on A100 (two Jacobian calls → ~4 min A100;
 ~17 min RTX8000). Compile adds ~5–10 min per unique profile (retrieval grid = 5 s_ref nodes →
-fixed shape, so most compilation is shared across profiles after the first). Budget 1 h wall covers
-RTX8000 on the stiffest profiles with comfortable margin. All partitions listed.
+fixed shape, so most compilation is shared across profiles after the first). **Wall set to 12 h**
+(conservative standing default — provisional, to be tightened post-run from observed times: batch-1
+forwards already hit 40 min, so IC Jacobians can exceed 1 h on RTX8000/A40). **Mem 32 G** (batch-1
+saw SIGABRT in the XLA CPU threadpool at 16 G on the cheaper forward). All partitions listed.
 
 **Affinity (already in both workers):** `runtime_setup.setup()` claims an atomic per-node core
 slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 collisions).
@@ -103,8 +110,8 @@ cat > /tmp/icA.sbatch <<'SBATCH'
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=crew1,ocp_gpu,short
-#SBATCH --mem=16G
-#SBATCH --time=01:00:00
+#SBATCH --mem=32G
+#SBATCH --time=12:00:00
 #SBATCH --output=__LOGA__/icA_%a.out
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
@@ -114,6 +121,11 @@ export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
+PY=__PY__
+# FIX (batch-1 lesson): prepend pip nvidia CUDA libs so cuSPARSE loads (login ~/cuda-12.6
+# shadows them otherwise -> 'cuda' backend disappears).
+NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
+export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_profile.py \
      $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_A_parts
 SBATCH
@@ -127,8 +139,8 @@ cat > /tmp/icB.sbatch <<'SBATCH'
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=crew1,ocp_gpu,short
-#SBATCH --mem=16G
-#SBATCH --time=01:00:00
+#SBATCH --mem=32G
+#SBATCH --time=12:00:00
 #SBATCH --output=__LOGB__/icB_%a.out
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
@@ -138,6 +150,11 @@ export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
+PY=__PY__
+# FIX (batch-1 lesson): prepend pip nvidia CUDA libs so cuSPARSE loads (login ~/cuda-12.6
+# shadows them otherwise -> 'cuda' backend disappears).
+NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
+export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_profile.py \
      $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_B_parts
 SBATCH
@@ -151,8 +168,8 @@ cat > /tmp/icC.sbatch <<'SBATCH'
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=crew1,ocp_gpu,short
-#SBATCH --mem=16G
-#SBATCH --time=01:00:00
+#SBATCH --mem=32G
+#SBATCH --time=12:00:00
 #SBATCH --output=__LOGC__/icC_%a.out
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
@@ -161,6 +178,11 @@ export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
+PY=__PY__
+# FIX (batch-1 lesson): prepend pip nvidia CUDA libs so cuSPARSE loads (login ~/cuda-12.6
+# shadows them otherwise -> 'cuda' backend disappears).
+NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
+export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_mechanism.py \
      $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_C_parts
 SBATCH
@@ -194,7 +216,8 @@ for ARR in A B C; do
          print('skip' if 'skipped' in d else '')" 2>/dev/null | grep -c skip)
   echo "Array $ARR: ok=$OK skipped=$SK"
 done
-# Expect each: ok=124 skipped=1 (or ok=125 if idx-0 also produces a result)
+# Expect each: ok=125 skipped=1 (126 indices; idx-0 RF01 τ≈1585 is the lone skip — same 125
+# profiles as the batch-1 radiance cache and the prior IC run)
 ```
 
 ## Step 4 — bundle everything for the primary (NOT git)
@@ -231,6 +254,6 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/ic_bundle.zip
 
 ## Report back
 
-After all three arrays + sanity check finish: (1) ok/skip counts for each array (expect 124/1);
+After all three arrays + sanity check finish: (1) ok/skip counts for each array (expect 125/1);
 (2) per-task wall-time range by GPU type; (3) bundle path + size; (4) any repeated failures. Then
 **stop and wait** — batch 3 (full retrievals) is a separate hand-off once the primary reviews the IC.
