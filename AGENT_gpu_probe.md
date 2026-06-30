@@ -62,7 +62,7 @@ Part-B canary = the 3 longest **cross-verified** profiles (known-good answer): *
 
 ```bash
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
-cd $ROOT && git fetch origin && git reset --hard origin/main
+cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 PY=<GPU-overlay python from probe #1/#2>                            # jaxlib + 0.10.2 cuda plugin
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz
 export VOCALS_DATA=<VOCALS_REx_data path on the cluster>

@@ -47,7 +47,9 @@ post-hoc computation the primary runs on jovyan (`retrieval_analysis.py`) from t
 ## Repo & output
 
 - Repo: `/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere`.
-  **Sync first** (may be force-pushed): `git fetch origin && git reset --hard origin/main`.
+  **Sync check** (may be force-pushed): `git fetch origin`, then compare to `origin/main`; if the
+  working tree differs, **consult the user before any `git reset --hard`** — it discards local work
+  (e.g. uncommitted fixes).
 - **Deliverable = ONE zip of the raw sidecars** (Step 3), placed in the workspace root
   `cloud_profile_retrieval/fr_bundle.zip`, **downloaded manually** (NOT via Git — do not commit/push any
   result JSON or npz). It contains `_fr_parts/` (all `<i>_{A,B}.npz` + `<i>_{A,B}.json` + `<i>.json`) and

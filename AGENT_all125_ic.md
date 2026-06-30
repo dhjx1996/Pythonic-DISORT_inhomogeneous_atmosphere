@@ -69,7 +69,7 @@ JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 ## Step 1 — confirm batch-1 prerequisites
 
 ```bash
-cd $ROOT && git fetch origin && git reset --hard origin/main
+cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export RADIANCE_CACHE=$ROOT/docs/cached_results/osse_radiances.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
@@ -114,7 +114,7 @@ slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 col
 > task 0). The srun lines below pass `_ic_{A,B,C}_parts/$SLURM_ARRAY_TASK_ID` accordingly.
 
 ```bash
-cd $ROOT && git fetch origin && git reset --hard origin/main
+cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 mkdir -p docs/cached_results/_ic_{A,B,C}_parts docs/cached_results/_ic_{A,B,C}_logs
 
 # ------- Array A: profile-worker, priormean -------
@@ -263,8 +263,8 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/ic_bundle.zip
   cache at `543eee...`). Confirm `$RADIANCE_CACHE` resolves to `osse_radiances.npz` from batch 1
   (not `osse_radiances_v543.npz`).
 - **"no CUDA device"** → see Step 0; force-reinstall if `jax-cuda12-plugin` shows 0.9.2.
-- **Missing `oc.VIEW_MU_FULL` / `oc.RETRIEVAL_VIEW_IDX`** → repo out of date. Re-sync with
-  `git reset --hard origin/main`.
+- **Missing `oc.VIEW_MU_FULL` / `oc.RETRIEVAL_VIEW_IDX`** → repo out of date. **Consult the user
+  about the repo discrepancy** before any `git reset --hard origin/main` (it discards local work).
 - **Array B (draw) degenerate beyond idx-0** → the LOO climatology exclude_flight step fails if
   `flight` is empty; check the log for the skipped index's `flight` field.
 

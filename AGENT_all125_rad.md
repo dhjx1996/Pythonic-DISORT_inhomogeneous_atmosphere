@@ -65,7 +65,7 @@ JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 ## Step 1 — optics table (build once; ~4 min)
 
 ```bash
-cd $ROOT && git fetch origin && git reset --hard origin/main
+cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 $PY - <<'EOF'
@@ -101,7 +101,7 @@ A40 ≈3×; RTX8000 ≈4.1× A100 time — all pass the f64 canary and beat CPU 
 constraint: let the scheduler allocate freely.
 
 ```bash
-cd $ROOT && git fetch origin && git reset --hard origin/main
+cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 N=126
 mkdir -p docs/cached_results/_rad_parts docs/cached_results/_rad_logs
 cat > /tmp/rad.sbatch <<'SBATCH'
@@ -173,8 +173,7 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/osse_radiances_bundle.z
 - **Task silent or very slow** → affinity pin should already print `[runtime] pinned N cores`.
   Fallback: add `export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"` to the sbatch.
 - **Signature mismatch on consolidate** → some sidecars were generated against a stale
-  `osse_config` (different NLeg_all or NFourier). Re-sync the repo (`git reset --hard
-  origin/main`) and re-run the offending indices.
+  `osse_config` (different NLeg_all or NFourier). consult the user about the repo discrepancy before any hard reset (it discards local work), then re-run the offending indices.
 - **Degenerate profiles** auto-write `{"skipped": ...}` — **expect exactly 1** (index 0,
   RF01, τ≈1585).
 
