@@ -130,8 +130,8 @@ Before the production sweep, implement (and test) the checkpoint/resume + resume
 specified in **`FR_CHECKPOINT_RESUME_PLAN.md`** (repo root — the original is on Git; you may revise it as
 you see fit). It makes a walled task **resumable** (a wall loses ≤1 GN iteration, not the whole task), so
 you can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to fit `short`) and run
-aggressive walls without losing work — the right insurance given per-task time is unpredictable and the
-slow tail can be the **thin** profiles.
+aggressive walls without losing work — the right insurance given per-task time is only partly
+predictable and the slow tail is **unsettled** pre-FR (thin vs mid-τ — see Step 2).
 
 - **⚠️ Checkpoints + the compile cache MUST live on shared, persistent storage** (`/burg-archive/…`,
   mirror the `_*_parts/` convention), **never** node-local `/local` or `$SCRATCH` — a dying node wipes
@@ -149,9 +149,15 @@ slow tail can be the **thin** profiles.
 **Scheduling — venue (CPU/GPU), cores, `--time`, partition, concurrency — is YOUR call**, informed by the
 IC batch-2 report's measured per-card walls and the **checkpoint/resume** capability above (which lets a
 long retrieval be split into shorter resumable jobs — e.g. to fit `short`). Per-task time is
-**unpredictable from cheap metadata** (IC report: `r(time,τ)=0.004`; the **thin profiles can be the
-slowest**) — so **do not pre-sort fast/slow by τ/nodes**, size walls defensively, and lean on resume for
-the tail. The worker prints `built fwd + selected grid…` then `… DONE`; a task silent for *hours* on CPU
+**only partly predictable**: the IC batch-2 config-A pass timed every profile's Jacobian (≈ FR's
+per-*iteration* cost), so `n_int`/measured-time is a *usable* per-iteration proxy — but it does **not**
+capture GN iteration *count*, so total per-task cost stays uncertain. Two partial, **conflicting**
+signals exist and neither is doctrine: §A3 flagged thin profiles as convergence-**over-sensitive** (the
+older "thin is slowest" note, tol=1e-5 regime), whereas the IC tol=1e-4 per-Jac times have thin profiles
+*cheapest* per-iter and mid-τ (τ≈9–14, high `n_int`) dearest. **You MAY use the IC times as a soft
+signal** (e.g. run cheap-per-iter profiles first), but **don't pre-commit any τ band as "the tail"** —
+keep walls **defensive** and lean on **resume**. The thin-vs-mid question is **unsettled until FR's own
+end-to-end walls exist — revisit/revise then (for posterity).** The worker prints `built fwd + selected grid…` then `… DONE`; a task silent for *hours* on CPU
 is the thread-oversubscription bug (Troubleshooting). Don't change NQuad (48), bands, views, `COST_RTOL`,
 or worker physics. The sbatch below is a **CPU example** — adjust venue/resources to your plan.
 
@@ -213,8 +219,9 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
 
 - **Hang on the first forward/Jacobian** → Troubleshooting (thread oversubscription — the main risk; the
   `XLA_FLAGS` default in the sbatch fixes it).
-- **Timeout / wall:** per-task time is **unpredictable from metadata** and the **thin profiles can be the
-  slowest** (IC report — do NOT assume the thick `idx 40/42/119` are the tail). Either raise `--time`
+- **Timeout / wall:** per-task time is **only partly predictable** (the IC per-Jac time is a
+  per-*iteration* proxy, not a total — see Step 2); **don't pre-judge any τ band as the tail** (thin-slow
+  vs mid-τ-slow is unsettled pre-FR — let the FR walls decide). Either raise `--time`
   (cluster permitting) and resubmit only the walled indices (e.g. `sbatch --array=… …`), or — with the
   checkpoint/resume above implemented — just resubmit and they continue from their last checkpoint. Don't
   re-run the whole array.
@@ -255,8 +262,8 @@ Results are delivered **as the zip (Step 3), NOT via Git** — do **not** commit
 the array finishes and the bundle is built, report: (1) records vs `skipped` (expect 1 skip — RF01
 τ≈1585); (2) the **`npz in bundle` count** (≈250 = 125×{A,B}) and the bundle path + size; (3) how many
 retrievals flagged `converged:false` or `structural_misfit:true` (per config); (4) **per-task wall times —
-min / median / max, and which indices walled / needed resume** (NOT pre-judged by τ — thin can be the
-slowest) — so the primary can judge scheduling; (5) venue + whether the `XLA_FLAGS` single-thread fix held
+min / median / max, and which indices walled / needed resume** (NOT pre-judged by τ — the thin-vs-mid-τ
+tail is unsettled pre-FR; these walls are what settle it for posterity) — so the primary can judge scheduling; (5) venue + whether the `XLA_FLAGS` single-thread fix held
 (no hung tasks) + whether checkpoint/resume was exercised; (6) any errors / timed-out task indices. The
 primary downloads `cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`)
 on jovyan.

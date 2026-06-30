@@ -16,11 +16,16 @@ node-local `/local` ($SCRATCH), invisible on compute nodes). Mirror the existing
 
 ## Context — why
 
-Batch-3 (`fr`) full retrievals are expensive and per-profile cost is **unpredictable from cheap
-metadata**: the IC batch-2 report measured `r(time, τ)=0.004`, `r(time, native-nodes)=0.05`, and
-found **thin (low-τ) profiles are the slowest** (idx-20, τ=1.5, was the priciest in the §A3 GPU
-probe — walled at 12 h still iterating). So you **cannot right-size per-profile walls** by sorting on
-τ/nodes/rad-time. Today a task that walls **mid-solve loses all work**; the worker persists each
+Batch-3 (`fr`) full retrievals are expensive and per-profile cost is **only partly predictable**: the
+IC batch-2 config-A pass timed every profile's Jacobian (≈ FR's per-*iteration* cost), so
+`n_int`/measured-time is a *usable* per-iteration proxy — but it does **not** capture GN iteration
+*count*, so total per-task cost stays uncertain. Two partial, **conflicting** signals exist (and
+neither is settled): §A3 flagged **thin** profiles as convergence-over-sensitive — the "thin is
+slowest" note, from the **tol=1e-5** regime where idx-20 (τ=1.5) walled at 12 h still iterating —
+whereas the IC **tol=1e-4** per-Jac times have thin profiles *cheapest* per-iter and mid-τ (τ≈9–14,
+high `n_int`) dearest. **This stays open until FR's own end-to-end walls exist; revisit/revise the
+scheduling guidance then (for posterity).** Either way you **cannot fully right-size per-profile walls**
+a priori — which is exactly why checkpoint/resume is the robust hedge. Today a task that walls **mid-solve loses all work**; the worker persists each
 *config* on convergence (`retrieval_worker.py` `_persist`, commit 454cad5) but a config that walls
 *during* its GN solve keeps nothing.
 
