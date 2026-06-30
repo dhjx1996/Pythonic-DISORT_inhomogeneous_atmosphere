@@ -61,6 +61,8 @@ _here = Path(__file__).resolve().parent
 _src = _here.parents[1] / "src"
 sys.path.insert(0, str(_src))
 sys.path.insert(0, str(_here))
+import runtime_setup                                                 # noqa: E402
+runtime_setup.setup()                                               # affinity pin BEFORE JAX (crew1 XLA-oversubscription fix: 8fc43cf/a5ab9a7/b0ae236)
 import vocals_io as vio                                              # noqa: E402
 import retrieval_oe as roe                                          # noqa: E402
 import noise_model as nm                                            # noqa: E402
@@ -186,7 +188,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
 
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
-                 cost_rtol=COST_RTOL, chi2_floor=None, config="A"):
+                 cost_rtol=COST_RTOL, chi2_floor=None, config="A", checkpoint_path=None):
     """Run ONE Gauss–Newton OE retrieval (a given prior/first-guess) on the fixed
     grid and assemble the raw sidecar dict + slim monitoring scalars. All inputs that
     differ between configs are x_a / x0 / Sa; everything else (fwd, y, Se, s_grid) is
@@ -201,7 +203,7 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
             fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
             cost_rtol=cost_rtol, chi2_floor=chi2_floor,
             max_n_outer=1, prior_builder=pb_log, remesh_if_chi2_red_gt=2.0, warn=True,
-            verbose=VERBOSE)
+            verbose=VERBOSE, checkpoint_path=checkpoint_path)
     if VERBOSE:
         print(f"  [{index}] config {config}: GN done in {time.time()-_t:.0f}s "
               f"({len(res.cost_history)} accepted iters, converged={res.converged})", flush=True)
@@ -315,24 +317,37 @@ def main():
 
         # Persist each config's artifacts the moment that config finishes, so a
         # later config-B wall/crash cannot erase an already-converged config A.
+        # Layer-1 resume: each config GN-solves with a per-config checkpoint
+        # ({prefix}_{tag}.ckpt.npz) so a walled task resumes mid-solve (≤1 GN iter lost);
+        # on done we persist the result and DROP the checkpoint. On restart a config whose
+        # .npz already exists is skip-resumed (its sibling's wall can't redo it).
         def _persist(tag, sc, mon):
             np.savez(f"{out_prefix}_{tag}.npz", **sc)
             Path(f"{out_prefix}_{tag}.json").write_text(
                 json.dumps({kk: vv for kk, vv in mon.items()}))
+            Path(f"{out_prefix}_{tag}.ckpt.npz").unlink(missing_ok=True)
 
         # config A — LOO prior mean is x_a and x0
-        sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
-                                   Sa_log, truth, pb_log, index=index, config="A")
-        _persist("A", sc_A, mon_A)
+        if Path(f"{out_prefix}_A.npz").exists():
+            print(f"[{index}] config A already persisted — resume-skip", flush=True)
+        else:
+            sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
+                                       Sa_log, truth, pb_log, index=index, config="A",
+                                       checkpoint_path=f"{out_prefix}_A.ckpt.npz")
+            _persist("A", sc_A, mon_A)
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
-        draw, info = roe.draw_climatology_realization(
-            clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
-        x_draw_log = fwd._encode_state(draw)
-        sc_B, mon_B = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
-                                   Sa_log, truth, pb_log, index=index, config="B")
-        sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
-                                        for k_, v in info.items()})
-        _persist("B", sc_B, mon_B)
+        if Path(f"{out_prefix}_B.npz").exists():
+            print(f"[{index}] config B already persisted — resume-skip", flush=True)
+        else:
+            draw, info = roe.draw_climatology_realization(
+                clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
+            x_draw_log = fwd._encode_state(draw)
+            sc_B, mon_B = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
+                                       Sa_log, truth, pb_log, index=index, config="B",
+                                       checkpoint_path=f"{out_prefix}_B.ckpt.npz")
+            sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
+                                            for k_, v in info.items()})
+            _persist("B", sc_B, mon_B)
 
         rec.update(grid=np.round(s_grid, 4).tolist(), K_list=list(map(int, fwd.K_list)),
                    runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,

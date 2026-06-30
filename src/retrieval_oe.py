@@ -990,8 +990,35 @@ class OEResult:
     converged: bool = False
 
 
+def _save_gn_checkpoint(path, x, lm_cur, history, it_done):
+    """Layer-1 GN checkpoint: atomic dump of ``(x, lm_cur, history, it_done)`` via
+    temp-file + ``os.replace`` (a wall mid-write cannot corrupt the live file). Plain
+    numpy → portable across GPU↔CPU and GPU types (FR_CHECKPOINT_RESUME_PLAN). Keep it
+    tiny: K/Fx are recomputed on resume (one iteration's cost), never persisted."""
+    import os
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".ckpt.tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:                         # file-object => no .npz munging
+            np.savez(f, x=np.asarray(x, float), lm_cur=float(lm_cur),
+                     history=np.asarray(history, float), it_done=int(it_done))
+        os.replace(tmp, path)                                  # atomic on POSIX (same FS)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def _load_gn_checkpoint(path):
+    """Restore ``(x, lm_cur, history, it_done)`` written by :func:`_save_gn_checkpoint`."""
+    d = np.load(path, allow_pickle=False)
+    return (np.asarray(d["x"], float), float(d["lm_cur"]),
+            [float(v) for v in np.asarray(d["history"], float)], int(d["it_done"]))
+
+
 def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
-              cost_rtol=None, chi2_floor=None, verbose=False):
+              cost_rtol=None, chi2_floor=None, verbose=False, checkpoint_path=None):
     """Inner **adaptive Levenberg–Marquardt** OE solve on a fixed (normalized-depth)
     retrieval grid (Rodgers n-form, damped). Each iterate is projected onto the
     physical/table bounds (:meth:`RetrievalForward._clamp_state`).
@@ -1020,6 +1047,7 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     ``history`` logs the full OE cost ``J = ½‖y−F‖²_{Sε⁻¹} + ½‖x−x_a‖²_{Sa⁻¹}`` at the
     initial guess and each accepted iterate (monotone non-increasing).
     """
+    import os
     import time as _time
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
@@ -1038,19 +1066,33 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         J = 0.5 * dchi2 + 0.5 * float((xv - x_a) @ Sa_inv @ (xv - x_a))
         return J, dchi2, r
 
-    x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
-    _tf = _time.time(); Fx = np.asarray(fwd.forward(x, s_nodes), float)
-    _t_fwd0 = _time.time() - _tf
-    _tj = _time.time(); K = np.asarray(fwd.jacobian(x, s_nodes), float)   # (m, p)
-    _t_jac0 = _time.time() - _tj
-    J, dchi2, r = _cost(x, Fx)
-    phi = np.sqrt(dchi2)
-    history = [J]
-    converged = False
-    lm_cur = max(float(lm), LM_MIN)
-    _log(f"init: p={K.shape[1]} J={J:.4g} chi2_red={dchi2/m:.3g} "
-         f"(forward {_t_fwd0:.1f}s, jacobian {_t_jac0:.1f}s [compile-incl])")
-    for _it in range(n_iter):
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        # Layer-1 resume: reload (x, lm_cur, history, it_done); recompute Fx/K at x
+        # (never persisted — ~1 iteration's cost). Bit-exact to the top of iter it_done.
+        x, lm_cur, history, it_start = _load_gn_checkpoint(checkpoint_path)
+        x = fwd._clamp_state(np.asarray(x, float), s_nodes)
+        Fx = np.asarray(fwd.forward(x, s_nodes), float)
+        K = np.asarray(fwd.jacobian(x, s_nodes), float)
+        J, dchi2, r = _cost(x, Fx)
+        phi = np.sqrt(dchi2)
+        converged = False
+        _log(f"resumed from {os.path.basename(checkpoint_path)} at iter {it_start} "
+             f"(J={J:.4g}, lm={lm_cur:.2g})")
+    else:
+        it_start = 0
+        x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
+        _tf = _time.time(); Fx = np.asarray(fwd.forward(x, s_nodes), float)
+        _t_fwd0 = _time.time() - _tf
+        _tj = _time.time(); K = np.asarray(fwd.jacobian(x, s_nodes), float)   # (m, p)
+        _t_jac0 = _time.time() - _tj
+        J, dchi2, r = _cost(x, Fx)
+        phi = np.sqrt(dchi2)
+        history = [J]
+        converged = False
+        lm_cur = max(float(lm), LM_MIN)
+        _log(f"init: p={K.shape[1]} J={J:.4g} chi2_red={dchi2/m:.3g} "
+             f"(forward {_t_fwd0:.1f}s, jacobian {_t_jac0:.1f}s [compile-incl])")
+    for _it in range(it_start, n_iter):
         lhs_base = K.T @ Se_inv @ K
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
         accepted = False
@@ -1080,6 +1122,8 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         lm_cur = max(lm_cur * 0.5, LM_MIN)                    # accept → ease toward pure GN
         _log(f"iter {_it}: J={J:.4g} chi2_red={dchi2/m:.3g} rel={rel:.2e} "
              f"({_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
+        if checkpoint_path is not None:                       # Layer-1: persist POST-ease lm_cur
+            _save_gn_checkpoint(checkpoint_path, x, lm_cur, history, _it + 1)
         if cost_rtol is not None and rel < cost_rtol:
             converged = True
             break
@@ -1100,7 +1144,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     cost_rtol=None, chi2_floor=None,
                     max_n_outer=2, prior_builder=None, filter_threshold=0.5,
-                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True, verbose=False):
+                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True, verbose=False,
+                    checkpoint_path=None):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
     The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
@@ -1143,7 +1188,7 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol,
                                      cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-                                     verbose=verbose)
+                                     verbose=verbose, checkpoint_path=checkpoint_path)
     full_hist = list(hist)
 
     def _chi2_red():
