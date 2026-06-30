@@ -47,6 +47,21 @@ JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 # Expect: [CudaDevice(id=0)] (or similar). If "no CUDA device found", the upgrade didn't take.
 ```
 
+> **CORRECTION (2026-06-29, from the `rad`-batch agent — applies to EVERY GPU job here):** the
+> 0.10.2 upgrade is correct and the GPU works at 0.10.2 — **do not revert the JAX version.** But
+> the verify command above **fails on a GPU node even when the env is fine**, and so does every
+> Step-3 array task *as written*, because the login profile puts `~/cuda-12.6/lib64` on
+> `LD_LIBRARY_PATH`, which **shadows the pip-bundled CUDA 12.9 libs** → `Unable to load cuSPARSE` →
+> the `cuda` backend disappears (`Backend 'cuda' is not in the list of known backends:
+> ['cpu','tpu']`). Diagnosed live on g097: clearing `LD_LIBRARY_PATH`, *or* prepending the pip
+> nvidia lib dirs, restores `[CudaDevice(id=0)]`. **Every GPU job — this verify AND the Step-3
+> sbatch — must prepend the pip nvidia libs before importing jax:**
+>
+> ```bash
+> NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
+> export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
+> ```
+
 ## Step 1 — optics table (build once; ~4 min)
 
 ```bash
