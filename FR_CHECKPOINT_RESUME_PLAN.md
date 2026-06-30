@@ -91,6 +91,25 @@ resume (same profile → same `k` → same forward/jacobian shapes) the compiles
 - **Caveat (HPC agent's call):** the cache keys on the XLA *backend* — a resume on a *different* GPU
   type (or CPU↔GPU) misses → recompiles (still correct, just slower). Pin the card (`-C`) for
   guaranteed hits, or accept the recompile. Within-card resumes hit.
+- **This is the same cache as the IC-batch `ptxas` mitigation — widened, not separate.** The IC
+  `ptxas` / `NVPTXCompiler` aborts (≈9/126 SIGABRT, GPU-only, load-dependent, **not** memory) are
+  repeated *compiles* hitting a flaky `ptxas` subprocess. A cache **hit replays a stored cubin and
+  runs no `ptxas` at all**, so it strictly removes abort opportunities, not just slowness. With one
+  shared `FR_COMPILE_CACHE_DIR` the hits are (i) **same-profile resume** — guaranteed (same `k`,
+  `K_list`, card); and (ii) **cross-task** — opportunistic, whenever another task matches the
+  production forward/jacobian's static key `(k, per-band mode count K_list, XLA backend/card)`. Total
+  compiles drop from "once per task" toward "once per distinct shape" — *fewer*, not one (the shape
+  varies with the profile's selected `k`/`K_list`). This is **not** the ~1–2 % cross-profile figure
+  that retired the solve-time cache: that was dominated by the **un-cacheable** `select_retrieval_grid`
+  pool Jacobian (state-dependent grid width), which **Layer 2 removes** from the resume path — what
+  the cache keeps is exactly the well-keyed forward/jacobian.
+- **What the cache can't catch, Layer 1 does.** The cache never preempts a *cold* compile — the first
+  task to build a given shape, and every un-cacheable pool-Jac compile in setup, still invokes `ptxas`
+  and can still abort. In the IC batch that meant re-running the whole task; here **Layer 1 resumes
+  from the last GN checkpoint (≤1 iteration lost)**, and a resumed task also skips the setup pool-Jac
+  via Layer 2. Net composition: **Layer 3 cuts how OFTEN `ptxas` runs; Layers 1–2 make the residual
+  aborts cheap.** All `ptxas`-specific — a CPU venue has no `ptxas`, so there the cache is pure
+  compile-overhead savings and aborts are a non-issue.
 
 ## Are checkpoints compatible across GPU↔CPU (and across GPU types)?
 

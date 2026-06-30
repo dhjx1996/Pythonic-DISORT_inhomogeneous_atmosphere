@@ -219,6 +219,11 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
   checkpoint/resume above implemented — just resubmit and they continue from their last checkpoint. Don't
   re-run the whole array.
 - **OOM** (exit 137; unlikely at `--mem=12G`): raise `--mem`, or on Venue B lower `-P`.
+- **GPU `ptxas` compile abort** (`Aborted (core dumped)` in `CompileGpuAsmUsingPtxAs` /
+  `NVPTXCompiler`; **GPU-only**, ≈9/126 in the IC batch; transient/load-dependent, **not** memory —
+  don't raise `--mem`): the persistent compile cache (Layer 3, `FR_COMPILE_CACHE_DIR`) makes it rarer
+  (cache hits skip `ptxas`); when one still hits, **just resubmit — the task resumes from its last GN
+  checkpoint** (Layer 1), losing ≤1 iteration. Only the first/cold compile of each shape is exposed.
 - **Degenerate profiles** auto-write `{"skipped": ...}` in `<i>.json` (no `_A`/`_B` sidecars) — **expect
   exactly 1** (index 0, RF01, τ≈1585). Any other skip is worth a glance but not a failure.
 - **Non-converged retrievals** are NOT failures — the worker flags `converged:false` / `structural_misfit`
