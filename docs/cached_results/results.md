@@ -365,7 +365,10 @@ Probe #3 is complete. Settled outcomes:
 - **Part B complete** — all suspect cards (V100S/RTX8000/A40) match the A100 gold signature; f64
   viable pool-wide. Final card-placement/routing policy is deferred to the primary.
 
-The idx-20 f32 floor is left unpinned by decision (no resubmit). All jobs ran within the 12 h wall;
-no >12 h needs outstanding. idx-40 f64/tol1e-5 (8630289) was still finishing config B at closeout —
-its config-A floor (χ²ᵣ 0.0037) already reproduced the original and completes the Verdict (b) pair;
-config B is not needed for any conclusion here.
+The idx-20 f32 floor is left unpinned by decision (no resubmit). idx-40 f64/tol1e-5 (8630289) has
+now concluded: **config A converged** (χ²ᵣ 0.0037, reproducing the original and completing the
+Verdict (b) pair), while **config B hit the 12 h wall** (iter 2, χ²ᵣ 11.7, still descending — did not
+converge). This is immaterial to every conclusion here: config B is a tol=1e-5 *reference* leg, and
+tol=1e-5's tendency to wall the heavier legs is itself part of why **tol=1e-4 is the adopted default**
+(Verdict (b)). No conclusion-bearing run needed >12 h — the only >12 h demand comes from the
+deprecated tol=1e-5 reference, never from the operational tol=1e-4.
