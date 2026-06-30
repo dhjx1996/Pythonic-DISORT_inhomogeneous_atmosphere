@@ -94,6 +94,12 @@ fixed shape, so most compilation is shared across profiles after the first). **W
 forwards already hit 40 min, so IC Jacobians can exceed 1 h on RTX8000/A40). **Mem 32 G** (batch-1
 saw SIGABRT in the XLA CPU threadpool at 16 G on the cheaper forward). All partitions listed.
 
+> **CORRECTION (batch-2, 2026-06-30):** 32 G is NOT enough for the heavy/thick tail — those
+> profiles also SIGABRT (`Aborted (core dumped)`) in the XLA **CPU host** threadpool at 32 G
+> (≈9 of 126 per mode). Re-run the heavy tail at **64 G**. The thin/low-τ profiles are fine at
+> 32 G (slowness ≠ memory). Wall: observed max ≈ 177 min (RTX8000); the 12 h default is very safe
+> — a ~4–6 h wall would suffice for a re-run.
+
 **Affinity (already in both workers):** `runtime_setup.setup()` claims an atomic per-node core
 slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 collisions).
 
@@ -134,7 +140,7 @@ PY=__PY__
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_profile.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_A_parts/$SLURM_ARRAY_TASK_ID
+     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_A_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 # ------- Array B: profile-worker, draw -------
@@ -163,7 +169,7 @@ PY=__PY__
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_profile.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_B_parts/$SLURM_ARRAY_TASK_ID
+     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_B_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 # ------- Array C: mechanism-worker -------
@@ -191,7 +197,7 @@ PY=__PY__
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
 srun __PY__ tests/supplementary/ic_worker_mechanism.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_C_parts/$SLURM_ARRAY_TASK_ID
+     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_C_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 for F in /tmp/icA.sbatch /tmp/icB.sbatch /tmp/icC.sbatch; do
