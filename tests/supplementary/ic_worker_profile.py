@@ -93,17 +93,23 @@ try:
 
     ts = np.asarray(truth.tau, float) / truth.tau_bot
     o = np.argsort(ts)
-    x_tru = np.concatenate([np.interp(s_ref, ts[o], np.asarray(truth.r_e, float)[o]),
-                            [truth.r_base], [truth.tau_bot]])
-    xa_sref = np.asarray(roe.make_climatology_prior(s_ref, clim)[0])  # LOO prior MEAN on s_ref
+    x_tru_phys = np.concatenate([np.interp(s_ref, ts[o], np.asarray(truth.r_e, float)[o]),
+                                 [truth.r_base], [truth.tau_bot]])
+    x_tru = fwd._encode_state(x_tru_phys)                         # physical -> forward state space
+    xa_sref = np.asarray(roe.make_climatology_prior(s_ref, clim)[0])  # LOO prior MEAN on s_ref (physical)
     nb6 = len(s_ref) + 1                                           # r_e nodes + r_base (drop tau_bot)
 
     lin = {}
     if IC_MODE == 'priormean':                                    # set iv (HEADLINE): LOO prior mean
-        x_lin = np.concatenate([xa_sref[:nb6], [truth.tau_bot]])
+        x_lin_phys = np.concatenate([xa_sref[:nb6], [truth.tau_bot]])
     else:                                                         # draw (v): a physical 3-param ADIABATIC
-        x_lin, lin = roe.draw_climatology_realization(            # realization (r_top,r_base~LOO; τ_bot=truth)
+        x_lin_phys, lin = roe.draw_climatology_realization(       # realization (r_top,r_base~LOO; τ_bot=truth)
             clim, s_ref, rng=np.random.default_rng(1000 + idx), tau_bot=truth.tau_bot)
+    # STATE-SPACE MATCH (batch-2 null-K fix): the forward is LOG-state (osse_config default).
+    # _split_state exp()'s the state, so a PHYSICAL x_lin becomes exp(r_e)~thousands of µm,
+    # clamping table_lookup to the [2,20] table edge -> derivative=0 -> EXACTLY-ZERO Jacobian.
+    # _encode_state maps physical->log (identity if the forward were linear-state).
+    x_lin = fwd._encode_state(x_lin_phys)
 
     t0 = time.time()
     print(f"[{idx}] {flight} tau={truth.tau_bot:.1f} mode={IC_MODE}: optics ready, building Jacobian...", flush=True)
@@ -113,6 +119,9 @@ try:
     print(f"[{idx}] {flight}: radiance Jacobian done in {time.time()-t0:.0f}s "
           f"(n_int={s_int.size}, base incl.); flux Jacobian...", flush=True)
     K_flux, _ = flux_jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
+    if not (np.abs(K_full).max() > 0 and np.abs(K_flux).max() > 0):   # rigor: a null deliverable is a FAIL,
+        raise ValueError(f"NULL Jacobian (maxabs K_full={np.abs(K_full).max():.2e}, "  # not a silent 'done'
+                         f"K_flux={np.abs(K_flux).max():.2e}) — linearization off-table / state-space bug.")
     n = s_int.size
     s = np.array(s_int)
     s_interior = s[:-1]                                           # base re-appended by make_climatology_prior
@@ -148,7 +157,7 @@ try:
                  s_int=s, n_int=n, K_full=np.asarray(K_full), K_flux=np.asarray(K_flux),
                  sigma_full=sig_full, sigma_flux=sig_flux,
                  y_full=np.asarray(y), y_flux=np.asarray(y_flux),   # reflectance -> rebuild Se at any noise
-                 x_lin=np.asarray(x_lin),
+                 x_lin=np.asarray(x_lin_phys), state_space=fwd.state_space,
                  lin=json.dumps(lin), sigma_weak=(SIGMA_WEAK if IC_MODE == 'priormean' else np.nan),
                  radiance_tol=truth_tol)
     for nmk, Sa in priors.items():

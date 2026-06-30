@@ -64,11 +64,15 @@ try:
                            mode_map=os.environ.get('MODE_MAP', 'scan'))
     ts = np.asarray(truth.tau, float) / truth.tau_bot
     o = np.argsort(ts)
-    x_tru = np.concatenate([np.interp(s_ref, ts[o], np.asarray(truth.r_e, float)[o]),
-                            [truth.r_base], [truth.tau_bot]])
+    x_tru = fwd._encode_state(np.concatenate([                   # physical -> forward state space (log)
+        np.interp(s_ref, ts[o], np.asarray(truth.r_e, float)[o]),
+        [truth.r_base], [truth.tau_bot]]))
     # LOO prior-MEAN linearization point (truth-linearization retired)
-    xa = np.asarray(roe.make_climatology_prior(s_ref, clim)[0])
-    x_lin = np.concatenate([xa[:len(s_ref) + 1], [truth.tau_bot]])
+    xa = np.asarray(roe.make_climatology_prior(s_ref, clim)[0])   # physical
+    x_lin_phys = np.concatenate([xa[:len(s_ref) + 1], [truth.tau_bot]])
+    # STATE-SPACE MATCH (batch-2 null-K fix): forward is LOG-state; a physical x_lin gets
+    # exp()'d to ~thousands of µm -> off the [2,20] table -> clamp -> EXACTLY-ZERO Jacobian.
+    x_lin = fwd._encode_state(x_lin_phys)
     roe.select_num_modes(fwd, x_lin, s_ref, (0.005 ** 2) * np.eye(fwd.m))
     K_full, s_int = jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
     print(f"[{idx}] {flight}: radiance Jacobian done in {time.time()-t0:.0f}s "
@@ -99,6 +103,9 @@ try:
         for k in range(NVIEW)]
 
     K_flux, _ = flux_jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
+    if not (np.abs(K_full).max() > 0 and np.abs(K_flux).max() > 0):   # rigor: null deliverable = FAIL
+        raise ValueError(f"NULL Jacobian (maxabs K_full={np.abs(K_full).max():.2e}, "
+                         f"K_flux={np.abs(K_flux).max():.2e}) — linearization off-table / state-space bug.")
     y_flux = fwd.flux_reflectance(x_tru, s_ref)
     Se_flux = NOISE.Se(y_flux, n_bands=NB)
     nadir = np.array(rows_k(0))
