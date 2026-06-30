@@ -34,9 +34,16 @@ JSON only — there is **no** `_ic_C_parts/*.npz`).
 2. **Missing `.json`** — the first path fix dropped the extension → files named `21` not
    `21.json` (valid data, but breaks `cp *.json` bundling). **Fix:** `.json` in the path;
    priormean's 124 already-written files renamed on disk (no re-run needed).
-3. **OOM at 32 G** — the heavy/thick tail SIGABRTs (`Aborted (core dumped)`) in the XLA **CPU
-   host** threadpool even at 32 G (≈9/126 per mode). **Fix:** re-ran the heavy tail at **64 G**;
-   handoff mem guidance updated.
+3. **`ptxas` PTX-compilation aborts** (≈9/126 per mode) — tasks SIGABRT (`Aborted (core dumped)`)
+   inside the XLA GPU compiler: `CompileGpuAsmUsingPtxAs` / `NVPTXCompiler::CompileTargetBinary`,
+   with **MaxRSS only ~5 MB–5 GB (NOT memory)**. Hits the compile-heaviest kernels, spread across
+   ~7 nodes (1–2 each, transient/load-dependent — likely `ptxas` subprocess contention, possibly
+   tied to the pip-CUDA-12.9 `ptxas` vs node driver). **Fix that worked: simply re-run** — retries
+   land on a healthy node and succeed regardless of memory. (I had first mis-read this as a 32 G
+   host-RAM OOM and bumped to 64 G; the 64 G was incidental, not causal.) **Real batch-3 mitigation:
+   a persistent JAX compilation cache** (`JAX_COMPILATION_CACHE_DIR` on shared FS) — compile each
+   kernel once and reuse across all 378 tasks, which both removes the repeated `ptxas` crash
+   exposure *and* cuts the large per-task compile overhead baked into the wall times below.
 4. *(infra)* CPU-offload attempts first wrote to node-local `/local` (`$SCRATCH`, invisible on
    compute nodes); `apam1` is low-priority `burst` QOS and won't backfill long walls. **Fix:**
    outputs to shared `/burg-archive`; use `short` (account=crew, no `--gres`) for any CPU work.

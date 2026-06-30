@@ -94,11 +94,14 @@ fixed shape, so most compilation is shared across profiles after the first). **W
 forwards already hit 40 min, so IC Jacobians can exceed 1 h on RTX8000/A40). **Mem 32 G** (batch-1
 saw SIGABRT in the XLA CPU threadpool at 16 G on the cheaper forward). All partitions listed.
 
-> **CORRECTION (batch-2, 2026-06-30):** 32 G is NOT enough for the heavy/thick tail — those
-> profiles also SIGABRT (`Aborted (core dumped)`) in the XLA **CPU host** threadpool at 32 G
-> (≈9 of 126 per mode). Re-run the heavy tail at **64 G**. The thin/low-τ profiles are fine at
-> 32 G (slowness ≠ memory). Wall: observed max ≈ 177 min (RTX8000); the 12 h default is very safe
-> — a ~4–6 h wall would suffice for a re-run.
+> **CORRECTION (batch-2, 2026-06-30):** ≈9/126 tasks per mode SIGABRT (`Aborted (core dumped)`),
+> but **NOT from memory** — the traceback is in the XLA GPU compiler (`CompileGpuAsmUsingPtxAs` /
+> `NVPTXCompiler`) with MaxRSS only ~MB–GB. It's a transient/load-dependent `ptxas` subprocess
+> crash on the compile-heaviest kernels, spread across nodes. **Just re-run the failures** — they
+> succeed on a healthy node (32 G is fine; memory is not the issue). For a clean re-run, set a
+> **persistent JAX compilation cache** (`JAX_COMPILATION_CACHE_DIR` on shared FS) so kernels
+> compile once and are reused — removes the `ptxas`-crash exposure and the big per-task compile
+> overhead. Wall: observed max ≈ 177 min (RTX8000); the 12 h default is very safe.
 
 **Affinity (already in both workers):** `runtime_setup.setup()` claims an atomic per-node core
 slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 collisions).
