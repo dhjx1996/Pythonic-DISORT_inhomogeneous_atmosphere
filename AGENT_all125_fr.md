@@ -78,6 +78,24 @@ EOF
 **Export `OPTICS_CACHE` in every sbatch** (already wired below). `miepython` and `numba` must be in the
 env (`$PY -m pip install miepython` if missing).
 
+## Step 0b — stage the TRUTH-radiance cache (the OSSE observation `y`)
+
+The retrieval does **not** recompute radiances — it LOADS the precomputed truth `y = F(x_truth)` per
+index from a signature-gated **radiance cache** (`osse_config.load_radiance`). This is the batch-1
+product, delivered as `osse_radiances_bundle.zip` in the workspace root; **extract it** so the worker
+finds `cloud_profile_retrieval/rad_bundle/osse_radiances.npz`:
+```bash
+cd /burg-archive/home/dh3065/cloud_profile_retrieval
+unzip -o osse_radiances_bundle.zip          # -> rad_bundle/osse_radiances.npz
+```
+Verified contents: signature `d71a8559bbe457e8` (matches `osse_config.signature()`), tol-tag **1e-4**
+(the truth tier), **125 valid profiles** (idx 1–125; idx-0 absent = the degenerate τ≈1585 skip). The
+worker's `RADIANCE_CACHE` default already resolves here; the sbatch below also exports it explicitly
+and sets `RADIANCE_TOL=1e-4` to activate the truth-tol gate (rigor — refuses a wrong-accuracy cache).
+**NB (corrected):** an earlier draft named this `osse_radiances_125.npz` — that was a stale provisional
+(tol=1e-3, superseded); the correct current cache is `osse_radiances.npz`. The worker default has been
+fixed to match.
+
 ## Step 1 — JAX (CPU) env
 
 The retrieval runs in **float64** (`export PYDISORT_RICCATI_JAX_X64=1`), exactly as the IC run did.
@@ -151,6 +169,7 @@ cat > /tmp/fr.sbatch <<EOF
 export JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # REQUIRED: single-thread XLA (cpt=1) — see Troubleshooting
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/rad_bundle/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b; sig d71a8559, tol=1e-4)
 export OMP_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} MKL_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} NUMEXPR_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 srun --cpu-bind=cores $PY tests/supplementary/retrieval_worker.py \$SLURM_ARRAY_TASK_ID \
@@ -166,6 +185,7 @@ stem** `…/_fr_parts/$SLURM_ARRAY_TASK_ID` — no extension.)
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/rad_bundle/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b)
 export PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # single-thread XLA (see Troubleshooting)
 mkdir -p docs/cached_results/_fr_parts

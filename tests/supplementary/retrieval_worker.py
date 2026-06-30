@@ -84,7 +84,7 @@ DATA = os.environ.get('VOCALS_DATA',
                       'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
 OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1536_re20.npz'))
 RADIANCE_CACHE = Path(os.environ.get('RADIANCE_CACHE', _here.parents[2]
-                                     / 'rad_bundle' / 'osse_radiances_125.npz'))
+                                     / 'rad_bundle' / 'osse_radiances.npz'))   # batch-1 truth cache (sig d71a8559, tol=1e-4, 125 profiles); extracted from osse_radiances_bundle.zip
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
