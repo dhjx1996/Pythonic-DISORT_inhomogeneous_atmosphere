@@ -313,9 +313,17 @@ def main():
         # shared LOG climatology prior on the selected grid (Sa_log shared by A & B)
         x_a_clim_log, Sa_log = roe.make_climatology_prior(s_grid, clim, log=True)
 
+        # Persist each config's artifacts the moment that config finishes, so a
+        # later config-B wall/crash cannot erase an already-converged config A.
+        def _persist(tag, sc, mon):
+            np.savez(f"{out_prefix}_{tag}.npz", **sc)
+            Path(f"{out_prefix}_{tag}.json").write_text(
+                json.dumps({kk: vv for kk, vv in mon.items()}))
+
         # config A — LOO prior mean is x_a and x0
         sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
                                    Sa_log, truth, pb_log, index=index, config="A")
+        _persist("A", sc_A, mon_A)
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
         draw, info = roe.draw_climatology_realization(
             clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
@@ -324,11 +332,7 @@ def main():
                                    Sa_log, truth, pb_log, index=index, config="B")
         sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
                                         for k_, v in info.items()})
-
-        for tag, sc in (("A", sc_A), ("B", sc_B)):
-            np.savez(f"{out_prefix}_{tag}.npz", **sc)
-            Path(f"{out_prefix}_{tag}.json").write_text(json.dumps(
-                {kk: vv for kk, vv in (mon_A if tag == "A" else mon_B).items()}))
+        _persist("B", sc_B, mon_B)
 
         rec.update(grid=np.round(s_grid, 4).tolist(), K_list=list(map(int, fwd.K_list)),
                    runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,
