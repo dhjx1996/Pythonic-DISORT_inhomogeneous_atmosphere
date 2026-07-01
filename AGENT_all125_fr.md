@@ -128,6 +128,16 @@ echo "N=$N profiles"
 
 ## Checkpoint / resume + compile cache — implement FIRST (`FR_CHECKPOINT_RESUME_PLAN.md`)
 
+> **✅ STATUS (2026-06-30 batch-3):** **Layer 1 is implemented (commit 9bc7e5f) and verified** — a walled
+> task resumes at its last GN iteration (`range(it_start, n_iter)`); confirmed by code + the production
+> run. **Layer 3 (compile cache) does NOT capture FR's forward/Jacobian** (FR GPU cache = 1 entry + 14 MB
+> autotune; FR CPU cache = 40 KB helper jits only) — do **not** count on cache hits speeding FR resumes.
+> **Layer 2 is NOT implemented and is the real resume saver:** every resume re-runs the full
+> `build_forward_and_obs` setup (**~106 min on A100 thick / ~50–100 min CPU**) before Layer 1 engages.
+> And **FR is execution-bound, not compile-bound** (A100 Jacobian ~600–700 s each, ×~18 ≈ 3.5 h/thick
+> profile), so caching saves ~10–15% at best and **more CPU cores don't help** (keep cpt=1). See the
+> "Field status" block in `FR_CHECKPOINT_RESUME_PLAN.md` for the full readout + viability ranking.
+
 Before the production sweep, implement (and test) the checkpoint/resume + resume-scoped compile cache
 specified in **`FR_CHECKPOINT_RESUME_PLAN.md`** (repo root — the original is on Git; you may revise it as
 you see fit). It makes a walled task **resumable** (a wall loses ≤1 GN iteration, not the whole task), so

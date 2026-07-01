@@ -48,6 +48,49 @@ grid cannot be resumed onto the new grid without also versioning the grid and ha
 transition — out of scope here. fr uses `max_n_outer=1`, so this is not a practical limitation; just
 do not combine re-meshing with resume without extending the design.
 
+## ✅ Field status (2026-06-30, batch-3 all-125 run) — implemented vs. how it actually performs
+
+Measured in production. **TL;DR: Layer 1 works and is the high-value feature; Layer 3 is a sideshow for
+FR; Layer 2 (unimplemented) is now the biggest missing win. FR is execution-bound, not compile-bound —
+which reframes all of this.**
+
+- **Layer 1 — GN-iteration checkpoint: ✅ IMPLEMENTED (commit 9bc7e5f) + VERIFIED.** `_gn_inner` resumes
+  at the last completed iteration (`for _it in range(it_start, n_iter)`); a wall on iter 5 restarts at
+  iter 5, losing at most the in-flight iteration. Re-pays only a recompile + **one Fx/K recompute** at
+  the checkpointed x (Fx/K are not persisted — the "~1 iteration" cost). **Importance: HIGH (core).
+  Viability: PROVEN.** This is what makes chunked 12h-wall runs safe.
+
+- **Layer 2 — setup checkpoint: ❌ NOT IMPLEMENTED — now the highest-value gap.** The worker re-runs the
+  FULL setup (`build_forward_and_obs`: forward build + `select_num_modes` + τ_bot pre-retrieval + grid
+  re-select) on **every** resume, BEFORE Layer 1 engages. Measured: **~106 min on A100 for a thick
+  profile (idx 49); ~50–100 min single-core CPU** (idx 3 `select_num_modes` alone was 49 min at cpt=1).
+  This dominates the resume tax, and Layer 3 does NOT cache it — so Layer 2 is the only way to make
+  resumes cheap. **Importance: HIGH (elevated). Viability: implementable per the design below —
+  implement before relying on frequent resubmits.**
+
+- **Layer 3 — persistent compile cache: ⚠️ PARTIAL, and low-value for FR.** Enabled with **DEFAULT**
+  thresholds, NOT the `-1/0` in the Layer-3 spec below (−1/0 storms Lustre — see the no-small-file-storms
+  rule; keep defaults).
+  - **IC GPU cache works well:** `_jax_cache` = **153 MB / 81 entries** → validates the AGENT_ic ptxas
+    mitigation (compiles persist + reused across IC tasks, once per distinct shape).
+  - **FR does NOT persist the heavy forward/Jacobian:** FR GPU cache = one small entry + a 14 MB XLA
+    autotune dir; FR CPU cache = **40 KB of tiny helper jits only** (`jit_multiply/exp/…`). The
+    `select_retrieval_grid` pool-Jac is un-cacheable by design (state-dependent shape); the FR
+    forward/jacfwd executable isn't landing either (GPU sample small — 2 running tasks — but the CPU
+    40 KB corroborates).
+  - **It barely matters: FR is EXECUTION-bound.** A100 Jacobian *executes* in ~600–700 s post-compile,
+    ×~18/thick-profile ≈ 3.5 h, vs a one-time ~850 s compile → a perfect cache saves ~10–15% on a thick
+    profile. **Importance: LOW for FR (genuinely useful for IC's ptxas). Not worth chasing here.**
+
+- **CPU cores don't help** (canary cpt=16 vs cpt=1: no speedup — execution is single-threaded and
+  sequential by design; `vmap`-over-`lax.scan` was slower). Keep `cpus-per-task=1`.
+- **CPU↔GPU checkpoint portability: ✅** L1 checkpoint is plain numpy → start on CPU, resume on GPU (the
+  reallocation path) with no lost iteration state.
+
+**Bottom line:** the checkpoint (L1) makes the run robust and is the feature that earns its keep; the
+compile cache (L3) is a sideshow for FR. If resumes are frequent, **implement Layer 2** — it removes the
+dominant ~100 min setup rebuild that L1 and L3 both leave on the table.
+
 ## Design — three layers, all small state, keyed by `(index, config)`
 
 ### Layer 1 — GN-iteration checkpoint (the core, opt-in)

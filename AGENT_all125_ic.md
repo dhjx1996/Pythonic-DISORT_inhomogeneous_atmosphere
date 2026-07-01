@@ -102,6 +102,13 @@ saw SIGABRT in the XLA CPU threadpool at 16 G on the cheaper forward). All parti
 > **persistent JAX compilation cache** (`JAX_COMPILATION_CACHE_DIR` on shared FS) so kernels
 > compile once and are reused — removes the `ptxas`-crash exposure and the big per-task compile
 > overhead. Wall: observed max ≈ 177 min (RTX8000); the 12 h default is very safe.
+>
+> **✅ CONFIRMED (batch-3, 2026-06-30):** the IC persistent cache **works well** — `_jax_cache` grew to
+> **153 MB / 81 entries** (executables + a 4.3 MB XLA autotune dir) across the re-run, i.e. IC compiles
+> persist and are reused (once per distinct shape). Use **DEFAULT** cache thresholds, NOT `-1/0` (−1/0
+> storms Lustre with tiny files → CUIT complaints; the big compiles clear the default threshold anyway).
+> **Caveat:** this validation is IC-specific — the sibling FR worker's forward/Jacobian does **not**
+> persist (only helper jits + the autotune dir land), so don't assume the cache helps FR resumes.
 
 **Affinity (already in both workers):** `runtime_setup.setup()` claims an atomic per-node core
 slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 collisions).
