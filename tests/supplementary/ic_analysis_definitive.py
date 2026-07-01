@@ -342,7 +342,7 @@ def angular_context_saturation(caches, prior="loo"):
     return out
 
 
-def substitution_shapley(caches, band_idx=(8, 9, 4, 0), prior="loo", n_views=10):
+def substitution_shapley(caches, band_idx=(8, 9, 3, 2, 4, 0), prior="loo", n_views=10):
     """Fig 3b: the **Shapley SHARE** (fraction of the total DOFS / SIC) commanded by selected bands vs
     #views — superset-INDEPENDENT (each band's fair share of the information, averaged over all 2ⁿ subsets;
     the Shapley values sum to the full-set DOFS/SIC). The absorbing bands' share **falls** with views
