@@ -101,7 +101,7 @@ S_DENSE = np.linspace(0.0, 1.0, 50)                              # thickness-neu
 TAU_BOT_OK = (0.3, 100.0)                                         # degenerate-profile guard
 
 
-def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
+def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setup_cache_path=None):
     """Build the log-space OPERATIONAL forward (precision via env, tol=SOLVER_TOL,
     mode_map=MODE_MAP), LOAD the high-accuracy radiance observation from the cache (the
     truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
@@ -147,6 +147,37 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
               f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
               f"retrieval forward tol={SOLVER_TOL:.0e} ({_PREC})", flush=True)
 
+    # --- Layer-2 setup checkpoint (opt-in via FR_SETUP_CACHE; FR_CHECKPOINT_RESUME_PLAN.md) ---
+    # The mode-count + grid selection + τ_bot pre-retrieval below are DETERMINISTIC and
+    # platform-INDEPENDENT (~3 h CPU / ~106 min A100). Cache them so a resume — or a GPU run of a
+    # profile whose setup idle-CPU already computed — SKIPS the whole expensive setup.
+    # Key: precision|tol|NQuad + the full observing-system signature + the profile index.
+    # NOT mode_map (scan/vmap = execution only, same setup) -> CPU cache valid on GPU.
+    # The signature guards against a future NFourier/band/view retune silently loading a
+    # stale setup; the index guards against a misplaced/renamed cache file.
+    _cfg = f"{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+    if setup_cache_path is not None and os.path.exists(setup_cache_path):
+        try:
+            _sc = np.load(setup_cache_path, allow_pickle=True)
+            if str(_sc["cfg"]) == _cfg:
+                fwd.K_list = [int(v) for v in _sc["K_list"]]
+                fwd._fwd_jit = fwd._jac_jit = fwd._jac_grid_jit = None   # invalidate (as select_num_modes)
+                s_grid = np.asarray(_sc["s_grid"], float)
+                tau_bot_pre, sigma_tau_pre = float(_sc["tau_bot_pre"]), float(_sc["sigma_tau_pre"])
+                clim = dict(clim, tau_bot_mean=tau_bot_pre, tau_bot_std=sigma_tau_pre)
+                pb_phys = lambda sn: roe.make_climatology_prior(sn, clim)
+                pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
+                if VERBOSE:
+                    print(f"    [build] Layer-2 setup cache HIT -> K={fwd.K_list} k={len(s_grid)} "
+                          f"tau_bot_pre={tau_bot_pre:.2f} [skipped select_num_modes + grid-select "
+                          f"+ τ_bot pre-retrieval]", flush=True)
+                return fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre
+            elif VERBOSE:
+                print("    [build] Layer-2 cache config mismatch -> recompute setup", flush=True)
+        except Exception as _e:                                        # noqa: BLE001
+            if VERBOSE:
+                print(f"    [build] Layer-2 cache unreadable ({_e}) -> recompute setup", flush=True)
+
     # MODE COUNT + INITIAL GRID at the climatology first guess.
     _t = time.time()
     x_ref = fwd._encode_state(roe.make_climatology_prior(S_REF_MODES, clim)[0])
@@ -184,6 +215,21 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE):
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] final select_retrieval_grid "
               f"(at tau_bot_pre={tau_bot_pre:.2f}) -> k={len(s_grid)}", flush=True)
+    if setup_cache_path is not None:                                   # Layer-2: persist the setup
+        try:
+            _tmp = f"{setup_cache_path}.tmp{os.getpid()}"
+            with open(_tmp, "wb") as _f:                               # file object: np.savez must
+                np.savez(_f, cfg=_cfg, K_list=np.asarray(fwd.K_list, int),   # NOT append '.npz' to
+                         s_grid=np.asarray(s_grid, float),                   # the tmp name (it does
+                         tau_bot_pre=float(tau_bot_pre),                     # for string paths)
+                         sigma_tau_pre=float(sigma_tau_pre))
+            os.replace(_tmp, setup_cache_path)                         # atomic
+            if VERBOSE:
+                print(f"    [build] Layer-2 setup cache WRITTEN ({Path(setup_cache_path).name})", flush=True)
+        except Exception as _e:                                        # noqa: BLE001
+            if VERBOSE:
+                print(f"    [build] Layer-2 cache write failed ({_e})", flush=True)
+
     return fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre
 
 
@@ -301,11 +347,34 @@ def main():
                 or len(np.asarray(truth.tau)) < 5:
             raise ValueError(f"degenerate (tau_bot={truth.tau_bot:.2f}, npts={len(truth.tau)})")
         rec["tau_bot"] = float(truth.tau_bot)
+
+        # Finalize-only fast path: BOTH configs already persisted (a prior wall landed
+        # between the last _persist and the combined record below) -> rebuild <i>.json
+        # from the persisted sidecars WITHOUT re-paying the multi-hour setup.
+        if all(Path(f"{out_prefix}_{t}{s}").exists()
+               for t in ("A", "B") for s in (".npz", ".json")):
+            _t0 = time.time()
+            _zA = np.load(f"{out_prefix}_A.npz", allow_pickle=True)
+            _rt = os.environ.get("RADIANCE_TOL")
+            rec.update(radiance_tol=(float(_rt) if _rt else None), finalize_only=True,
+                       grid=np.round(np.asarray(_zA["s_grid"], float), 4).tolist(),
+                       K_list=[int(v) for v in _zA["K_list"]],
+                       runtime_s=round(time.time() - _t0, 1),
+                       A=json.loads(Path(f"{out_prefix}_A.json").read_text()),
+                       B=json.loads(Path(f"{out_prefix}_B.json").read_text()),
+                       npz=[f"{Path(out_prefix).name}_A.npz",
+                            f"{Path(out_prefix).name}_B.npz"])
+            print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: both configs persisted "
+                  f"— finalize-only (combined json rebuilt, no setup)", flush=True)
+            Path(f"{out_prefix}.json").write_text(json.dumps(rec))
+            return
+
         clim = vio.vocals_climatology(profiles, exclude_flight=flight)
 
         t0 = time.time()
+        _setup_ckpt = f"{out_prefix}.setup.npz" if os.environ.get("FR_SETUP_CACHE") else None
         fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = \
-            build_forward_and_obs(truth, clim, index)
+            build_forward_and_obs(truth, clim, index, setup_cache_path=_setup_ckpt)
         rec["radiance_tol"] = truth_tol
         rec["tau_bot_pre"] = round(tau_bot_pre, 3)
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "
@@ -322,13 +391,23 @@ def main():
         # on done we persist the result and DROP the checkpoint. On restart a config whose
         # .npz already exists is skip-resumed (its sibling's wall can't redo it).
         def _persist(tag, sc, mon):
-            np.savez(f"{out_prefix}_{tag}.npz", **sc)
-            Path(f"{out_prefix}_{tag}.json").write_text(
-                json.dumps({kk: vv for kk, vv in mon.items()}))
+            # atomic (tmp + os.replace): the .npz is the resume-skip sentinel and the
+            # .json is reloaded by the skip/finalize paths — neither may be torn by a wall.
+            _tz = f"{out_prefix}_{tag}.npz.tmp{os.getpid()}"
+            with open(_tz, "wb") as _f:
+                np.savez(_f, **sc)
+            os.replace(_tz, f"{out_prefix}_{tag}.npz")
+            _tj = f"{out_prefix}_{tag}.json.tmp{os.getpid()}"
+            Path(_tj).write_text(json.dumps({kk: vv for kk, vv in mon.items()}))
+            os.replace(_tj, f"{out_prefix}_{tag}.json")
             Path(f"{out_prefix}_{tag}.ckpt.npz").unlink(missing_ok=True)
 
         # config A — LOO prior mean is x_a and x0
-        if Path(f"{out_prefix}_A.npz").exists():
+        if Path(f"{out_prefix}_A.npz").exists() and Path(f"{out_prefix}_A.json").exists():
+            # resume-skip: reload the persisted monitoring record (mon_A feeds the
+            # combined <i>.json below — leaving it unbound was the NameError that
+            # mislabelled resumed profiles as skipped).
+            mon_A = json.loads(Path(f"{out_prefix}_A.json").read_text())
             print(f"[{index}] config A already persisted — resume-skip", flush=True)
         else:
             sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
@@ -336,7 +415,8 @@ def main():
                                        checkpoint_path=f"{out_prefix}_A.ckpt.npz")
             _persist("A", sc_A, mon_A)
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
-        if Path(f"{out_prefix}_B.npz").exists():
+        if Path(f"{out_prefix}_B.npz").exists() and Path(f"{out_prefix}_B.json").exists():
+            mon_B = json.loads(Path(f"{out_prefix}_B.json").read_text())
             print(f"[{index}] config B already persisted — resume-skip", flush=True)
         else:
             draw, info = roe.draw_climatology_realization(
@@ -358,8 +438,13 @@ def main():
               f"B: dRMSE={mon_B['d_rmse']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
               flush=True)
     except Exception as e:                                          # noqa: BLE001
+        import traceback
+        tb = traceback.format_exc()
         rec["skipped"] = str(e)[:200]
-        print(f"[{index}] {flight}: SKIPPED {rec['skipped']}", flush=True)
+        rec["traceback"] = tb            # FULL trace in the record — a bare str(e)[:200]
+        #                                  hides the failure site (cf. the mon_A NameError)
+        print(f"[{index}] {flight}: SKIPPED {rec['skipped']}\n"
+              f"----- full traceback -----\n{tb}", flush=True)
 
     Path(f"{out_prefix}.json").write_text(json.dumps(rec))
 
