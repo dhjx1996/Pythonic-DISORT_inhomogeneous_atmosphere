@@ -34,7 +34,9 @@ mid-batch-3 with the L2 GPU gate in flight.)*
 - *Importance/viability:* **The highest-value gap in the system.** It eliminates the 1.9–11 h
   re-setup that dominates straggler walls (thin profiles on RTX8000 burn entire walls inside
   setup). Wire immediately on gate PASS; it is also a *rigor* improvement (frozen setup ⇒ cleaner
-  A-vs-B and resume consistency).
+  A-vs-B and resume consistency). **OUTCOME (2026-07-01, post-write-up): gate 8683416 PASSED
+  bit-exact (all five compared quantities dmax 0.0 on cache HIT) — wired into
+  `_fr_gpu_realloc.sbatch` mid-run.**
 
 **L3 — persistent JAX compile cache**
 - *Correctness:* harmless as configured (default thresholds), but **measurably ineffective for

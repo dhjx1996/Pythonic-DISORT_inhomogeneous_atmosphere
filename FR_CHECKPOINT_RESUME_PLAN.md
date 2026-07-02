@@ -60,13 +60,15 @@ which reframes all of this.**
   the checkpointed x (Fx/K are not persisted — the "~1 iteration" cost). **Importance: HIGH (core).
   Viability: PROVEN.** This is what makes chunked 12h-wall runs safe.
 
-- **Layer 2 — setup checkpoint: ❌ NOT IMPLEMENTED — now the highest-value gap.** The worker re-runs the
-  FULL setup (`build_forward_and_obs`: forward build + `select_num_modes` + τ_bot pre-retrieval + grid
-  re-select) on **every** resume, BEFORE Layer 1 engages. Measured: **~106 min on A100 for a thick
-  profile (idx 49); ~50–100 min single-core CPU** (idx 3 `select_num_modes` alone was 49 min at cpt=1).
-  This dominates the resume tax, and Layer 3 does NOT cache it — so Layer 2 is the only way to make
-  resumes cheap. **Importance: HIGH (elevated). Viability: implementable per the design below —
-  implement before relying on frequent resubmits.**
+- **Layer 2 — setup checkpoint: ✅ IMPLEMENTED + GATE-PASSED (bit-exact) + WIRED (2026-07-01).**
+  `build_forward_and_obs(…, setup_cache_path=…)` caches `K_list/s_grid/tau_bot_pre/sigma_tau_pre`
+  (`FR_SETUP_CACHE`, key = `prec|tol|NQ|observing-system signature|index`; atomic file-object
+  `np.savez` + `os.replace` — NB a string-path `np.savez` silently appends `.npz` and broke the first
+  gate run, which the gate now asserts against). GPU equivalence gate 8683416 (idx-95, A100):
+  cache-HIT path reproduced K_list/s_grid/tau_bot_pre/forward/jacobian **bit-exactly**. Enabled in
+  `_fr_gpu_realloc.sbatch`; first run per profile writes `_fr_parts/<idx>.setup.npz`, every later
+  resume skips the setup (measured tax it removes: ~1.9 h A100 → ~11 h thin-profile RTX8000 per
+  resume). Valid for `max_n_outer ≤ 1` (fixed grid), per the design caveat above.
 
 - **Layer 3 — persistent compile cache: ⚠️ PARTIAL, and low-value for FR.** Enabled with **DEFAULT**
   thresholds, NOT the `-1/0` in the Layer-3 spec below (−1/0 storms Lustre — see the no-small-file-storms

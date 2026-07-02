@@ -18,6 +18,10 @@ ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogen
 cd $ROOT
 IDX=$SLURM_ARRAY_TASK_ID
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 COST_RTOL=0.01 RADIANCE_TOL=1e-4 ENSEMBLE_NQUAD=48
+# Layer-2 setup cache — ENABLED 2026-07-01 after the GPU equivalence gate PASSED bit-exact
+# (job 8683416, idx-95: K_list/s_grid/tau_bot_pre/forward/jacobian all identical on cache HIT).
+# First run per profile writes _fr_parts/<idx>.setup.npz; every later resume skips the 2-11h setup.
+export FR_SETUP_CACHE=1
 export JAX_COMPILATION_CACHE_DIR=$ROOT/docs/cached_results/_jax_cache_fr   # GPU compile cache
 export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
 export RADIANCE_CACHE=$ROOT/docs/cached_results/osse_radiances.npz
