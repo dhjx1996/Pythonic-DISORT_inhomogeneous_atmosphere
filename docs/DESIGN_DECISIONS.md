@@ -6,6 +6,16 @@ Open questions live in [`OUTSTANDING.md`](./OUTSTANDING.md).
 
 Status tags: **[SETTLED]** decided and in effect · **[INVARIANT]** must never be violated.
 
+> **Revised 2026-07-02** for the repository refactor (see `CHANGELOG.md`): live paths updated to
+> the package layout (`src/pydisort_riccati_jax/…`, workers in `scripts/`). One-off *study
+> scripts* cited by name below (`demo_*`, `check_*`, sweeps, probes, `validate_optics_table`,
+> `_ic_parallel`, `tune_*`, `batch_columns`, `profile_solver`, …) were pruned in commit `0a1b678`
+> — every one is recoverable from git history; their verdicts are recorded here and in
+> [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md) (the per-knob evidence
+> table). The LaTeX report is retired — the math now lives in
+> [`technical_documentation.md`](./technical_documentation.md); how-to in
+> [`user_guide.md`](./user_guide.md).
+
 ---
 
 ## 1. Solver lineage: invariant-imbedding Riccati + implicit adaptive integration  [SETTLED]
@@ -281,10 +291,10 @@ truncation error of sharp peaks is best handled by **more streams** if it is eve
 δ-M+ (Lin & Stamnes 2018) was examined and deprioritised (ecosystem-confined, and its "same cost"
 does not hold for our differentiable pipeline) — see [OUTSTANDING A](./OUTSTANDING.md).
 
-*(Implemented in `src/_riccati_solver_jax.py` — `_compute_tau_star`,
+*(Implemented in `src/pydisort_riccati_jax/_riccati_solver_jax.py` — `_compute_tau_star`,
 `_legendre_weighted_sum_jax`, `_precompute_tms` / `_apply_tms` (split from the former
 `_make_tms_func` so the TMS state is a traceable pytree carried by `SolveResult`; see §7), and the
-delta-M branches of the α/β/q builders — and wired in `src/pydisort_riccati_jax.py`. Verified:
+delta-M branches of the α/β/q builders — and wired in `src/pydisort_riccati_jax/solver.py`. Verified:
 `tests/19_deltaM_test.py` (float32: regression, positivity, τ-varying Design-B match, flux
 invariance, grad smoke) and `tests/20_deltaM_benchmark_test.py` (float64: Design-A convergence,
 stream-convergence demonstration, exact single-layer match vs pydisort `NT_cor`, Mie-coupled, FD
@@ -366,9 +376,9 @@ gradient tests are unchanged.
 **NO-POSITIVE-EXPONENTS (§2) preserved** — the split changes only *where* quantities are computed,
 not the Riccati state, which stays O(1).
 
-*(Implemented in `src/pydisort_riccati_jax.py` — `SetupData`/`SolveResult`, `riccati_setup`
+*(Implemented in `src/pydisort_riccati_jax/solver.py` — `SetupData`/`SolveResult`, `riccati_setup`
 (static `mu0`, padded per-mode + scipy `P_l^m(−μ0)` tensors), `_fourier_solve` (the `lax.scan`
-over modes), `riccati_solve`, `eval_radiance` — and `src/_riccati_solver_jax.py` — the
+over modes), `riccati_solve`, `eval_radiance` — and `src/pydisort_riccati_jax/_riccati_solver_jax.py` — the
 mode-index-free α/β/q builders, the `save_grid`/`adjoint` flags, `_precompute_tms`/`_apply_tms`.
 Verified: `tests/21_jit_test.py` (seam↔jit↔legacy↔pydisort parity, with/without delta-M+TMS);
 the FD adjoint tests `18`/`20e` were rerouted through the jitted seam.
@@ -451,7 +461,7 @@ physical albedo* was wrong. The retrieval/OSSE surface (the notebook) is now cor
 The VOCALS r_e(τ) retrieval previously fixed the cloud base `(τ_bot, r_base)` from the truth — a
 threefold information leak (τ_bot, r_base, **and** the prior mean of the top radius r_top). It is
 now a **joint** retrieval of the state `θ = [r_e(s-nodes…), r_base, τ_bot]` with all three made
-leak-free. (`src/retrieval_oe.py`; `tests/supplementary/joint_dofs_experiment.py`,
+leak-free. (`src/pydisort_riccati_jax/retrieval_oe.py`; `tests/supplementary/joint_dofs_experiment.py`,
 `joint_osse_retrieval.py`, `smoke_joint_retrieval.py`.)
 
 **(a) Normalized-depth parameterisation `s = τ/τ_bot ∈ [0,1]`  [SETTLED — INVARIANT for joint τ_bot].**
@@ -573,7 +583,7 @@ motivated 0.25 was a 3 %-noise artefact; at 2 % the borderline node's `f` rises 
 (`tune_filter_threshold.py`/`thick_sweep2.py` were the superseded 3 %-noise sweeps.)
 
 DOFS **left the selection path entirely** — it is now an information-content diagnostic only
-(`src/info_content.py`, full ODE grid; `posterior_diagnostics` keeps per-retrieval DOFS+SIC). The
+(`src/pydisort_riccati_jax/info_content.py`, full ODE grid; `posterior_diagnostics` keeps per-retrieval DOFS+SIC). The
 **SIC-peak selector** (SIC peaks at the RMSE-optimal k) is the documented **escalation** — used only if
 a genuinely structured cloud is ever shown to be *structurally* under-resolved at 0.5 (χ² above the
 noise floor), paid for then rather than by default.
@@ -849,15 +859,20 @@ capabilities, so they are recorded here for honesty, not tracked as open work):
   likewise out: the profile is the OSSE *truth* (exact by definition), and where it feeds the prior its
   instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §11b.
 
-*(Implemented in `src/noise_model.py` — `NoiseModel` (three-term `sigma`/`Se`/`sample`), presets
-`oci_swir` / `generic_relative` — and wired in `src/retrieval_oe.py` (`osse_observation` NoiseModel
+*(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel` (three-term `sigma`/`Se`/`sample`), presets
+`oci_swir` / `generic_relative` — and wired in `src/pydisort_riccati_jax/retrieval_oe.py` (`osse_observation` NoiseModel
 dispatch, `make_Se`). Verified: `tests/supplementary/check_noise_model.py` (shot-off↔B, shot
 calibration, per-band band-major coeffs, Se=diag(σ²), sample statistics, bright-cloud shot
 subdominance, legacy match).)*
 
 ---
 
-## 13. Performance — single-column latency-bound; batch columns on the GPU  [NOTE — empirical, 2026-06-08]
+## 13. Performance — single-column latency-bound; batch columns on the GPU  [NOTE — empirical, 2026-06-08; updated 2026-07-02]
+
+> **Update (2026-07-02):** the production forward now ALSO batches **bands × modes** in one vmap on
+> GPU (`mode_map='vmap'`; `select_num_modes` pads K uniform to keep the batch alive), covering the
+> state forward, the pool Jacobian, and the mode census — the fable-assessment E1 item. Optics
+> tables are traced jit arguments (E5). Column-batching below remains the operational lever.
 
 Cached *single-column* execution is dominated by **many sequential tiny matmuls** (NFourier modes × 2
 sweeps × ~35 adaptive steps × 5 ESDIRK stages on N×N, N ≤ 8/16) — kernel-launch-latency-bound, so the
@@ -987,9 +1002,9 @@ diagnostic *subset selection* is irregularised; the production retrieval (full n
 unaffected. `substitution_shapley` `band_idx` now includes band 0 (0.55) for the Fig 3b conservative-band
 example.
 
-*Files: `tests/supplementary/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive,
-ic_tau_bot_check}.py`, `src/{optics_table,info_content}.py`; handoff `AGENT_all125_ic.md`→`_fr.md`; figures
-in notebook §15.*
+*Files: `scripts/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive}.py`
+(`ic_tau_bot_check` pruned), `src/pydisort_riccati_jax/{optics_table,info_content}.py`;
+handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §15.*
 
 ## 15. Full r_e(τ) retrievals — log-space state, BP2026 convergence, oracle-adiabatic floor  [SETTLED — 2026-06-26]
 
@@ -998,7 +1013,7 @@ VOCALS-REx profiles by joint Gauss–Newton OE (state `x = [r_e(s_nodes), r_base
 μ₀=0.9, the §14 10-band × 24-view system, in **two prior configs** sharing one compiled forward — **A**
 LOO-climatology prior mean (headline), **B** one LOO climatology *realization* (τ_bot sampled) as both
 prior mean and first guess (robustness to where the regulariser is centred). **Headline = does the
-free-node retrieval beat the best-possible adiabatic profile?** Three code upgrades (`src/retrieval_oe.py`):
+free-node retrieval beat the best-possible adiabatic profile?** Three code upgrades (`src/pydisort_riccati_jax/retrieval_oe.py`):
 
 **(a) Log-space state (`state_space='log'`).** Retrieve `x' = ln(x)` for the *whole* positive state
 (r_e nodes, r_base **and** τ_bot) — BP2026 §2.4, who report it essential for GN convergence (Maahn et al.
@@ -1088,6 +1103,31 @@ the posterior IC directly comparable to the float64 §14. Raw sidecars bundle ba
 fixed per profile (`max_n_outer=1` — a clean A-vs-B comparison; a structural-misfit χ²>thr still warns,
 flagged in the sidecar).
 
-*Files: `src/retrieval_oe.py` (`state_space`/`to_log_prior`, `cost_rtol`/`chi2_floor`,
-`best_fit_adiabatic`); `tests/supplementary/{retrieval_worker,tune_cost_rtol}.py`; handoff
-`AGENT_all125_fr.md`; analysis `retrieval_analysis.py` + notebook §16 (post-results).*
+*Files: `src/pydisort_riccati_jax/retrieval_oe.py` (`state_space`/`to_log_prior`, `cost_rtol`/`chi2_floor`,
+`best_fit_adiabatic`); `scripts/retrieval_worker.py` (`tune_cost_rtol` pruned); handoff
+`hpc/AGENT_all125_fr.md`; analysis `scripts/retrieval_analysis.py` + notebook §16 (post-results).*
+
+---
+
+## 16. The all-125 FR capstone + the 2026-07 refactor  [RUN IN FLIGHT; refactor pending the golden gate]
+
+The **capstone full-retrieval campaign** (`hpc/AGENT_all125_fr.md`): for every valid VOCALS profile,
+the §15 joint log-space retrieval in two leak-free prior configurations sharing one compiled forward —
+**A** (LOO climatology prior mean = x_a = x0, the headline) and **B** (one adiabatic climatology
+*realization* as x_a = x0; tests where the regularizer is centred) — on a frozen per-profile grid
+(`max_n_outer=1`), noiseless observation, OCI-2 % assumed Se. Raw sidecars carry everything
+(log-space K, Sa, Ŝ, A, DOFS/SIC, states, truth); every metric is post-hoc
+(`scripts/retrieval_analysis.py`: RMSE vs the oracle-adiabatic floor, ΔRMSE, LWP, Mahalanobis).
+Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile setup cache (both
+production-verified; the would-be L3 compile cache was measured a no-op for FR and removed).
+
+The **2026-07-02 refactor** (this repo's `CHANGELOG.md` is the authoritative record + the HPC
+validation brief): package layout; efficiency upgrades **E1** (bands×modes GPU batch restored,
+uniform-K pad), **E2a** (τ_bot pre-retrieval diet 8→4 iters, xtol 2e-2), **E3** (pre-retrieval on
+fixed `S_COARSE`; initial QRCP selection deleted), **E4** (`FR_SETUP_ONLY` setup farm), **E5**
+(optics as traced args), **E6a** (fused init forward+Jacobian); the **IC mode-selection Se fix**
+(flat (0.005)² → measured-radiance OCI Se — audit §2.1); the tiered test suite (default / float64 /
+`hpc` gates incl. the 3-profile golden cross-check). **Status:** toy-suite verified; the
+numerics-adjacent E-changes are signed off only by the golden gate on the cluster
+(`tests/hpc/test_golden_profiles.py`) — see OUTSTANDING §L. L2 setup caches are keyed `v2|…`
+(pre-refactor caches recompute by design).

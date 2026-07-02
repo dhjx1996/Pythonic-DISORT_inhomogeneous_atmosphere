@@ -75,6 +75,12 @@ geometry-conditional; nothing in the code prevents other μ0 (rebuild `setup`), 
 no result yet quantifies how DOFS/band-value rankings move with μ0. Operational
 per-scene work needs the μ0-binning strategy (STRATEGY §4) — deferred, documented.
 
+### 2.4a Accepted latent gap: optics-table cache signature omits `n_gl` (low, by decision)
+`optics_table._signature` keys the disk cache on (wavelengths, r_e bounds/grid, v_eff, NLeg)
+but **not** `n_gl` — a table rebuilt at a different Gauss–Legendre projection order under the
+same key would be wrongly reused. Judged consistent-enough on 2026-06-29 (`n_gl` is fixed at
+4096 on the standard path); recorded here for awareness (ported from the retired STREAMLINE.md).
+
 ### 2.4 Un-swept second-order priors (low)
 `corr_length=0.5` (normalized) and `margin=1` are the two remaining prior/selection
 levers with no dedicated sweep at the 2 % noise model. Both are plausibly benign

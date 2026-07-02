@@ -1,4 +1,4 @@
-# pydisort_riccati_jax — differentiable RT solver for inhomogeneous atmospheres (WORK IN PROGRESS)
+# pydisort_riccati_jax — differentiable RT solver for inhomogeneous atmospheres
 
 A JAX, fully differentiable forward solver for the 1-D radiative transfer equation in a
 plane-parallel atmosphere with **continuously τ-varying** single-scattering albedo ω(τ) and
@@ -100,8 +100,10 @@ cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
 
 Forward solver and retrieval loop work end-to-end: differentiable Mie optics → Riccati RT →
 Gauss–Newton optimal estimation with autodiff Jacobians, validated on VOCALS-REx profiles
-(see demo above). Delta-M scaling and Nakajima–Tanaka TMS correction are implemented (opt-in).
-Open items are tracked in `docs/OUTSTANDING.md`. 
+(see demo above). Delta-M scaling and Nakajima–Tanaka TMS correction are implemented
+(production ON). The repository was reviewed, reorganized, and efficiency-upgraded on
+2026-07-02 — `CHANGELOG.md` records what changed and how it is being validated; open items
+are tracked in `docs/OUTSTANDING.md` (§K, §L).
 
 Contact: Dion Ho, dh3065@columbia.edu.
 

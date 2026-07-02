@@ -11,9 +11,10 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   — per-knob evidence and flags.
 - **`docs/DESIGN_DECISIONS.md`** — settled decisions and *why* (solver lineage, the
   no-positive-exponents invariant, delta-M/TMS, precision policy, priors, IC findings,
-  full-retrieval design). **`docs/OUTSTANDING.md`** — open problems. Check OUTSTANDING before
-  assuming a feature exists or is missing. *(Both pre-date the 2026-07-02 reorganization —
-  file paths they cite may be one refactor old; the decisions themselves stand.)*
+  full-retrieval design; §16 = the FR capstone + 2026-07 refactor record).
+  **`docs/OUTSTANDING.md`** — open problems (currently §K noise items and §L post-refactor
+  actions). Check OUTSTANDING before assuming a feature exists or is missing. Both revised
+  2026-07-02; `CHANGELOG.md` is the refactor record + HPC validation brief.
 - **`hpc/`** — everything about the HPC production runs: the re-runnable AGENT task specs
   (`AGENT_all125_{rad,ic,fr}.md`, `AGENT_gpu_probe.md`), `STRATEGY_hpc_retrieval_runs.md`
   (compute-minimization playbook), `FR_CHECKPOINT_RESUME_PLAN.md` (L1/L2 resume design + status),

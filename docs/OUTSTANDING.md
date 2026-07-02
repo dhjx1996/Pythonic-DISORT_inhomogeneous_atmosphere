@@ -3,7 +3,9 @@
 Open items, kept deliberately prominent. Settled rationale is in
 [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md). **Resolved / out-of-scope items are collapsed to a
 one-line pointer** — the `## letter` headers are retained because both docs cross-reference them by
-letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **G** and **K**.
+letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **K**
+and **L**. *(Revised 2026-07-02 with the repository refactor — `CHANGELOG.md`; per-knob evidence
+in [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md).)*
 
 Tags: **[BLOCKER]** must fix before retrieval works · **[DECISION]** a choice to make ·
 **[BUG]** known-wrong behaviour · **[DEFERRED]** wanted, not yet started ·
@@ -34,8 +36,8 @@ modelled in spirit on PythonicDISORT's many-moment `pydisotest` test 5.
 
 ## B. Optics interpolation: τ-axis vs r_e-table  [DECISION SETTLED 2026-06-12 → DESIGN §8]
 
-Settled: keep the `(n_re, NLeg)` Mie–Legendre **r_e-table** (`miejax_lite.table_lookup`) as the
-production optics path (profile-independent, no τ-placement problem, consistent table-slope Jacobian);
+Settled: keep the `(n_re, NLeg)` Mie–Legendre **r_e-table** (`optics_table.table_lookup`;
+miepython-built since the miejax_lite retirement, DESIGN §8) as the production optics path (profile-independent, no τ-placement problem, consistent table-slope Jacobian);
 the τ-axis + lagged re-selection is the documented fallback if the lookup-slope Jacobian ever proves
 too inexact. The hybrid traced-Mie-ω + HG variant was rejected. Rationale: DESIGN §8.
 
@@ -80,7 +82,7 @@ B=4096). The measurement and the batch-crossover table are moved to **DESIGN §1
 
 ## E. Retrieval loop  [RESOLVED → DESIGN §10]
 
-Implemented in `src/retrieval_oe.py`: cost `J(θ)`, Rodgers GN/LM (`gauss_newton_oe`), the
+Implemented in `src/pydisort_riccati_jax/retrieval_oe.py`: cost `J(θ)`, Rodgers GN/LM (`gauss_newton_oe`), the
 normalized-depth `_re_of_tau` parameterisation, the Tikhonov priors, QRCP grid selection, posterior
 UQ/DOFS/SIC, and the OSSE harness. It is a **joint** retrieval of `[r_e(s-nodes), r_base, τ_bot]`
 (DESIGN §10). Demonstrated on thin (RF11) and thick (RF03) in the VOCALS notebook.
@@ -100,11 +102,15 @@ Out of current scope (user, 2026-06-19); recorded so they are not mistaken for u
 
 ---
 
-## G. Retrieval information content — what is actually retrievable  [DECISION] [open]
+## G. Retrieval information content — what is actually retrievable  [RESOLVED 2026-06/07 → DESIGN §14/§15]
 
-The robust part is settled in [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §3 (ToA-weighted,
-small DOF, ODE grid ≠ retrieval grid). These sub-claims are **not** established and should not
-be relied on until re-examined:
+**Closed by the definitive all-125 IC profiling (DESIGN §14, on the FIXED delta-M/TMS forward) and
+the full-retrieval campaign (§15/§16):** the angular-DOF question (angular novelty quantified;
+per-mode grids rejected — sub-item below), profile-(in)dependence (measured across the 125-profile
+population, regime-vs-τ), and multi-band saturation (N_sat = 7 bands; data-greedy order from the
+NK1990 bispectral pair) all have population-level answers. The remaining *conditionality* (single
+solar geometry μ0=0.9) is tracked in §L. The historical caveats below are kept as the record of
+what the pre-§14 analyses could and could not support:
 
 - **No rigorous "rank-4 ceiling."** Earlier SVD/QR analysis found ~4–6 dominant singular
   directions, but (i) the hard upper bound is the stream count N (=8 at NQuad=16), with no
@@ -112,13 +118,14 @@ be relied on until re-examined:
   threshold already gives 6); (iii) it was measured emphasising the m=0 mode, without delta-M,
   at N=8, and for a single geometry/thickness — all of which can suppress it. Claim only "small
   DOF," not "4."
-- **Multi-mode / angular DOF was contaminated by the missing delta-M (item A — now fixed).** In
+- **Multi-mode / angular DOF was contaminated by the missing delta-M (item A — since fixed; the
+  §14 re-run superseded this).** In
   `adiabatic_cloud_with_drizzle.ipynb` the per-Fourier-mode ‖∂u/∂g‖ is *larger* for several
   m≥1 modes (e.g. m=7 ≈ 0.5) than for m=0 (≈ 0.1) — but m≥1 is exactly where the radiance rang
   without delta-M. So whether higher azimuthal modes carry genuine extra information could not be
   judged until delta-M/TMS was fixed; the QRCP grids in that notebook sum all modes and inherited
-  the contamination. **With item A now resolved, re-run the rank/Jacobian analysis with
-  `delta_M_scaling=True, NT_cor=True` before drawing any angular-DOF conclusions.**
+  the contamination. **Done: the §14 definitive profiling IS that re-run** (delta-M/TMS on, NLEG_ALL=1536,
+  all 125 profiles).**
 - **Profile-independence unproven.** Demonstrated only for a localised g-spike on one smooth
   adiabatic base; the angular-collapse depth depends on ω/band; globally different profiles
   (thin, multi-layer, inversion) untested.
@@ -127,7 +134,8 @@ be relied on until re-examined:
   vertical-resolution gain rests on penetration-depth diversity (Platnick 2000), which is
   modest. Do not assume multi-band lifts the DOF far.
 
-*(G-core — the angular/vertical-DOF, profile-independence, and multi-band-saturation questions — is the focus of a future session. The bulleted claims above and the **Starting point** below are **background**, not current actions; in particular the rank analysis must be re-run post-delta-M before any of it is relied on.)*
+*(G-core was answered by DESIGN §14; the bullets above and the Starting point below are
+historical background only.)*
 
 *Starting point:* the prior multi-mode / full-radiance rank study (three tiers — baseline u₀,
 full-u with all 16 Fourier modes = 128 rows, and NQuad=32; ToA rank stayed 4 in all, with
@@ -140,8 +148,8 @@ conclusions as contaminated** (built on the un-delta-M'd m≥1 modes); re-derive
 **Verdict: rejected. The m=0 ODE grid stays the sole retrieval-grid pool.** The hypothesis — that
 the discarded m≥1 grids carry complementary vertical information, so the "best" pool is the **union
 of the non-negligible (Cauchy-K) modes' grids** — was tested directly
-(`tests/supplementary/per_mode_grid_investigation.py`, a faithful monkeypatch that retains every
-mode's forward ODE grid) and does **not** hold: the union is neutral-to-harmful on every VOCALS
+(`per_mode_grid_investigation.py`, a faithful monkeypatch retaining every mode's forward ODE
+grid; pruned 2026-07 — git history) and does **not** hold: the union is neutral-to-harmful on every VOCALS
 case (OCI 2 % noise, `filter_threshold=0.5`).
 
 - **Placement (TEST 1).** Every mode m=0…15 has a near-identical grid (~17–19 steps; same
@@ -202,8 +210,9 @@ alternative is logged in DESIGN §3a (the smooth-low-dim-basis route, "left open
 
 Implemented as `retrieval_oe.auto_k_active`: the noise-aware whitened-QRCP **filter**
 `f_i = r_i²/(1+r_i²)` (with `Σf_i ≈ DOFS` as a built-in cross-check), wired into
-`select_retrieval_grid(k_active=None)` at `filter_threshold=0.25`. DOFS left the *selection* path (now
-an info-content diagnostic only). OSSE verdict and threshold tuning: DESIGN §10f.
+`select_retrieval_grid(k_active=None)`; `filter_threshold=0.5` since the 2 %-noise re-sweep
+(DESIGN §10f — the earlier 0.25 was tuned on the retired 3 % noise). DOFS left the *selection*
+path (now an info-content diagnostic only).
 
 ---
 
@@ -269,5 +278,28 @@ see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **ope
   §12 thick / §13 sub-adiabatic) now build `Se = roe.make_Se(fwd, y, nm.oci_swir())` — the PACE
   OCI-SWIR model (calibration-relative ~2 %) — replacing the hand-picked `0.03·max(|y|,0.02)` floor;
   `noise_model` is imported and the §8 markdown + §11b document the change. The OSSE stays **noiseless**
-  (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s own fixed `0.005²·I`
-  mode-selection floor is a *separate* quantity and intentionally unchanged. (User re-runs the notebook.)
+  (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s mode-selection Se in the **IC workers** was fixed 2026-07-02 (flat
+  `0.005²·I` → the measured-radiance OCI Se; audit §2.1 — re-run decision pending, §L); the
+  notebook's small 2-band demo keeps its own local floor. (User re-runs the notebook.)
+
+---
+
+## L. Post-refactor validation + audit flags  [open — the current action list]
+
+The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evidence in
+[`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md)):
+
+- **Golden-gate sign-off [gate-blocking].** The numerics-adjacent efficiency upgrades
+  (E1/E2a/E3/E5/E6a) are toy-suite-verified only; run `tests/hpc/` on the cluster — L2 + L1 gates,
+  then the 3-profile golden cross-check (idx 20/47/49) — before the next production sweep.
+- **IC re-run decision [user + HPC agent].** The mode-selection Se fix (audit §2.1) means re-run
+  IC Jacobians/DOFS/SIC won't bit-match the definitive bundle (accuracy-safe direction). Decide
+  whether to re-run `hpc/AGENT_all125_ic.md`; the truth-radiance cache stays valid either way.
+- **μ0 = 0.9 conditionality [scope].** All published IC/FR numbers are single-geometry; quantify
+  DOFS/band-ranking sensitivity to μ0 (cheap spot-check) and adopt μ0 binning for operational
+  per-scene work (compile-per-bin; STRATEGY §4).
+- **Un-swept second-order knobs [low].** `corr_length` (prior smoothness) and `margin` (+1 node)
+  have no dedicated sweep at the 2 % noise model; cheap 2-case sweeps when the HPC is idle.
+- **Spectral surface albedo [low].** Constant Lambertian 0.06 across 0.55–4.05 µm is crude
+  (SWIR sea albedo ≈ 0.02); secondary under bright cloud — revisit if dark-scene bands matter.
+- **Shot-noise term** — still OFF pending OCI SNR tables (§K, unchanged).
