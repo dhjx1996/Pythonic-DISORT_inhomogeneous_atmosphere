@@ -112,16 +112,18 @@ paying a full-cost 1536-moment Jacobian every iteration → ~5 Jacobians.
 **L1 — per-GN-iteration checkpoint: works, high value.** Proven in production (§2). Restarts at the
 checkpointed iteration; saves the completed GN iterations but re-pays the build.
 
-**L2 — setup cache (`FR_SETUP_CACHE`): implemented, high value, deferred.** Caches
-`K_list / s_grid / tau_bot_pre / sigma_tau_pre` → eliminates exactly the §2 build tax (1.9–6 h/resume).
-Code is in `tests/supplementary/retrieval_worker.py` (uncommitted); config-keyed
-(`prec|tol|NQ`, NOT mode_map). It plays no role in this batch — FR runs without it, and **FR > L2**. The
-rigor gate is a bit-exact equivalence test (compute+write vs load must match K_list/s_grid/tau_bot_pre +
-forward/Jacobian evals); the CPU version of that test is impractical because it must itself run the §3
-τ_bot pre-retrieval (~5 CPU Jacobians). The definitive verdict belongs on spare GPU after FR drains. On
-PASS: commit the L2 code, flip the docs (this file, `AGENT_all125_fr.md`, `FR_CHECKPOINT_RESUME_PLAN.md`),
-wire it seamless guarded by `max_n_outer < 2`, and fold `_fr_parts_l2/` into `_fr_parts/`. On FAIL: revert
-the L2 edits.
+**L2 — setup cache (`FR_SETUP_CACHE`): ✅ VERIFIED (bit-exact) + WIRED, 2026-07-01.** Caches
+`K_list / s_grid / tau_bot_pre / sigma_tau_pre` → eliminates exactly the §2 build tax (1.9–11 h/resume;
+the thin-profile RTX8000 tail runs setup ≈ a full wall, so for that class L2 is the difference between
+zero and full progress per wall). The GPU equivalence gate **PASSED bit-exact** (job 8683416, idx-95,
+A100: K_list match, s_grid/tau_bot_pre/forward/jacobian dmax all 0.0 on cache HIT). Two earlier traps,
+both fixed pre-verdict: the first gate run was **vacuous** (the cache write silently failed —
+`np.savez` appends `.npz` to string paths, breaking the atomic tmp+`os.replace`; fixed via file-object
+write, and the gate now *asserts* the cache file exists after PASS 1), and the cfg key was widened to
+`prec|tol|NQ|signature|index` so a future observing-system change can't silently load a stale setup.
+Wired into `_fr_gpu_realloc.sbatch` (`FR_SETUP_CACHE=1`) mid-run — numerically safe by the bit-exact
+gate; caches land as `_fr_parts/<idx>.setup.npz` (no `_fr_parts_l2/` flagging needed given the PASS).
+Committed. Design caveat stands: valid for `max_n_outer ≤ 1` (fixed grid).
 
 **L3 — JAX persistent compile cache: ineffective for FR, flagged for deletion.** FR is execution-bound; the
 expensive forward/Jacobian compiles are **not** cached — `_jax_cache_fr` is 26,556 files / 107 MB (avg
