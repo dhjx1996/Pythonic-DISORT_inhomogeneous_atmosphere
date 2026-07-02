@@ -43,25 +43,19 @@ from math import pi
 
 import numpy as np
 
-_here = Path(__file__).resolve().parent
-_src = _here.parents[1] / "src"
-sys.path.insert(0, str(_src))
-sys.path.insert(0, str(_here))
-import runtime_setup                                                 # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pydisort_riccati_jax import runtime_setup                       # noqa: E402
 runtime_setup.setup()                                              # affinity pin BEFORE JAX
-import vocals_io as vio                                              # noqa: E402
-import retrieval_oe as roe                                          # noqa: E402
-import noise_model as nm                                            # noqa: E402
-import osse_config as oc                                            # noqa: E402
-from info_content import (jacobian_on_ode_grid, flux_jacobian_on_ode_grid,  # noqa: E402
-                          info_spectrum)
+from pydisort_riccati_jax import vocals_io as vio                    # noqa: E402
+from pydisort_riccati_jax import retrieval_oe as roe                 # noqa: E402
+from pydisort_riccati_jax import noise_model as nm                   # noqa: E402
+from pydisort_riccati_jax import osse_config as oc                   # noqa: E402
+from pydisort_riccati_jax.info_content import (                      # noqa: E402
+    jacobian_on_ode_grid, flux_jacobian_on_ode_grid, info_spectrum)
 
-DATA = os.environ.get('VOCALS_DATA',                                # HPC: export VOCALS_DATA=/burg-archive/...
-                      '/home/jovyan/cloud_profile_retrieval/'
-                      'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE = os.environ.get('OPTICS_CACHE',
-                              str(_here / 'optics_table_10band_nleg1536_re20.npz'))
-RADIANCE_CACHE = os.environ.get('RADIANCE_CACHE', '')             # required; asserted below
+DATA = oc.VOCALS_DATA
+OPTICS_CACHE = oc.OPTICS_CACHE
+RADIANCE_CACHE = oc.RADIANCE_CACHE          # signature-asserted below
 NQ = int(os.environ.get('ENSEMBLE_NQUAD', '48'))
 IC_MODE = os.environ.get('IC_MODE', 'priormean')                   # priormean | draw
 SIGMA_WEAK = float(os.environ.get('IC_SIGMA_WEAK', '10'))         # set i: weak ~flat prior, σ≈10 µm (KV2012)

@@ -1,3 +1,17 @@
+> **REPO REORGANIZED (2026-07-02).** Paths in this spec were updated for the new layout:
+> worker entry points moved `tests/supplementary/` -> `scripts/`; importable modules
+> (incl. `osse_config`, `runtime_setup`) now live in the `pydisort_riccati_jax` package under
+> `src/`; run outputs (parts dirs, logs, gate artifacts) write to the untracked `runs/`; the
+> large data caches (optics table, `osse_radiances.npz` truth radiances) live OUTSIDE the repo
+> at `../data/` (= `cloud_profile_retrieval/data/`).
+> **Migration on an existing clone:** `mkdir -p runs ../data`, then move existing artifacts:
+> `mv tests/supplementary/optics_table*.npz ../data/`; `mv docs/cached_results/osse_radiances.npz ../data/`;
+> `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
+> `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
+> submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
+> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+
 # Delegated task — all-VOCALS **FULL r_e(τ) RETRIEVALS** (the capstone; NQuad=48)
 
 *(Hand-off for a Sonnet agent. The primary server is a **separate filesystem**; **code** moves by git
@@ -32,7 +46,7 @@ Three upgrades vs the pre-§15 retrievals, all in `src/retrieval_oe.py` (already
 - the **oracle best-fit-adiabatic floor** (`best_fit_adiabatic`) — the RMSE lower bound under the
   adiabatic constraint — computed post-hoc by the worker for monitoring (the headline ΔRMSE).
 
-**One worker** (`tests/supplementary/retrieval_worker.py`), run as **a SINGLE SLURM array** (both configs
+**One worker** (`scripts/retrieval_worker.py`), run as **a SINGLE SLURM array** (both configs
 A+B per task; no per-mode arrays). Each task writes, for index `i`:
 
 - `<i>_A.npz` / `<i>_B.npz` — the **raw sidecars** (the product): the log-space Jacobian `K`, prior `Sa`,
@@ -55,7 +69,7 @@ post-hoc computation the primary runs on jovyan (`retrieval_analysis.py`) from t
   result JSON or npz). It contains `_fr_parts/` (all `<i>_{A,B}.npz` + `<i>_{A,B}.json` + `<i>.json`) and
   the SLURM logs.
 - Code (present after sync, **don't modify** except to implement the checkpoint/resume plan below):
-  `tests/supplementary/retrieval_worker.py` (`ENSEMBLE_NQUAD` default 48, `OPTICS_CACHE`, `COST_RTOL`
+  `scripts/retrieval_worker.py` (`ENSEMBLE_NQUAD` default 48, `OPTICS_CACHE`, `COST_RTOL`
   default 0.01), `src/retrieval_oe.py`, `src/optics_table.py`, `src/vocals_io.py`, `src/noise_model.py`.
 
 ## Step 0 — build the optics table cache ONCE (shared, ~3–4 min)
@@ -69,7 +83,7 @@ hand-pass `NLeg=128` / `re=[2,25]` (the pre-fix values that Gibbs-ring the short
 ```bash
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 $PY - <<EOF
 import sys; sys.path.insert(0,'$ROOT/src'); sys.path.insert(0,'$ROOT/tests/supplementary')
 import osse_config as oc
@@ -85,10 +99,10 @@ env (`$PY -m pip install miepython` if missing).
 The retrieval does **not** recompute radiances — it LOADS the precomputed truth `y = F(x_truth)` per
 index from a signature-gated **radiance cache** (`osse_config.load_radiance`). This is the batch-1
 product, delivered as `osse_radiances_bundle.zip` in the workspace root; **extract it** so the worker
-finds `cloud_profile_retrieval/rad_bundle/osse_radiances.npz`:
+finds `cloud_profile_retrieval/../data/osse_radiances.npz`:
 ```bash
 cd /burg-archive/home/dh3065/cloud_profile_retrieval
-unzip -o osse_radiances_bundle.zip          # -> rad_bundle/osse_radiances.npz
+unzip -o osse_radiances_bundle.zip          # -> ../data/osse_radiances.npz
 ```
 Verified contents: signature `d71a8559bbe457e8` (matches `osse_config.signature()`), tol-tag **1e-4**
 (the truth tier), **125 valid profiles** (idx 1–125; idx-0 absent = the degenerate τ≈1585 skip). The
@@ -175,7 +189,7 @@ or worker physics. The sbatch below is a **CPU example** — adjust venue/resour
 
 ```bash
 cd /burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
-mkdir -p docs/cached_results/_fr_parts
+mkdir -p runs/_fr_parts
 cat > /tmp/fr.sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=fr_retr
@@ -186,12 +200,12 @@ cat > /tmp/fr.sbatch <<EOF
 #SBATCH --output=/tmp/fr_%a.out
 export JAX_PLATFORMS=cpu PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # REQUIRED: single-thread XLA (cpt=1) — see Troubleshooting
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/rad_bundle/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b; sig d71a8559, tol=1e-4)
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/../data/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b; sig d71a8559, tol=1e-4)
 export OMP_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} MKL_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} NUMEXPR_NUM_THREADS=\${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-srun --cpu-bind=cores $PY tests/supplementary/retrieval_worker.py \$SLURM_ARRAY_TASK_ID \
-   docs/cached_results/_fr_parts/\$SLURM_ARRAY_TASK_ID
+srun --cpu-bind=cores $PY scripts/retrieval_worker.py \$SLURM_ARRAY_TASK_ID \
+   runs/_fr_parts/\$SLURM_ARRAY_TASK_ID
 EOF
 sbatch /tmp/fr.sbatch
 ```
@@ -202,13 +216,13 @@ stem** `…/_fr_parts/$SLURM_ARRAY_TASK_ID` — no extension.)
 ```bash
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 OMP_WAIT_POLICY=passive
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/rad_bundle/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b)
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/../data/osse_radiances.npz RADIANCE_TOL=1e-4   # truth cache (Step 0b)
 export PYDISORT_RICCATI_JAX_X64=1 ENSEMBLE_NQUAD=48 COST_RTOL=0.01
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"   # single-thread XLA (see Troubleshooting)
-mkdir -p docs/cached_results/_fr_parts
+mkdir -p runs/_fr_parts
 # simple bounded-parallel loop (4 at a time); raise/lower -P to fit the box's cores & RAM
-seq 0 $((N-1)) | xargs -P 4 -I {} $PY tests/supplementary/retrieval_worker.py {} docs/cached_results/_fr_parts/{}
+seq 0 $((N-1)) | xargs -P 4 -I {} $PY scripts/retrieval_worker.py {} runs/_fr_parts/{}
 ```
 
 ## Step 3 — bundle the raw data (NO analysis on the cluster)
@@ -219,7 +233,7 @@ commit any result JSON/npz. Zip **everything raw** (`_fr_parts/` + the SLURM log
 ```bash
 cd /burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
 rm -rf /tmp/fr_bundle && mkdir -p /tmp/fr_bundle/slurm_logs
-cp -r docs/cached_results/_fr_parts /tmp/fr_bundle/
+cp -r runs/_fr_parts /tmp/fr_bundle/
 cp /tmp/fr_*.out /tmp/fr_bundle/slurm_logs/ 2>/dev/null
 ( cd /tmp && zip -rq fr_bundle.zip fr_bundle )
 mv /tmp/fr_bundle.zip /burg-archive/home/dh3065/cloud_profile_retrieval/   # workspace root

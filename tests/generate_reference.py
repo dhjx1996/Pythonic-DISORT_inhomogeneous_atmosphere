@@ -18,7 +18,7 @@ from math import pi
 import numpy as np
 
 # Ensure the package is findable whether or not it is installed.
-_tests_dir = Path(__file__).resolve().parent.parent
+_tests_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_tests_dir.parent / "src"))
 sys.path.insert(0, str(_tests_dir))
 

@@ -44,9 +44,9 @@ satellite radiances with Gauss–Newton optimal estimation and autodiff Jacobian
 truth; blue: retrieved ±1σ; dashed orange: adiabatic prior; red dot: (assumed) known cloud base.
 
 <p align="center">
-<img src="idealized_retrieval_thin.png" width="380" alt="Thin cloud retrieval (RF11, τ≈1.2)"/>
+<img src="docs/figures/idealized_retrieval_thin.png" width="380" alt="Thin cloud retrieval (RF11, τ≈1.2)"/>
 &nbsp;&nbsp;
-<img src="idealized_retrieval_thick.png" width="380" alt="Thick cloud retrieval (RF03, τ≈23)"/>
+<img src="docs/figures/idealized_retrieval_thick.png" width="380" alt="Thick cloud retrieval (RF03, τ≈23)"/>
 </p>
 
 **Left:** thin, near-adiabatic cloud (RF11, τ ≈ 1.2).

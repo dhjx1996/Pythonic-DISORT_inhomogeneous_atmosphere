@@ -43,11 +43,11 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from pydisort_riccati_jax import (
+from .solver import (
     riccati_setup, riccati_solve, eval_radiance,
     pydisort_riccati_jax, _barycentric_interpolate,
 )
-from optics_table import table_lookup   # miepython-built table; JAX-Mie (miejax_lite) retired (DESIGN §13)
+from .optics_table import table_lookup   # miepython-built table; JAX-Mie (miejax_lite) retired (DESIGN §13)
 
 
 # ============================================================================

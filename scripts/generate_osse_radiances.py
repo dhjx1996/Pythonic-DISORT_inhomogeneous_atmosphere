@@ -23,19 +23,15 @@ from pathlib import Path
 
 import numpy as np
 
-_here = Path(__file__).resolve().parent
-sys.path.insert(0, str(_here.parents[1] / "src"))
-sys.path.insert(0, str(_here))
-import runtime_setup               # noqa: E402
-runtime_setup.setup()             # affinity pin (+ optional compile cache) BEFORE jax
-import vocals_io as vio            # noqa: E402
-import retrieval_oe as roe         # noqa: E402
-import osse_config as oc           # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pydisort_riccati_jax import runtime_setup   # noqa: E402
+runtime_setup.setup()             # affinity pin BEFORE jax
+from pydisort_riccati_jax import vocals_io as vio       # noqa: E402
+from pydisort_riccati_jax import retrieval_oe as roe    # noqa: E402
+from pydisort_riccati_jax import osse_config as oc      # noqa: E402
 
-DATA = os.environ.get('VOCALS_DATA',
-                      '/home/jovyan/cloud_profile_retrieval/'
-                      'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1536_re20.npz'))
+DATA = oc.VOCALS_DATA
+OPTICS_CACHE = oc.OPTICS_CACHE
 TAU_BOT_OK = (0.3, 100.0)
 FIELDS = ("y", "tau", "re", "r_base", "tau_bot", "lwc", "altitude", "flight")
 

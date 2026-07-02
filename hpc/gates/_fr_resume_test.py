@@ -3,11 +3,11 @@ an uninterrupted GN solve must equal an interrupted-then-resumed one (bit-exact 
 same platform). Reuses the real worker setup (build_forward_and_obs) on a thin profile."""
 import os, sys
 import numpy as np
-sys.path.insert(0, "src"); sys.path.insert(0, "tests/supplementary")
+sys.path.insert(0, "src"); sys.path.insert(0, "scripts")
+import retrieval_worker as rw          # build_forward_and_obs (reads caches from env; pins affinity before JAX)
 import jax
-import retrieval_oe as roe
-import retrieval_worker as rw          # build_forward_and_obs (reads caches from env)
-import vocals_io as vio
+from pydisort_riccati_jax import retrieval_oe as roe
+from pydisort_riccati_jax import vocals_io as vio
 
 print(f"jax {jax.__version__} x64={jax.config.read('jax_enable_x64')} {jax.devices()[0].platform}", flush=True)
 IDX = int(os.environ.get("DIAG_IDX", "95"))

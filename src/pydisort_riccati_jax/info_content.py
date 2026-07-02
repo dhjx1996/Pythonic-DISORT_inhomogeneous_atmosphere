@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from retrieval_oe import posterior_diagnostics  # the single DOFS/SIC/AK implementation
+from .retrieval_oe import posterior_diagnostics  # the single DOFS/SIC/AK implementation
 
 
 def jacobian_on_ode_grid(fwd, x, s_nodes, include_base=False):

@@ -4,19 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pydisort-riccati-jax"
-version = "0.1.0"
-description = "Differentiable (JAX) invariant-imbedding Riccati RT solver for inhomogeneous atmospheres."
+version = "0.2.0"
+description = "Differentiable (JAX) invariant-imbedding Riccati RT solver for inhomogeneous atmospheres, with the VOCALS r_e(tau) optimal-estimation retrieval stack."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
   { name = "Dion J. X. Ho", email = "dh3065@columbia.edu" },
 ]
 license = { text = "MIT" }
+# PythonicDISORT is a hard dependency of the solver core (Gauss-Legendre and
+# Legendre utilities from PythonicDISORT.subroutines), not just a test reference.
 dependencies = [
   "numpy",
   "scipy",
   "jax",
   "diffrax",
+  "PythonicDISORT",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -25,13 +28,17 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# PythonicDISORT supplies the reference solver used by the test suite.
-test = ["pytest>=6.2.5", "PythonicDISORT"]
+test = ["pytest>=6.2.5"]
+# The retrieval stack's extra I/O deps: vocals_io reads the VOCALS-REx netCDFs;
+# optics_table builds its lookup table with miepython (loading a cached table
+# needs neither).
+retrieval = ["netCDF4", "miepython"]
 
 [project.urls]
 Homepage = "https://github.com/dhjx1996/Pythonic-DISORT_inhomogeneous_atmosphere"
 
-# The solver is three flat modules under src/ (added to sys.path by tests/conftest.py).
-[tool.setuptools]
-package-dir = { "" = "src" }
-py-modules = ["pydisort_riccati_jax", "_riccati_solver_jax", "_solve_bc_riccati_jax"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pydisort_riccati_jax = ["data/*.csv"]

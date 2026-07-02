@@ -108,7 +108,7 @@ Granularity = 1 GN iter (≈ one `fwd.jacobian`). (Rejected: a worker-side "burs
 `gauss_newton_oe` with small `n_iter` — it re-inits `Fx/K` at `x0` every burst, continuous overhead.)
 
 ### Layer 2 — setup checkpoint (the bigger compute saver)
-`build_forward_and_obs` (`tests/supplementary/retrieval_worker.py:102`) runs `select_num_modes` +
+`build_forward_and_obs` (`scripts/retrieval_worker.py:102`) runs `select_num_modes` +
 two-phase `select_retrieval_grid` + the **τ_bot pre-retrieval** (`retrieve_tau_bot`, ~8 GN iters) +
 the **pool-Jacobian compile**. Save its small outputs `(s_grid, K_list, tau_pre, sigma_pre, Se)` to
 a per-index setup checkpoint; on resume, load and **skip the whole setup phase**. (The pre-retrieval
@@ -176,9 +176,9 @@ resume (same profile → same `k` → same forward/jacobian shapes) the compiles
 ## Files to modify
 - `src/retrieval_oe.py` — `_gn_inner` + `gauss_newton_oe`: opt-in `checkpoint_path`, atomic
   dump/restore (Layer 1). The ONLY core-code change; default `None` preserves current behaviour.
-- `tests/supplementary/retrieval_worker.py` — setup-ckpt save/skip (Layer 2); per-config GN
+- `scripts/retrieval_worker.py` — setup-ckpt save/skip (Layer 2); per-config GN
   checkpoint paths + resume/skip orchestration; reuse the existing `_persist` as the done-marker.
-- `tests/supplementary/runtime_setup.py` (or worker preamble) — enable the persistent compile cache
+- `scripts/runtime_setup.py` (or worker preamble) — enable the persistent compile cache
   behind `FR_COMPILE_CACHE_DIR` (Layer 3); amend the `:18-22` dropped-cache note with the
   resume-scoped re-enable.
 - `AGENT_all125_fr.md` — document the resume **mechanism** (persistent checkpoint dir,

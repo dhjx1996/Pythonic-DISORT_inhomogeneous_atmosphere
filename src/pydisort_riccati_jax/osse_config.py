@@ -17,6 +17,7 @@ noise estimate for truncation). The short-lambda / large-r_e bands need many mod
 conservative.
 """
 from math import pi
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -46,6 +47,21 @@ import numpy as np
 # returns it; the IC + retrieval workers assert it against env RADIANCE_TOL) so a wrong-tol cache
 # cannot be silently mixed in.
 SOLVER_TOL = float(os.environ.get("SOLVER_TOL", "1e-4"))
+
+# --- canonical data locations ----------------------------------------------------
+# Large data lives OUTSIDE the repo, in the workspace root (cloud_profile_retrieval/):
+#   data/optics_table_10band_nleg1536_re20.npz   miepython optics table (rebuildable cache)
+#   data/osse_radiances.npz                      batch-1 truth radiances (signature-gated)
+#   multispectral-retrieval-using-MODIS/VOCALS_REx_data/   the in-situ netCDFs
+# Workers resolve these via env (OPTICS_CACHE / RADIANCE_CACHE / VOCALS_DATA) with
+# these workspace-relative defaults.
+_WORKSPACE = Path(__file__).resolve().parents[3]
+OPTICS_CACHE = Path(os.environ.get(
+    "OPTICS_CACHE", _WORKSPACE / "data" / "optics_table_10band_nleg1536_re20.npz"))
+RADIANCE_CACHE = Path(os.environ.get(
+    "RADIANCE_CACHE", _WORKSPACE / "data" / "osse_radiances.npz"))
+VOCALS_DATA = str(os.environ.get(
+    "VOCALS_DATA", _WORKSPACE / "multispectral-retrieval-using-MODIS" / "VOCALS_REx_data"))
 
 # --- the fixed observing system -------------------------------------------------
 BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
@@ -168,7 +184,7 @@ def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space=
     truth-tier point — see the SOLVER_TOL note). ``mode_map`` = 'scan' (CPU) |
     'vmap' (GPU bands×modes 240-way; ~17× per jacfwd). Both are threaded so the radiance
     re-gen and the GPU path can dial precision/speed without touching call sites."""
-    import retrieval_oe as roe
+    from . import retrieval_oe as roe
     vm, vp = (VIEW_MU_FULL, VIEW_PHI_FULL) if views == "full" else (VIEW_MU, VIEW_PHI)
     return roe.RetrievalForward(
         opt_bands, NQuad=NQUAD, mu0=MU0, I0=I0, phi0=PHI0, tau_bot=tau_bot, r_base=r_base,
@@ -187,7 +203,7 @@ def select_retrieval_views(y_full):
 
 def load_optics(cache_path):
     """Build/load the canonical optics table and per-band channel views."""
-    import optics_table as ot
+    from . import optics_table as ot
     re_table = ot.build_or_load_table(BANDS, RE_BOUNDS[0], RE_BOUNDS[1], RE_GRID_N,
                                       V_EFF, cache_path=cache_path, NLeg=NLEG_ALL,
                                       n_radii=N_RADII, n_gl=N_GL)

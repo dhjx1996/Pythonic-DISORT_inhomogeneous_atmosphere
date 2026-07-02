@@ -22,12 +22,10 @@ from collections import defaultdict
 
 import numpy as np
 
-_src = Path(__file__).resolve().parents[2] / "src"
-sys.path.insert(0, str(_src))
-from retrieval_oe import posterior_diagnostics            # noqa: E402
-from info_content import info_spectrum                    # noqa: E402
-
-BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pydisort_riccati_jax.retrieval_oe import posterior_diagnostics  # noqa: E402
+from pydisort_riccati_jax.info_content import info_spectrum          # noqa: E402
+from pydisort_riccati_jax.osse_config import BANDS                   # noqa: E402
 # NK1990-faithful literature order (indices into BANDS): {0.67,2.13} standard bispectral baseline,
 # then the NK1990-EXPLORED higher-absorption bands 1.64 (NK's 1.65) -> 3.7 -> 4.05 (4.05 even more
 # absorbing than 3.7 = the spectral-headroom test), then the modern OCI depth-graded fillers
@@ -38,7 +36,8 @@ BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
 VALUE_ORDER = [1, 6, 5, 8, 9, 4, 3, 7, 2, 0]
 VALUE_LABELS = [f"{BANDS[i]:g}" for i in VALUE_ORDER]
 OUT = Path(os.environ.get("IC_DEFINITIVE_OUT",
-                           _src.parents[0] / "docs" / "cached_results" / "info_content_definitive.json"))
+                           Path(__file__).resolve().parents[1] / "docs" / "cached_results"
+                           / "info_content_definitive.json"))
 
 
 def spread_idx(k, nv_max):
@@ -525,4 +524,8 @@ def main(dirs):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or [str(Path(__file__).resolve().parents[1] / "tests" / "supplementary" / "results")])
+    # default = the definitive all-125 raw-Jacobian sidecars (A=priormean, B=draw),
+    # downloaded from the HPC run into the workspace ic_bundle/
+    _ws = Path(__file__).resolve().parents[2]
+    main(sys.argv[1:] or [str(_ws / "ic_bundle" / "_ic_A_parts"),
+                          str(_ws / "ic_bundle" / "_ic_B_parts")])

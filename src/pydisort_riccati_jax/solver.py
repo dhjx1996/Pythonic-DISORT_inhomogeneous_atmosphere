@@ -76,7 +76,7 @@ from jax import lax
 from math import pi
 
 from PythonicDISORT import subroutines
-from _riccati_solver_jax import (
+from ._riccati_solver_jax import (
     _precompute_legendre,
     _make_alpha_beta_funcs_jax,
     _make_q_funcs_jax,
@@ -86,7 +86,7 @@ from _riccati_solver_jax import (
     _precompute_tms,
     _apply_tms,
 )
-from _solve_bc_riccati_jax import _solve_bc_riccati_jax
+from ._solve_bc_riccati_jax import _solve_bc_riccati_jax
 
 
 # ======================================================================

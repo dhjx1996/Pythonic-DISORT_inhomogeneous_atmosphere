@@ -1,15 +1,29 @@
+> **REPO REORGANIZED (2026-07-02).** Paths in this spec were updated for the new layout:
+> worker entry points moved `tests/supplementary/` -> `scripts/`; importable modules
+> (incl. `osse_config`, `runtime_setup`) now live in the `pydisort_riccati_jax` package under
+> `src/`; run outputs (parts dirs, logs, gate artifacts) write to the untracked `runs/`; the
+> large data caches (optics table, `osse_radiances.npz` truth radiances) live OUTSIDE the repo
+> at `../data/` (= `cloud_profile_retrieval/data/`).
+> **Migration on an existing clone:** `mkdir -p runs ../data`, then move existing artifacts:
+> `mv tests/supplementary/optics_table*.npz ../data/`; `mv docs/cached_results/osse_radiances.npz ../data/`;
+> `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
+> `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
+> submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
+> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+
 # Delegated task — re-run the information-content profiling, all VOCALS profiles (FIXED forward)
 
 *(Hand-off for a Sonnet agent. Code moves by git (sync first); the **raw K sidecars move as ONE
 zip the primary downloads manually** — NOT via git. Preserve this file as a handoff template —
 don't delete it. This is **batch 2 of 3**: `rad` (done) → `ic` (this) → `fr` retrievals.
 **Do not start until the primary confirms the batch-1 radiance cache is consolidated and in
-place at `docs/cached_results/osse_radiances.npz`.***)*
+place at `../data/osse_radiances.npz`.***)*
 
 ## What this is — and why we are re-running it
 
 The §15 information-content study was **contaminated by a forward-model bug** and must be re-run
-on the **fixed** forward. All config is now in `tests/supplementary/osse_config.py`, the single
+on the **fixed** forward. All config is now in `scripts/osse_config.py`, the single
 source of truth (do **not** edit it):
 
 - **TMS fix (`NLeg_all=1536`, `n_gl=4096`):** the Nakajima–Tanaka single-scatter correction
@@ -50,8 +64,8 @@ is confirmed.
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-RADIANCE_CACHE=$ROOT/docs/cached_results/osse_radiances.npz
+OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
+RADIANCE_CACHE=$ROOT/../data/osse_radiances.npz
 ```
 
 ## Step 0 — GPU env (one-time; skip if already done in batch 1)
@@ -70,8 +84,8 @@ JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 
 ```bash
 cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=$ROOT/docs/cached_results/osse_radiances.npz
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=$ROOT/../data/osse_radiances.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 $PY - <<'EOF'
 import os, sys; sys.path.insert(0,'tests/supplementary'); sys.path.insert(0,'src')
@@ -122,7 +136,7 @@ slot before JAX (commits 8fc43cf/a5ab9a7 — verified 39 nodes, 115 tasks, 0 col
 
 ```bash
 cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
-mkdir -p docs/cached_results/_ic_{A,B,C}_parts docs/cached_results/_ic_{A,B,C}_logs
+mkdir -p runs/_ic_{A,B,C}_parts runs/_ic_{A,B,C}_logs
 
 # ------- Array A: profile-worker, priormean -------
 cat > /tmp/icA.sbatch <<'SBATCH'
@@ -139,8 +153,8 @@ cat > /tmp/icA.sbatch <<'SBATCH'
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
 export IC_MODE=priormean
-export OPTICS_CACHE=__ROOT__/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
+export OPTICS_CACHE=__ROOT__/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=__ROOT__/../data/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
@@ -149,8 +163,8 @@ PY=__PY__
 # shadows them otherwise -> 'cuda' backend disappears).
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
-srun __PY__ tests/supplementary/ic_worker_profile.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_A_parts/$SLURM_ARRAY_TASK_ID.json
+srun __PY__ scripts/ic_worker_profile.py \
+     $SLURM_ARRAY_TASK_ID __ROOT__/runs/_ic_A_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 # ------- Array B: profile-worker, draw -------
@@ -168,8 +182,8 @@ cat > /tmp/icB.sbatch <<'SBATCH'
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
 export IC_MODE=draw
-export OPTICS_CACHE=__ROOT__/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
+export OPTICS_CACHE=__ROOT__/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=__ROOT__/../data/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
@@ -178,8 +192,8 @@ PY=__PY__
 # shadows them otherwise -> 'cuda' backend disappears).
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
-srun __PY__ tests/supplementary/ic_worker_profile.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_B_parts/$SLURM_ARRAY_TASK_ID.json
+srun __PY__ scripts/ic_worker_profile.py \
+     $SLURM_ARRAY_TASK_ID __ROOT__/runs/_ic_B_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 # ------- Array C: mechanism-worker -------
@@ -196,8 +210,8 @@ cat > /tmp/icC.sbatch <<'SBATCH'
 #SBATCH --output=__LOGC__/icC_%a.out
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 RADIANCE_TOL=1e-4
-export OPTICS_CACHE=__ROOT__/tests/supplementary/optics_table_10band_nleg1536_re20.npz
-export RADIANCE_CACHE=__ROOT__/docs/cached_results/osse_radiances.npz
+export OPTICS_CACHE=__ROOT__/../data/optics_table_10band_nleg1536_re20.npz
+export RADIANCE_CACHE=__ROOT__/../data/osse_radiances.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
@@ -206,16 +220,16 @@ PY=__PY__
 # shadows them otherwise -> 'cuda' backend disappears).
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
-srun __PY__ tests/supplementary/ic_worker_mechanism.py \
-     $SLURM_ARRAY_TASK_ID __ROOT__/docs/cached_results/_ic_C_parts/$SLURM_ARRAY_TASK_ID.json
+srun __PY__ scripts/ic_worker_mechanism.py \
+     $SLURM_ARRAY_TASK_ID __ROOT__/runs/_ic_C_parts/$SLURM_ARRAY_TASK_ID.json
 SBATCH
 
 for F in /tmp/icA.sbatch /tmp/icB.sbatch /tmp/icC.sbatch; do
   sed -i \
     "s|__ROOT__|$ROOT|g; s|__PY__|$PY|g; s|__VOCALS__|$VOCALS_DATA|g; \
-     s|__LOGA__|$ROOT/docs/cached_results/_ic_A_logs|g; \
-     s|__LOGB__|$ROOT/docs/cached_results/_ic_B_logs|g; \
-     s|__LOGC__|$ROOT/docs/cached_results/_ic_C_logs|g" $F
+     s|__LOGA__|$ROOT/runs/_ic_A_logs|g; \
+     s|__LOGB__|$ROOT/runs/_ic_B_logs|g; \
+     s|__LOGC__|$ROOT/runs/_ic_C_logs|g" $F
 done
 sbatch /tmp/icA.sbatch
 sbatch /tmp/icB.sbatch
@@ -230,11 +244,11 @@ Profile indices 0 (RF01, τ≈1585) will auto-write `{"skipped": ...}` — expec
 ```bash
 cd $ROOT
 for ARR in A B C; do
-  OK=$(ls docs/cached_results/_ic_${ARR}_parts/*.json 2>/dev/null \
+  OK=$(ls runs/_ic_${ARR}_parts/*.json 2>/dev/null \
        | xargs -I{} python -c "import json; d=json.load(open('{}'));\
          print('ok' if 'index' in d and 'skipped' not in d else '')" \
        | grep -c ok)
-  SK=$(ls docs/cached_results/_ic_${ARR}_parts/*.json 2>/dev/null \
+  SK=$(ls runs/_ic_${ARR}_parts/*.json 2>/dev/null \
        | xargs -I{} python -c "import json; d=json.load(open('{}'));\
          print('skip' if 'skipped' in d else '')" 2>/dev/null | grep -c skip)
   echo "Array $ARR: ok=$OK skipped=$SK"
@@ -249,16 +263,16 @@ done
 cd $ROOT
 rm -rf /tmp/ic_bundle && mkdir -p /tmp/ic_bundle/logs_{A,B,C}
 # JSON sidecars from all three arrays
-cp docs/cached_results/_ic_A_parts/*.json /tmp/ic_bundle/
-cp docs/cached_results/_ic_B_parts/*.json /tmp/ic_bundle/ 2>/dev/null
-cp docs/cached_results/_ic_C_parts/*.json /tmp/ic_bundle/ 2>/dev/null
+cp runs/_ic_A_parts/*.json /tmp/ic_bundle/
+cp runs/_ic_B_parts/*.json /tmp/ic_bundle/ 2>/dev/null
+cp runs/_ic_C_parts/*.json /tmp/ic_bundle/ 2>/dev/null
 # NPZ K-sidecars (from profile worker; large but required)
-cp docs/cached_results/_ic_A_parts/*.npz /tmp/ic_bundle/ 2>/dev/null
-cp docs/cached_results/_ic_B_parts/*.npz /tmp/ic_bundle/ 2>/dev/null
+cp runs/_ic_A_parts/*.npz /tmp/ic_bundle/ 2>/dev/null
+cp runs/_ic_B_parts/*.npz /tmp/ic_bundle/ 2>/dev/null
 # SLURM logs
-cp docs/cached_results/_ic_A_logs/*.out /tmp/ic_bundle/logs_A/ 2>/dev/null
-cp docs/cached_results/_ic_B_logs/*.out /tmp/ic_bundle/logs_B/ 2>/dev/null
-cp docs/cached_results/_ic_C_logs/*.out /tmp/ic_bundle/logs_C/ 2>/dev/null
+cp runs/_ic_A_logs/*.out /tmp/ic_bundle/logs_A/ 2>/dev/null
+cp runs/_ic_B_logs/*.out /tmp/ic_bundle/logs_B/ 2>/dev/null
+cp runs/_ic_C_logs/*.out /tmp/ic_bundle/logs_C/ 2>/dev/null
 ( cd /tmp && zip -rq ic_bundle.zip ic_bundle )
 mv /tmp/ic_bundle.zip /burg-archive/home/dh3065/cloud_profile_retrieval/
 ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/ic_bundle.zip

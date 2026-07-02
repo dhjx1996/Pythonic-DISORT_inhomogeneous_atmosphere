@@ -22,24 +22,19 @@ from math import pi
 
 import numpy as np
 
-_here = Path(__file__).resolve().parent
-_src = _here.parents[1] / "src"
-sys.path.insert(0, str(_src))
-sys.path.insert(0, str(_here))
-import runtime_setup                                                 # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pydisort_riccati_jax import runtime_setup                       # noqa: E402
 runtime_setup.setup()                                              # affinity pin BEFORE JAX
-import vocals_io as vio                                              # noqa: E402
-import retrieval_oe as roe                                          # noqa: E402
-import noise_model as nm                                            # noqa: E402
-import osse_config as oc                                            # noqa: E402
-from info_content import jacobian_on_ode_grid, flux_jacobian_on_ode_grid  # noqa: E402
+from pydisort_riccati_jax import vocals_io as vio                    # noqa: E402
+from pydisort_riccati_jax import retrieval_oe as roe                 # noqa: E402
+from pydisort_riccati_jax import noise_model as nm                   # noqa: E402
+from pydisort_riccati_jax import osse_config as oc                   # noqa: E402
+from pydisort_riccati_jax.info_content import (                      # noqa: E402
+    jacobian_on_ode_grid, flux_jacobian_on_ode_grid)
 
-DATA = os.environ.get('VOCALS_DATA',
-                      '/home/jovyan/cloud_profile_retrieval/'
-                      'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE   = os.environ.get('OPTICS_CACHE',
-                                str(_here / 'optics_table_10band_nleg1536_re20.npz'))
-RADIANCE_CACHE = os.environ.get('RADIANCE_CACHE', '')             # required; asserted by load_radiance
+DATA = oc.VOCALS_DATA
+OPTICS_CACHE = oc.OPTICS_CACHE
+RADIANCE_CACHE = oc.RADIANCE_CACHE          # signature-asserted by load_radiance
 NQ    = int(os.environ.get('ENSEMBLE_NQUAD', '48'))
 BANDS = oc.BANDS
 NB    = oc.NB

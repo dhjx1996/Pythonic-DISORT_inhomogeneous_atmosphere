@@ -57,16 +57,13 @@ from pathlib import Path
 
 import numpy as np
 
-_here = Path(__file__).resolve().parent
-_src = _here.parents[1] / "src"
-sys.path.insert(0, str(_src))
-sys.path.insert(0, str(_here))
-import runtime_setup                                                 # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from pydisort_riccati_jax import runtime_setup                       # noqa: E402
 runtime_setup.setup()                                               # affinity pin BEFORE JAX (crew1 XLA-oversubscription fix: 8fc43cf/a5ab9a7/b0ae236)
-import vocals_io as vio                                              # noqa: E402
-import retrieval_oe as roe                                          # noqa: E402
-import noise_model as nm                                            # noqa: E402
-import osse_config as oc                                            # noqa: E402
+from pydisort_riccati_jax import vocals_io as vio                    # noqa: E402
+from pydisort_riccati_jax import retrieval_oe as roe                 # noqa: E402
+from pydisort_riccati_jax import noise_model as nm                   # noqa: E402
+from pydisort_riccati_jax import osse_config as oc                   # noqa: E402
 import jax.numpy as _jnp                                            # noqa: E402
 
 # Accuracy tiers: the radiance CACHE (truth) is high-accuracy (float64, tol*); the
@@ -81,12 +78,9 @@ _PREC = "float64" if _jnp.result_type(float) == _jnp.float64 else "float32"
 # cache, the IC run, and this worker MUST share it). This replaces the old standalone
 # block whose NLeg_all=128 was the pre-TMS-fix value (garbage short bands).
 # ---------------------------------------------------------------------------
-DATA = os.environ.get('VOCALS_DATA',
-                      '/home/jovyan/cloud_profile_retrieval/'
-                      'multispectral-retrieval-using-MODIS/VOCALS_REx_data')
-OPTICS_CACHE = Path(os.environ.get('OPTICS_CACHE', _here / 'optics_table_10band_nleg1536_re20.npz'))
-RADIANCE_CACHE = Path(os.environ.get('RADIANCE_CACHE', _here.parents[2]
-                                     / 'rad_bundle' / 'osse_radiances.npz'))   # batch-1 truth cache (sig d71a8559, tol=1e-4, 125 profiles); extracted from osse_radiances_bundle.zip
+DATA = oc.VOCALS_DATA
+OPTICS_CACHE = oc.OPTICS_CACHE
+RADIANCE_CACHE = oc.RADIANCE_CACHE          # batch-1 truth cache (sig d71a8559, tol=1e-4, 125 profiles)
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE

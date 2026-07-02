@@ -48,10 +48,10 @@ from pathlib import Path
 
 import numpy as np
 
-_SRC = str(Path(__file__).resolve().parents[2] / "src")
+_SRC = str(Path(__file__).resolve().parents[1] / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
-import retrieval_oe as roe  # noqa: E402  (best_fit_adiabatic — the maha adiabatic floor)
+from pydisort_riccati_jax import retrieval_oe as roe  # noqa: E402  (best_fit_adiabatic — the maha adiabatic floor)
 
 RE_MAX_DEFAULT = 20.0        # production optics-table ceiling (RF13 edge check)
 THICK_TAU = 36.0             # §A3 thick-tail regime boundary (conditioning, not mis-fit)

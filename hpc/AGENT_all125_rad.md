@@ -1,3 +1,17 @@
+> **REPO REORGANIZED (2026-07-02).** Paths in this spec were updated for the new layout:
+> worker entry points moved `tests/supplementary/` -> `scripts/`; importable modules
+> (incl. `osse_config`, `runtime_setup`) now live in the `pydisort_riccati_jax` package under
+> `src/`; run outputs (parts dirs, logs, gate artifacts) write to the untracked `runs/`; the
+> large data caches (optics table, `osse_radiances.npz` truth radiances) live OUTSIDE the repo
+> at `../data/` (= `cloud_profile_retrieval/data/`).
+> **Migration on an existing clone:** `mkdir -p runs ../data`, then move existing artifacts:
+> `mv tests/supplementary/optics_table*.npz ../data/`; `mv docs/cached_results/osse_radiances.npz ../data/`;
+> `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
+> `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
+> submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
+> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+
 # Delegated task — precompute the OSSE radiances (synthetic L1B), all VOCALS profiles
 
 *(Hand-off for a Sonnet agent. Code moves by git (sync first); the **radiance cache moves two
@@ -9,7 +23,7 @@ don't delete it. This is **batch 1 of 3**: `rad` (this) → `ic` re-run → `fr`
 
 We compute `y = F(truth)` for every VOCALS profile **once** at the correct forward config, cache
 it, and all downstream workers load it instead of regenerating. Three bugs fixed vs the prior
-run (all captured in `tests/supplementary/osse_config.py`, the **single source of truth**):
+run (all captured in `scripts/osse_config.py`, the **single source of truth**):
 
 - **TMS fix (`NLeg_all=1536`, `n_gl=4096`):** the NT single-scatter correction needed 1536
   Legendre moments (not 128 or 1024) to avoid Gibbs-ringing the short-λ Mie peaks NEGATIVE.
@@ -29,10 +43,10 @@ probe: eval-only forward ~36 s on A100 vs ~1000 s CPU — even RTX8000 at 4.1× 
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
-OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 ```
 
-Output stays at `$ROOT/docs/cached_results/osse_radiances.npz`; zip copy at
+Output stays at `$ROOT/../data/osse_radiances.npz`; zip copy at
 `/burg-archive/home/dh3065/cloud_profile_retrieval/osse_radiances_bundle.zip`.
 
 ## Step 0 — GPU env (one-time; skip if already done)
@@ -66,12 +80,12 @@ JAX_PLATFORMS=cuda $PY -c "import jax; print('GPU OK, devices:', jax.devices())"
 
 ```bash
 cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 $PY - <<'EOF'
 import sys; sys.path.insert(0,'tests/supplementary'); sys.path.insert(0,'src')
 import osse_config as oc
-opt = oc.load_optics('tests/supplementary/optics_table_10band_nleg1536_re20.npz')
+opt = oc.load_optics('../data/optics_table_10band_nleg1536_re20.npz')
 print("optics OK; sig", oc.signature()[1])
 EOF
 ```
@@ -103,7 +117,7 @@ constraint: let the scheduler allocate freely.
 ```bash
 cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 N=126
-mkdir -p docs/cached_results/_rad_parts docs/cached_results/_rad_logs
+mkdir -p runs/_rad_parts runs/_rad_logs
 cat > /tmp/rad.sbatch <<'SBATCH'
 #!/bin/bash
 #SBATCH --job-name=osse_rad
@@ -117,19 +131,19 @@ cat > /tmp/rad.sbatch <<'SBATCH'
 #SBATCH --output=__RADLOGS__/rad_%a.out
 
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4
-export OPTICS_CACHE=__ROOT__/tests/supplementary/optics_table_10band_nleg1536_re20.npz
+export OPTICS_CACHE=__ROOT__/../data/optics_table_10band_nleg1536_re20.npz
 export VOCALS_DATA=__VOCALS__
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4} OMP_WAIT_POLICY=passive
-srun __PY__ tests/supplementary/generate_osse_radiances.py $SLURM_ARRAY_TASK_ID \
-     docs/cached_results/_rad_parts
+srun __PY__ scripts/generate_osse_radiances.py $SLURM_ARRAY_TASK_ID \
+     runs/_rad_parts
 SBATCH
 
 # Substitute real paths:
 sed -i \
   "s|__ROOT__|$ROOT|g; s|__PY__|$PY|g; \
    s|__VOCALS__|$VOCALS_DATA|g; \
-   s|__RADLOGS__|$ROOT/docs/cached_results/_rad_logs|g" \
+   s|__RADLOGS__|$ROOT/runs/_rad_logs|g" \
   /tmp/rad.sbatch
 sbatch /tmp/rad.sbatch
 ```
@@ -144,8 +158,8 @@ timed out at 8 h on CPU; GPU handles it.
 
 ```bash
 cd $ROOT
-$PY tests/supplementary/generate_osse_radiances.py consolidate \
-   docs/cached_results/_rad_parts docs/cached_results/osse_radiances.npz
+$PY scripts/generate_osse_radiances.py consolidate \
+   runs/_rad_parts ../data/osse_radiances.npz
 # Expect: "consolidated 125 profiles -> ... (sig <hash>); skipped [0]"  (index 0 = RF01 τ≈1585)
 ```
 
@@ -157,9 +171,9 @@ The signature in the consolidated file MUST equal `osse_config.signature()[1]`. 
 ```bash
 cd $ROOT
 rm -rf /tmp/rad_bundle && mkdir -p /tmp/rad_bundle/slurm_logs
-cp docs/cached_results/osse_radiances.npz /tmp/rad_bundle/
-cp docs/cached_results/_rad_parts/*.json /tmp/rad_bundle/ 2>/dev/null
-cp docs/cached_results/_rad_logs/*.out /tmp/rad_bundle/slurm_logs/ 2>/dev/null
+cp ../data/osse_radiances.npz /tmp/rad_bundle/
+cp runs/_rad_parts/*.json /tmp/rad_bundle/ 2>/dev/null
+cp runs/_rad_logs/*.out /tmp/rad_bundle/slurm_logs/ 2>/dev/null
 ( cd /tmp && zip -rq osse_radiances_bundle.zip rad_bundle )
 mv /tmp/osse_radiances_bundle.zip /burg-archive/home/dh3065/cloud_profile_retrieval/
 ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/osse_radiances_bundle.zip

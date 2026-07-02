@@ -3,9 +3,9 @@ cache HIT (load + skip the deterministic setup) must reproduce the COMPUTE path 
 same K_list, s_grid, tau_bot_pre, AND same forward/jacobian evaluations at a test state. Same
 platform => bit-exact expected. A FAIL here blocks enabling L2 in the production sweep."""
 import os, sys, numpy as np
-sys.path.insert(0, "src"); sys.path.insert(0, "tests/supplementary")
+sys.path.insert(0, "src"); sys.path.insert(0, "scripts")
 import retrieval_worker as rw
-import vocals_io as vio
+from pydisort_riccati_jax import vocals_io as vio
 
 IDX = int(os.environ.get("DIAG_IDX", "95"))
 P = os.environ["L2_CKPT"]

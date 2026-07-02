@@ -18,7 +18,7 @@ import pytest
 import scipy.special as sp
 from math import pi
 from PythonicDISORT import subroutines
-from _riccati_solver_jax import (
+from pydisort_riccati_jax._riccati_solver_jax import (
     _riccati_forward_jax, _riccati_backward_jax,
     _make_alpha_beta_funcs_jax, _make_q_funcs_jax,
     _precompute_legendre, _riccati_rhs_jax,

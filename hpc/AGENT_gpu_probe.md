@@ -1,7 +1,21 @@
+> **REPO REORGANIZED (2026-07-02).** Paths in this spec were updated for the new layout:
+> worker entry points moved `tests/supplementary/` -> `scripts/`; importable modules
+> (incl. `osse_config`, `runtime_setup`) now live in the `pydisort_riccati_jax` package under
+> `src/`; run outputs (parts dirs, logs, gate artifacts) write to the untracked `runs/`; the
+> large data caches (optics table, `osse_radiances.npz` truth radiances) live OUTSIDE the repo
+> at `../data/` (= `cloud_profile_retrieval/data/`).
+> **Migration on an existing clone:** `mkdir -p runs ../data`, then move existing artifacts:
+> `mv tests/supplementary/optics_table*.npz ../data/`; `mv docs/cached_results/osse_radiances.npz ../data/`;
+> `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
+> `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
+> submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
+> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+
 # Delegated task — GPU probe #3: float32 viability + tol sufficiency + GPU-suitability
 
 *(Hand-off for a Sonnet agent. Experiment on results we already trust. **Push only
-`docs/cached_results/results.md`** (the §A3 narrative); **bundle the result data** as
+`hpc/gpu_probe_results.md`** (the §A3 narrative); **bundle the result data** as
 `precision_probe_out.zip` — do NOT commit npz/json data. The primary decides + consolidates.
 2026-06-28.)*
 
@@ -64,11 +78,11 @@ Part-B canary = the 3 longest **cross-verified** profiles (known-good answer): *
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
 cd $ROOT && git fetch origin   # then compare to origin/main; if the working tree differs, CONSULT THE USER before any 'git reset --hard' (it discards local work, e.g. uncommitted fixes)
 PY=<GPU-overlay python from probe #1/#2>                            # jaxlib + 0.10.2 cuda plugin
-export OPTICS_CACHE=$ROOT/tests/supplementary/optics_table_10band_nleg1024_re20.npz
+export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1024_re20.npz
 export VOCALS_DATA=<VOCALS_REx_data path on the cluster>
-GOLDDIR=$ROOT/tests/supplementary/probe_gold_parts        # per-index gold sidecars
-GOLD=$ROOT/tests/supplementary/osse_radiances_gold.npz    # consolidated gold cache (tol=1e-5)
-OUT=$ROOT/tests/supplementary/precision_probe_out         # worker outputs (the deliverable)
+GOLDDIR=$ROOT/scripts/probe_gold_parts        # per-index gold sidecars
+GOLD=$ROOT/scripts/osse_radiances_gold.npz    # consolidated gold cache (tol=1e-5)
+OUT=$ROOT/runs/precision_probe_out         # worker outputs (the deliverable)
 mkdir -p $GOLDDIR $OUT
 ```
 Knobs: `PYDISORT_RICCATI_JAX_X64` (1=f64, 0=f32), `SOLVER_TOL` (ODE tol of the *forward*),
@@ -85,13 +99,13 @@ end-to-end on the control before the matrix:
 ```bash
 # (a) gold radiance for idx-20 at f64/tol=1e-5, then consolidate to a 1-profile gold cache
 JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 MODE_MAP=vmap $PY \
-  tests/supplementary/generate_osse_radiances.py 20 $GOLDDIR
+  scripts/generate_osse_radiances.py 20 $GOLDDIR
 JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 $PY \
-  tests/supplementary/generate_osse_radiances.py consolidate $GOLDDIR ${GOLD%.npz}_smoke.npz
+  scripts/generate_osse_radiances.py consolidate $GOLDDIR ${GOLD%.npz}_smoke.npz
 # (b) retrieve idx-20 at the gold setting (inverting that cache)
 JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 MODE_MAP=vmap \
   RADIANCE_CACHE=${GOLD%.npz}_smoke.npz RADIANCE_TOL=1e-5 $PY \
-  tests/supplementary/retrieval_worker.py 20 $OUT/smoke_20
+  scripts/retrieval_worker.py 20 $OUT/smoke_20
 ```
 Expect a `[20] RF03 … DONE … A: dRMSE=… conv=True | B: … conv=True`. If it errors, fix it (the
 worker reuses tested pieces; likely env paths or a kwarg) and note the fix. **Proceed only when
@@ -103,24 +117,24 @@ clean.**
 # 1) gold radiances (f64/tol=1e-5) for the 4 profiles -> one gold cache
 for i in 20 40 47 49; do
   JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 MODE_MAP=vmap $PY \
-    tests/supplementary/generate_osse_radiances.py $i $GOLDDIR ; done
+    scripts/generate_osse_radiances.py $i $GOLDDIR ; done
 JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 $PY \
-  tests/supplementary/generate_osse_radiances.py consolidate $GOLDDIR $GOLD
+  scripts/generate_osse_radiances.py consolidate $GOLDDIR $GOLD
 
 # 2) retrieve each profile at the 3 operational settings (invert the SAME gold cache)
 for i in 20 40 47 49; do
   # float32 / tol=1e-3
   JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=0 SOLVER_TOL=1e-3 MODE_MAP=vmap \
     RADIANCE_CACHE=$GOLD RADIANCE_TOL=1e-5 $PY \
-    tests/supplementary/retrieval_worker.py $i $OUT/probe_${i}_f32_tol1e-3
+    scripts/retrieval_worker.py $i $OUT/probe_${i}_f32_tol1e-3
   # float64 / tol=1e-4
   JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-4 MODE_MAP=vmap \
     RADIANCE_CACHE=$GOLD RADIANCE_TOL=1e-5 $PY \
-    tests/supplementary/retrieval_worker.py $i $OUT/probe_${i}_f64_tol1e-4
+    scripts/retrieval_worker.py $i $OUT/probe_${i}_f64_tol1e-4
   # float64 / tol=1e-5  (reference)
   JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-5 MODE_MAP=vmap \
     RADIANCE_CACHE=$GOLD RADIANCE_TOL=1e-5 $PY \
-    tests/supplementary/retrieval_worker.py $i $OUT/probe_${i}_f64_tol1e-5
+    scripts/retrieval_worker.py $i $OUT/probe_${i}_f64_tol1e-5
 done
 ```
 Each worker run writes `<prefix>_A.{npz,json}` + `_B.{npz,json}` (two prior configs; **compare
@@ -142,18 +156,18 @@ Silent-FP64 test: a **known-answer** radiance forward at f64/tol=1e-4 on each su
 ```bash
 for i in 115 120 121; do                                   # A100 references
   JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-4 MODE_MAP=vmap $PY \
-    tests/supplementary/generate_osse_radiances.py $i $OUT/canary_ref_A100 ; done
+    scripts/generate_osse_radiances.py $i $OUT/canary_ref_A100 ; done
 # suspect cards (matching --constraint/--gres), same setting:
 #   idx115 -> V100S , idx120 -> RTX 8000 , idx121 -> A40   into canary_<card>/
 JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 SOLVER_TOL=1e-4 MODE_MAP=vmap $PY \
-  tests/supplementary/generate_osse_radiances.py 115 $OUT/canary_V100S    # ...120 RTX8000, 121 A40
+  scripts/generate_osse_radiances.py 115 $OUT/canary_V100S    # ...120 RTX8000, 121 A40
 ```
 Per card report: ran (or crash/OOM)? `max|y_card − y_A100|` (same tol) — ≲1e-6 if FP64 honest,
 **flag any gross diff / NaN as silent failure**; plus wall-time. V100S expected fine (Volta full
 FP64); RTX 8000 the doubtful one (Turing + diffrax implicit FP64). These sidecars carry the
 **tol=1e-4** tag, distinct from the truth cache.
 
-## Report (append §A3 to docs/cached_results/results.md; push ONLY that file)
+## Report (append §A3 to hpc/gpu_probe_results.md; push ONLY that file)
 
 - **Part A table**: (profile, setting) → ran/finite/converged/n_gn/rmse_ours/d_rmse/dofs/runtime
   (config A). Then the two verdicts with bias magnitudes; confirm idx-20 is the flat null.

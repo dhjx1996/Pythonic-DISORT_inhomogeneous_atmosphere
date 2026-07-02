@@ -17,7 +17,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from _riccati_solver_jax import _floored_tolerances, _RTOL_FLOOR_F32
+from pydisort_riccati_jax._riccati_solver_jax import _floored_tolerances, _RTOL_FLOOR_F32
 from pydisort_riccati_jax import pydisort_riccati_jax
 
 NQuad = 8

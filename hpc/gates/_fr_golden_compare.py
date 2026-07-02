@@ -5,11 +5,13 @@ Primary comparison is on the platform-INVARIANT dense retrieved profile re_ours_
 and scalars (tau_bot_ret, dofs, sic, rmse) -- these are grid-independent, so a CPU result is
 comparable to the GPU-generated golden even if the QRCP node grid differs slightly. x_hat_log is
 compared too but only meaningfully when the node grids match (k + s_grid)."""
-import numpy as np, sys
+import numpy as np, os, sys
 
 idx = int(sys.argv[1])
-ours_p = sys.argv[2] if len(sys.argv) > 2 else f"docs/cached_results/_fr_parts/{idx}_A.npz"
-gold_p = f"tests/supplementary/precision_probe_out/probe_{idx}_tol1e-4_A.npz"
+ours_p = sys.argv[2] if len(sys.argv) > 2 else f"runs/_fr_parts/{idx}_A.npz"
+# golden GPU-probe bundle location (override with FR_GOLD_DIR)
+gold_dir = os.environ.get("FR_GOLD_DIR", "runs/precision_probe_out")
+gold_p = f"{gold_dir}/probe_{idx}_tol1e-4_A.npz"
 o = np.load(ours_p, allow_pickle=True)
 g = np.load(gold_p, allow_pickle=True)
 
