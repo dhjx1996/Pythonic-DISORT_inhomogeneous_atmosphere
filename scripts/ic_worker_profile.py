@@ -105,9 +105,24 @@ try:
     # _encode_state maps physical->log (identity if the forward were linear-state).
     x_lin = fwd._encode_state(x_lin_phys)
 
+    # Load truth radiance from the pre-computed cache (avoids native-profile-shape
+    # compile). The radiance MAGNITUDE sets the relative-noise Se — for the
+    # diagnostics below AND for the mode selection (audit 2026-07 §2.1: the old
+    # flat (0.005)² selection Se was inconsistent with the OCI model; for dark
+    # SWIR scenes it under-weighted the noise floor and could trim real modes).
+    _rrec = oc.load_radiance(RADIANCE_CACHE, idx)
+    truth_tol = _rrec.get("tol")                                  # cache accuracy tag (gen tol)
+    _exp_tol = os.environ.get("RADIANCE_TOL")                     # expected truth tol (optional gate)
+    if _exp_tol is not None and truth_tol is not None and abs(truth_tol - float(_exp_tol)) > 1e-12:
+        raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp_tol} "
+                         f"— wrong-accuracy cache; refusing (rigor over results).")
+    y = np.asarray(_rrec["y"])
+    sig_full = NOISE.sigma(y, n_bands=NB)
+    Se_full = np.diag(sig_full ** 2)
+
     t0 = time.time()
     print(f"[{idx}] {flight} tau={truth.tau_bot:.1f} mode={IC_MODE}: optics ready, building Jacobian...", flush=True)
-    roe.select_num_modes(fwd, x_lin, s_ref, (0.005 ** 2) * np.eye(fwd.m))
+    roe.select_num_modes(fwd, x_lin, s_ref, Se_full)
     # include_base=True -> K columns span ALL r_e nodes INCLUDING the s=1 base (r_base is an r_e value).
     K_full, s_int = jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
     print(f"[{idx}] {flight}: radiance Jacobian done in {time.time()-t0:.0f}s "
@@ -128,18 +143,7 @@ try:
         priors['loo2x'] = np.asarray(roe.make_climatology_prior(  # set vi: LOO with ℓ=1.0 (2× the 0.5 default)
             s_interior, clim, corr_length=1.0)[1])[:n, :n]
 
-    # Load truth radiance from the pre-computed cache (avoids native-profile-shape compile).
-    # The radiance MAGNITUDE sets the relative-noise Se below — Se is dictated by the
-    # measurement (the OSSE noise model), so the cache IS the operational measurement here.
-    _rrec = oc.load_radiance(RADIANCE_CACHE, idx)
-    truth_tol = _rrec.get("tol")                                  # cache accuracy tag (gen tol)
-    _exp_tol = os.environ.get("RADIANCE_TOL")                     # expected truth tol (optional gate)
-    if _exp_tol is not None and truth_tol is not None and abs(truth_tol - float(_exp_tol)) > 1e-12:
-        raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp_tol} "
-                         f"— wrong-accuracy cache; refusing (rigor over results).")
-    y = np.asarray(_rrec["y"])
-    sig_full = NOISE.sigma(y, n_bands=NB)
-    Se_full = np.diag(sig_full ** 2)
+    # (radiance record + Se_full loaded above, before the mode selection)
     y_flux = fwd.flux_reflectance(x_tru, s_ref)
     sig_flux = NOISE.sigma(y_flux, n_bands=NB)
     Se_flux = np.diag(sig_flux ** 2)

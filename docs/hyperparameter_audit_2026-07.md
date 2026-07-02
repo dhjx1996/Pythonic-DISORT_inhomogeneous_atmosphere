@@ -27,7 +27,7 @@ further; **INERT** = never binding in practice.
 | noise `k_cal` | 2 % + 1e-3 floor | PACE MRD §3.7 radiometric accuracy 1–3 %, calibration-dominated for bright clouds (DD §12) | OK |
 | shot term | OFF (`snr_ref=inf`) | OD-K open (needs OCI SNR tables) | **FLAG (open)** — inherited open item; matters most for the dark 3.7/4.05 µm bands |
 | mode-trim `frac` | 1/3 of min σ_ε | "≪ noise" rule | OK |
-| IC workers' mode-trim `Se` | flat (0.005)² · I | none — **inconsistent with the oci_swir Se the retrieval inverts** | **FLAG (medium)** — see §2.1 |
+| IC workers' mode-trim `Se` | ~~flat (0.005)²·I~~ → measured-radiance OCI Se | was inconsistent with the oci_swir Se the diagnostics assume | **FIXED 2026-07-02** — see §2.1; re-run decision pending |
 | `filter_threshold` | 0.5 | Rodgers SNR=1 data/prior crossover; 0.25→0.5 re-sweep at 2 % noise (DD §10f) | OK; OD §G still says 0.25 — doc drift to fix in the doc revision |
 | `margin` | +1 node | heuristic ("one prior-filled direction") | **FLAG (low)** — untested lever; harmless with the tight base prior, but no sweep exists at 2 % noise |
 | `k_max` | 8 | cap on the filter count | INERT (observed k=4–6) |
@@ -53,11 +53,13 @@ uses `noise_model.oci_swir()` (2 %·ρ + 1e-3 floor). For dark SWIR scenes the o
 can sit near the 1e-3 floor — 5× *below* the flat 0.005 — so the trim threshold
 (frac·min σ) is looser than the assumed measurement noise and can drop modes that are
 not strictly sub-noise for the darkest observations. Production FR is consistent
-(`retrieval_worker` passes the oci Se). **Action:** switch the IC workers to
-`roe.make_Se(fwd, y, nm.oci_swir())` on the next IC re-run — do NOT hot-fix now, the
-definitive bundle's provenance uses the flat value and comparability matters more
-than a sub-noise refinement. (The E1 uniform-K pad note in `hpc/AGENT_all125_ic.md`
-already warns that re-runs shift at sub-noise level.)
+(`retrieval_worker` passes the oci Se). **Status: FIXED in code (2026-07-02)** — both
+IC workers now load the radiance record before mode selection and select against the
+measured-radiance OCI Se (each worker's own view set). The published definitive
+bundle still reflects the old flat value; a re-run therefore changes K selection
+(same or MORE modes kept — the accuracy-safe direction) and shifts DOFS/SIC beyond
+the E1 sub-noise note. The re-run decision sits with the user + HPC agent (see
+CHANGELOG).
 
 ### 2.2 The E2a/E3 setup diet needs its production gate (gate-blocking)
 `retrieve_tau_bot(n_iter=4, xtol=2e-2)` + pre-retrieval-on-`S_COARSE` change where
@@ -112,7 +114,7 @@ neither has the evidence discipline the other knobs now have. Candidate for a ch
 ## 4. Standing actions
 
 1. HPC: run the golden gate (`tests/hpc/`, §2.2) before the next production sweep.
-2. Next IC re-run: oci-consistent mode-trim Se (§2.1).
+2. IC mode-trim Se: fixed in code (§2.1); decide the IC re-run (user + HPC agent).
 3. Doc revision pass: fix OD §G filter_threshold drift; fold this audit's verdicts
    into DD where they harden decisions.
 4. Idle-HPC candidates: corr_length/margin mini-sweeps (§2.4); μ0 sensitivity spot

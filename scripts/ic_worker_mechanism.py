@@ -68,13 +68,8 @@ try:
     # STATE-SPACE MATCH (batch-2 null-K fix): forward is LOG-state; a physical x_lin gets
     # exp()'d to ~thousands of µm -> off the [2,20] table -> clamp -> EXACTLY-ZERO Jacobian.
     x_lin = fwd._encode_state(x_lin_phys)
-    roe.select_num_modes(fwd, x_lin, s_ref, (0.005 ** 2) * np.eye(fwd.m))
-    K_full, s_int = jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
-    print(f"[{idx}] {flight}: radiance Jacobian done in {time.time()-t0:.0f}s "
-          f"(n_int={s_int.size}, base incl.); diagnostics...", flush=True)
-    n = s_int.size
-    s = np.array(s_int)
-    s_interior = s[:-1]
+    # Measured radiances set the mode-selection Se too (audit 2026-07 §2.1: the old
+    # flat (0.005)² was inconsistent with the OCI noise the diagnostics assume).
     _rrec = oc.load_radiance(RADIANCE_CACHE, idx)                 # cache IS the measurement (sets Se)
     truth_tol = _rrec.get("tol")                                  # cache accuracy tag (gen tol)
     _exp_tol = os.environ.get("RADIANCE_TOL")                     # expected truth tol (optional gate)
@@ -83,6 +78,14 @@ try:
                          f"— wrong-accuracy cache; refusing (rigor over results).")
     y = oc.select_retrieval_views(np.asarray(_rrec["y"]))
     Se_full = NOISE.Se(y, n_bands=NB)
+    roe.select_num_modes(fwd, x_lin, s_ref, Se_full)
+    K_full, s_int = jacobian_on_ode_grid(fwd, x_lin, s_ref, include_base=True)
+    print(f"[{idx}] {flight}: radiance Jacobian done in {time.time()-t0:.0f}s "
+          f"(n_int={s_int.size}, base incl.); diagnostics...", flush=True)
+    n = s_int.size
+    s = np.array(s_int)
+    s_interior = s[:-1]
+    # (radiance record + Se_full loaded above, before the mode selection)
     Sa_corr = np.asarray(roe.make_climatology_prior(s_interior, clim)[1])[:n, :n]   # LOO prior (r_e+base)
     Sa_diag = np.diag(np.diag(Sa_corr))
 
