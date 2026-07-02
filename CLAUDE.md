@@ -1,149 +1,118 @@
 # CLAUDE.md
 
 Guidance for Claude Code working in this repo: the differentiable RT solver
-`pydisort_riccati_jax`.
+`pydisort_riccati_jax` and the VOCALS r_e(τ) optimal-estimation retrieval built on it.
 
 ## Sources of truth (read these first)
 
 - **`docs/DESIGN_DECISIONS.md`** — settled decisions and *why* (solver lineage, the
-  no-positive-exponents invariant, retrieval-grid findings, float32/float64, discrete adjoint).
-- **`docs/OUTSTANDING.md`** — open problems and decisions still to make. **Check here before
-  assuming a feature exists or is missing** (this is what prevents "is the adjoint
-  implemented?"-type confusion).
-- **`report_riccati_solver.tex`** — the formal report (math + design justification). The old
-  PythonicDISORT documentation notebook has been removed; for DISORT background see
-  PythonicDISORT's online docs (https://pythonic-disort.readthedocs.io).
+  no-positive-exponents invariant, delta-M/TMS, precision policy, priors, IC findings,
+  full-retrieval design). **`docs/OUTSTANDING.md`** — open problems. Check OUTSTANDING before
+  assuming a feature exists or is missing. *(Both pre-date the 2026-07-02 reorganization —
+  file paths they cite may be one refactor old; the decisions themselves stand.)*
+- **`hpc/`** — everything about the HPC production runs: the re-runnable AGENT task specs
+  (`AGENT_all125_{rad,ic,fr}.md`, `AGENT_gpu_probe.md`), `STRATEGY_hpc_retrieval_runs.md`
+  (compute-minimization playbook), `FR_CHECKPOINT_RESUME_PLAN.md` (L1/L2 resume design + status),
+  batch postmortem/assessment records, `gates/` (rigor gates), `sbatch/` (Slurm drivers).
+- **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
+  its two inputs live in `docs/cached_results/`). `docs/report_riccati_solver.tex` — formal report.
+
+## Layout
+
+```
+src/pydisort_riccati_jax/   the package (all importable code)
+scripts/                    the 6 worker/analysis entry points the AGENT specs run
+tests/                      pytest suite (float32 default / float64 partition) + reference_results/
+hpc/                        run specs, strategy, gates, sbatch
+docs/                       results notebook + its 2 cached inputs, figures, report, design docs
+runs/                       (untracked) worker outputs: parts dirs, logs, checkpoints
+../data/                    (untracked, workspace-level) large caches: optics table,
+                            osse_radiances.npz; VOCALS netCDFs are in
+                            ../multispectral-retrieval-using-MODIS/VOCALS_REx_data
+```
+
+Package modules (lazy `__init__` — importing the package or `runtime_setup` touches no JAX, so
+workers can pin CPU affinity BEFORE JAX loads; solver API names re-export from `solver`):
+
+| Module | Purpose |
+|---|---|
+| `solver` | one-shot `pydisort_riccati_jax` + the jit-able seam (`riccati_setup`/`riccati_solve`/`eval_radiance`), `lax.scan`-over-modes Fourier solve, `interpolate` |
+| `_riccati_solver_jax` | Kvaerno5 Riccati kernels: invariant-imbedding R, companion T, beam source s; delta-M/TMS (`_precompute_tms`/`_apply_tms`) |
+| `_solve_bc_riccati_jax` | N×N boundary-condition solve |
+| `retrieval_oe` | Gauss–Newton OE retrieval: `RetrievalForward`, priors, QRCP grid + mode selection, `gauss_newton_oe` (+L1 checkpoint), `retrieve_tau_bot`, `posterior_diagnostics` |
+| `optics_table` | miepython-grounded r_e → (ω, Q_ext, Legendre) table; differentiable `table_lookup`. (`miejax_lite` is **retired** — legacy validation only.) |
+| `info_content` | IC profiling on the full ODE grid (Jacobians → DOFS/SIC via `retrieval_oe`) |
+| `noise_model` | OCI-SWIR σ(ρ) measurement noise (2 % calibration-relative) |
+| `vocals_io` | VOCALS-REx netCDF profile loader + climatology |
+| `osse_config` | **single source of truth** for the observing system (bands, views, NQuad=48, NLEG_ALL=1536, NFOURIER, `signature()`, data-path defaults) |
+| `runtime_setup` | HPC per-node core-slot affinity pinning — import + `setup()` before JAX |
+| `reference` | PythonicDISORT reference wrappers (tests + notebook convergence checks) |
+
+**PythonicDISORT** is a hard dependency (solver uses its `subroutines`; `pydisort()` is the test
+reference). Data/caches are env-overridable (`OPTICS_CACHE`, `RADIANCE_CACHE`, `VOCALS_DATA`)
+with `../data` defaults resolved in `osse_config`.
 
 ## Commands
 
-Run from `tests/`. Use the project's `JAX` conda env (on the cluster:
-`/burg/home/dh3065/miniconda3/envs/JAX/bin/python`; elsewhere just `python` in that env).
-
 ```bash
-# float32 production suite (default; auto-excludes the float64 partition via tests/pytest.ini)
+# float32 suite (default; pytest.ini excludes the float64 partition)
 cd tests && python -m pytest . -v
 
-# float64 partition (tight tolerances + FD gradient checks; slow, ~1h)
+# float64 partition (tight tolerances + FD gradient checks; slow)
 cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
 
-# single file / function
-cd tests && python -m pytest 1_test.py::test_1a -v
+# quick representative subset (~5 min)
+cd tests && python -m pytest 13_key_test.py 14_key_test.py -v
 
-# regenerate .npz reference fallbacks (run once after changing tau values)
-cd tests && python supplementary/generate_reference.py
+# regenerate .npz reference fallbacks (only after changing reference tau values)
+cd tests && python generate_reference.py
 ```
 
-Quick representative subset: `13_key_test.py 14_key_test.py` (~5 min). The solver runs in
-**float32 by default** (`tol≈1e-3`); float64 (opt-in via `PYDISORT_RICCATI_JAX_X64=1`) is for
-tight tolerances and finite-difference gradient checks. Rationale and the partition table are in
-`docs/DESIGN_DECISIONS.md` §4.
+No suitable local env? Build one: `python3 -m venv /tmp/jaxve && /tmp/jaxve/bin/pip install
+numpy scipy jax diffrax pytest PythonicDISORT netCDF4 miepython` (cluster: the `JAX` conda env).
 
-## Architecture
+Production runs are driven by the `hpc/AGENT_*.md` specs (Slurm arrays over 125 VOCALS
+profiles; `scripts/*.py` entry points; float64, `SOLVER_TOL=1e-4`, NQuad=48).
 
-**PythonicDISORT** is an **external dependency** (provides `pydisort()` and `subroutines`), used
-only as a test reference — see https://github.com/LDEO-CREW/Pythonic-DISORT.
-
-The solver is three flat modules in `src/` (added to `sys.path` by `tests/conftest.py`):
-
-| File | Purpose |
-|---|---|
-| `src/pydisort_riccati_jax.py` | one-shot `pydisort_riccati_jax` **and** the jit-able composable seam (`riccati_setup`/`riccati_solve`/`eval_radiance`); the `lax.scan`-over-modes Fourier solve, padded per-mode + static-μ0 setup, output assembly, `interpolate` |
-| `src/_riccati_solver_jax.py` | Kvaerno5 Riccati solver: invariant-imbedding R, companion T, beam source s; mode-index-free α/β/q builders (padded per-mode tensors), `_precompute_tms`/`_apply_tms` |
-| `src/_solve_bc_riccati_jax.py` | N×N boundary-condition solve from the scattering operators |
-
-`tests/` holds the PyTest suite (constant-ω sanity checks → τ-varying convergence → thick
-atmospheres → adaptive solver → μ-interpolation → adjoint), split into float32 / float64
-partitions; `tests/_helpers.py` has the reference/assertion helpers;
-`tests/supplementary/generate_reference.py` precomputes `.npz` fallbacks.
-
-### Hard invariant — NO POSITIVE EXPONENTS
+## Hard invariant — NO POSITIVE EXPONENTS
 
 No intermediate quantity may contain `exp(+λ·τ)` with `λ>0`, `τ>0` (thick-atmosphere overflow).
-The Riccati state stays O(1) by construction; any algorithm change must preserve this. See
-`docs/DESIGN_DECISIONS.md` §2.
+The Riccati state stays O(1) by construction; any algorithm change must preserve this
+(`docs/DESIGN_DECISIONS.md` §2).
 
 ## The solver
 
-**Purpose.** Forward solver for a single column with continuously τ-varying ω(τ) and phase
-function gₗ(τ), returning the upwelling field at ToA (τ=0). Invariant-imbedding Riccati ODE
-integrated with diffrax Kvaerno5 (L-stable ESDIRK, adaptive). Two sweeps: forward
-(R_up, T_up, s_up), backward (R_down, T_down, s_down); state is a PyTree
-`{'R':(N,N),'T':(N,N),'s':(N,)}`.
+Forward solver for a single column with continuously τ-varying ω(τ) and phase function gₗ(τ),
+returning the upwelling field at ToA. Invariant-imbedding Riccati ODE, diffrax Kvaerno5
+(L-stable ESDIRK, adaptive); state PyTree `{'R':(N,N),'T':(N,N),'s':(N,)}`;
+`dR/dσ = αR + Rα + RβR + β`, `dT/dσ = (α+Rβ)T`, `ds/dσ = (α+Rβ)s + Rq₁ + q₂`.
+Design priority: **minimise integration step count** (the forward runs inside the retrieval
+loop; step count is nearly NQuad-independent). Return: 5-tuple
+`(mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`, all JAX-traceable — never `float()`
+a traced output inside the solver. Delta-M + Nakajima–Tanaka TMS are implemented (opt-in
+`delta_M_scaling=True, NT_cor=True`; production ON) — they resolved the negative-radiance issue;
+IMS omitted by design. The discrete adjoint is free reverse-mode AD, not a separate feature.
 
-Riccati system: `dR/dσ = αR + Rα + RβR + β`, `dT/dσ = (α+Rβ)T`, `ds/dσ = (α+Rβ)s + Rq₁ + q₂`.
-
-**Design priority — minimise the integration step count.** The forward model runs inside the
-retrieval loop, so step count (more than per-step cost or wall time) dominates total cost. Step
-count is nearly NQuad-independent (~35 steps on a τ=30 cloud); NQuad ≥ 6 required.
-
-**Scope.** Built for τ-varying ω and/or phase function (the τ-independent case is handled
-better by plain `pydisort`; constant-ω cases are kept only as sanity tests). Arbitrary `b_pos`
-and BDRF bottom boundary supported.
-
-**Phase-function interface.** `Leg_coeffs_func(τ) → (NLeg,)` Legendre coefficients, with
-explicit `NLeg`/`NFourier`. Legendre products at quadrature points are precomputed with
-`scipy.special` (`_precompute_legendre`) and contracted via `jnp.einsum` in the JAX-traceable
-vector field.
-
-**Return value.** A 5-tuple `(mu_arr_pos, flux_up_ToA, u0_ToA, u_ToA_func, tau_grid)`, all
-upwelling-only (size N = NQuad//2). `u0_ToA`, `u_ToA_func`, and `flux_up_ToA` are
-JAX-traceable; **do not** wrap `flux_up_ToA` in `float()` inside the solver (it concretises and
-breaks `jax.grad`). `interpolate(u_ToA_func, mu_arr_pos)` gives barycentric μ-interpolation to
-arbitrary polar angles (JAX-traceable).
-
-**Retrieval observable.** The full azimuthally-resolved `u_ToA_func(φ)` at ToA — tests compare
-that against pydisort, not just `u0` or `flux_up`.
-
-### jit-able retrieval forward — the composable seam  (`docs/DESIGN_DECISIONS.md` §7)
-
-The forward model **is jit-able** (OUTSTANDING §C **resolved**) via a host-side setup / traceable
-solve split — the one-shot `pydisort_riccati_jax` is the same core, so its 5-tuple is unchanged
-(bit-for-bit). Recipe:
+### jit-able seam (DESIGN §7)
 
 ```python
-setup = riccati_setup(NQuad, I0, phi0, mu0, ...)          # host-side, run once (mu0 static)
-def forward(theta, tau_bot):
-    of, lf = optics_from(theta)
-    res = riccati_solve(setup, of, lf, tau_bot)            # traceable; all NFourier modes
-    return eval_radiance(setup, res, mu_obs, phi_obs)      # observable
-f = jax.jit(forward)                 # compile once (mode body via lax.scan), cached
-g = jax.jit(jax.grad(forward))       # reverse-mode discrete adjoint (default)
+setup = riccati_setup(NQuad, I0, phi0, mu0, ...)   # host-side, once; mu0 STATIC
+res   = riccati_solve(setup, omega_func, leg_func, tau_bot)   # traceable
+obs   = eval_radiance(setup, res, mu_obs, phi_obs)
 ```
+Traced: `tau_bot`, optics closures. Static: grid sizes, geometry, BCs, delta-M/TMS flags —
+close `setup` over the jitted fn; rebuild it to change μ0. Fourier modes run under `lax.scan`
+(mode body compiles once). `jax.jacfwd` needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`.
+Tests: `tests/21_jit_test.py`.
 
-- **Traced:** `tau_bot`, optics closures. **Static (in `setup`):** grid sizes, `I0`, `phi0`, `mu0`,
-  BCs, BDRF, `delta_M`/`NT_cor` flags. Close `setup` over the jitted fn; don't pass it as a traced arg.
-  `mu0` is static — re-build `setup` to change solar geometry (one cheap compile per μ0).
-- **Fourier modes run under `lax.scan`** (the mode body compiles **once**, O(1) in mode count —
-  OUTSTANDING §H), which removed the old K-fold-unroll compile-memory OOM at NQuad≥24 / NFourier=16-jacrev.
-  Default = all `NFourier` modes; trim the count offline with the noise-aware S_ε selector
-  `retrieval_oe.select_num_modes` (replaces the old relative-Cauchy `calibrate_num_modes`) and pass it as
-  `riccati_solve(..., num_modes=K)`.
-- **Forward-mode** (`jax.jacfwd`, small-DOF retrieval) needs `riccati_setup(..., adjoint=diffrax.ForwardMode())`
-  — the reverse-mode default is a `custom_vjp` that can't be forward-differentiated.
-- Demo: `tests/supplementary/demo_jit_retrieval.py`. Tests: `tests/21_jit_test.py`.
+## Precision policy
 
-### Open / deferred
-
-**Delta-M scaling and the Nakajima–Tanaka TMS correction are implemented** (opt-in
-`delta_M_scaling=True, NT_cor=True`; see `docs/DESIGN_DECISIONS.md` §6) — this resolved the
-**negative-radiance** issue for forward-peaked phase functions (`docs/OUTSTANDING.md` §A). IMS is
-omitted by design (it corrects only the downward field). **jit-ability is resolved** (the
-composable seam above; `docs/OUTSTANDING.md` §C → `docs/DESIGN_DECISIONS.md` §7). Still **not yet
-implemented**: isotropic internal source, non-ToA depth, the retrieval loop itself, and the τ-grid
-utility — all tracked in `docs/OUTSTANDING.md`. The discrete adjoint is **not** a separate feature
-— it is free reverse-mode AD (verified); see `docs/DESIGN_DECISIONS.md` §5.
-
-## Differentiable Mie front-end (`miejax_lite`)
-
-The lookup `rₑ(τ) → (ω, phase function)` is supplied by **`miejax_lite`**, a sibling package
-(`../miejax_lite`, `pip install -e ../miejax_lite`). It closes the differentiable chain
-`rₑ(τ) → Mie → (ω, Leg_coeffs) → pydisort_riccati_jax → u_ToA`. Primary API:
-`mie_avg_legendre(r_eff, wavelength, v_eff, precomp, ...) → (ω, Leg_coeffs, Q_ext)` (gamma-
-averaged, differentiable, exact Mie Legendre coefficients). Water droplets only. See
-`../miejax_lite/README.md`.
+Solver default float32 (`tol≈1e-3`), opt-in float64 via `PYDISORT_RICCATI_JAX_X64=1` (DESIGN §4).
+**Production science (10-band, NQuad=48) requires float64 + `tol=1e-4`** — float32 hits the
+Kvaerno5 max_steps blowup there (DESIGN §15); the notebook's 2-band cases run float32 fine.
 
 ## Style
 
 PEP 8 readability, no strict formatter. Variable names mirror the math (`mu_arr_pos`,
-`weighted_Leg_coeffs`); `_`-prefixed functions are internal. Any change to numerical behaviour
-needs a verification test and an explanation.
+`weighted_Leg_coeffs`); `_`-prefixed names are internal. Any change to numerical behaviour needs
+a verification test and an explanation.

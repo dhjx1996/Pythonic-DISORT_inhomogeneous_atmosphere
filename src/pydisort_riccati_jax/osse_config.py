@@ -10,7 +10,7 @@ fingerprint before handing back ``y`` — the real-pipeline analog of "does this
 match my forward-model assumptions".
 
 NFourier (azimuthal mode count) is **per band**, set by the convergence study
-(``nfourier_study.py`` / DESIGN: NFourier study), NOT by the noise-aware per-profile
+(DESIGN: NFourier study), NOT by the noise-aware per-profile
 trim (``select_num_modes``, retained but deprecated for the OSSE — we do not trust the
 noise estimate for truncation). The short-lambda / large-r_e bands need many modes
 (principal-plane glory/rainbow); the absorbing long-lambda bands need few. Set << noise,

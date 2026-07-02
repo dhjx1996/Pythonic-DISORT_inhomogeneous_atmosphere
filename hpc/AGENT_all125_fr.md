@@ -140,35 +140,33 @@ N=$($PY -c "import sys;sys.path.insert(0,'/burg-archive/home/dh3065/cloud_profil
 echo "N=$N profiles"
 ```
 
-## Checkpoint / resume + compile cache — implement FIRST (`FR_CHECKPOINT_RESUME_PLAN.md`)
+## Checkpoint / resume (`hpc/FR_CHECKPOINT_RESUME_PLAN.md`) — implemented; use it
 
-> **✅ STATUS (2026-06-30 batch-3):** **Layer 1 is implemented (commit 9bc7e5f) and verified** — a walled
-> task resumes at its last GN iteration (`range(it_start, n_iter)`); confirmed by code + the production
-> run. **Layer 3 (compile cache) does NOT capture FR's forward/Jacobian** (FR GPU cache = 1 entry + 14 MB
-> autotune; FR CPU cache = 40 KB helper jits only) — do **not** count on cache hits speeding FR resumes.
-> **Layer 2 is NOT implemented and is the real resume saver:** every resume re-runs the full
-> `build_forward_and_obs` setup (**~106 min on A100 thick / ~50–100 min CPU**) before Layer 1 engages.
-> And **FR is execution-bound, not compile-bound** (A100 Jacobian ~600–700 s each, ×~18 ≈ 3.5 h/thick
-> profile), so caching saves ~10–15% at best and **more CPU cores don't help** (keep cpt=1). See the
-> "Field status" block in `FR_CHECKPOINT_RESUME_PLAN.md` for the full readout + viability ranking.
+> **✅ STATUS (2026-07-02):** **Layer 1 (GN-iteration checkpoint) is implemented (9bc7e5f) and
+> production-verified** — a walled task resumes at its last GN iteration, losing ≤1 iteration.
+> **Layer 2 (setup cache) is implemented (aad2e5a)** — opt-in `FR_SETUP_CACHE=1`; a resume (or a
+> GPU run whose setup an idle CPU slot already computed) SKIPS the whole `build_forward_and_obs`
+> setup (~106 min A100 thick / ~50–100 min CPU). Re-gate per platform with
+> `hpc/gates/_fr_l2_test.py` (bit-exact; asserts the cache was actually WRITTEN).
+> **Layer 3 (persistent compile cache) is REMOVED for FR** — measured no-op (FR is
+> execution-bound; its forward/Jacobian executables never persisted) and a Lustre file-count
+> liability; verdict in `hpc/fable_assessment_2026-07-01.md` §1-L3. IC keeps `_jax_cache` (its
+> real ptxas mitigation). More CPU cores don't help FR (keep cpus-per-task=1).
 
-Before the production sweep, implement (and test) the checkpoint/resume + resume-scoped compile cache
-specified in **`FR_CHECKPOINT_RESUME_PLAN.md`** (repo root — the original is on Git; you may revise it as
-you see fit). It makes a walled task **resumable** (a wall loses ≤1 GN iteration, not the whole task), so
-you can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to fit `short`) and run
-aggressive walls without losing work — the right insurance given per-task time is only partly
-predictable and the slow tail is **unsettled** pre-FR (thin vs mid-τ — see Step 2).
+Checkpoint/resume is specified in **`hpc/FR_CHECKPOINT_RESUME_PLAN.md`** and wired into
+`scripts/retrieval_worker.py`. It makes a walled task **resumable** (a wall loses ≤1 GN iteration,
+not the whole task), so you can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to
+fit `short`) and run aggressive walls without losing work.
 
-- **⚠️ Checkpoints + the compile cache MUST live on shared, persistent storage** (`/burg-archive/…`,
+- **⚠️ Checkpoints (L1 `.ckpt.npz` + L2 `.setup.npz`) MUST live on shared, persistent storage** (`/burg-archive/…`,
   mirror the `_*_parts/` convention), **never** node-local `/local` or `$SCRATCH` — a dying node wipes
   node-local state, which is the exact event resume exists to survive.
 - **To resume:** resubmit the same indices — each task loads its last checkpoint (per `(index, config)`)
   and continues; completed configs/profiles are skipped.
-- **Checkpoints are portable** across CPU↔GPU and GPU types (plain numpy) — a profile may start on GPU
-  and resume on CPU (CPU spill). Only the **compile cache** is backend-specific: a cross-card resume
-  recompiles (correct, just slower); pin the card (`-C`) for guaranteed cache hits.
-- Gate it on a **resume-equivalence test** (a resumed run must match an uninterrupted one) before
-  trusting a chunked production sweep.
+- **Checkpoints are portable** across CPU↔GPU and GPU types (plain numpy) — a profile may start on
+  GPU and resume on CPU (CPU spill); a cross-card resume recompiles (correct, just slower).
+- Gate on the **resume-equivalence test** (`hpc/gates/_fr_resume_test.py`: a resumed run must match
+  an uninterrupted one) before trusting a chunked production sweep.
 
 ## Step 2 — run it (Venue A: a SINGLE SLURM array)
 
@@ -254,9 +252,8 @@ ls -lh /burg-archive/home/dh3065/cloud_profile_retrieval/fr_bundle.zip
 - **OOM** (exit 137; unlikely at `--mem=12G`): raise `--mem`, or on Venue B lower `-P`.
 - **GPU `ptxas` compile abort** (`Aborted (core dumped)` in `CompileGpuAsmUsingPtxAs` /
   `NVPTXCompiler`; **GPU-only**, ≈9/126 in the IC batch; transient/load-dependent, **not** memory —
-  don't raise `--mem`): the persistent compile cache (Layer 3, `FR_COMPILE_CACHE_DIR`) makes it rarer
-  (cache hits skip `ptxas`); when one still hits, **just resubmit — the task resumes from its last GN
-  checkpoint** (Layer 1), losing ≤1 iteration. Only the first/cold compile of each shape is exposed.
+  don't raise `--mem`): **just resubmit — the task resumes from its last GN checkpoint** (Layer 1),
+  losing ≤1 iteration; with `FR_SETUP_CACHE=1` the setup re-pay is skipped too (Layer 2).
 - **Degenerate profiles** auto-write `{"skipped": ...}` in `<i>.json` (no `_A`/`_B` sidecars) — **expect
   exactly 1** (index 0, RF01, τ≈1585). Any other skip is worth a glance but not a failure.
 - **Non-converged retrievals** are NOT failures — the worker flags `converged:false` / `structural_misfit`

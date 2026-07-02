@@ -31,7 +31,7 @@ The Legendre extraction is bit-for-bit the same definition miejax_lite uses
 (P(μ)=2(|S1|²+|S2|²)/(x²·Q_sca), χ_ℓ = ½∫P P_ℓ dμ by Gauss–Legendre, χ_0≡1,
 g=χ_1), but the Mie coefficients a_n, b_n come from ``miepython.an_bn`` — validated
 to match ``miepython.efficiencies`` (Q_ext/Q_sca/g) to round-off and miejax_lite on
-the shared bands (see ``tests/supplementary/validate_optics_table.py``).
+the shared bands (validation study pruned 2026-07; recoverable from git history).
 """
 from __future__ import annotations
 

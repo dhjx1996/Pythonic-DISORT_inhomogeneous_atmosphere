@@ -17,12 +17,14 @@ forward model is free reverse-mode autodiff — no hand-derived adjoint.
 ## The retrieval chain
 
 ```
-rₑ(τ)  ──miejax_lite──▶  (ω(τ), p(τ; μ, φ))  ──pydisort_riccati_jax──▶  u⁺(τ=0, μ, φ)
-(Mie, differentiable)       (this solver)                (retrieval observable at ToA)
+rₑ(τ)  ──optics_table──▶  (ω(τ), p(τ; μ, φ))  ──pydisort_riccati_jax──▶  u⁺(τ=0, μ, φ)
+(Mie table, differentiable)      (this solver)             (retrieval observable at ToA)
 ```
 
-`miejax_lite` (a sibling package) is the differentiable Mie front-end supplying the optics;
-it was ported to JAX from [`miepython`](https://miepython.readthedocs.io/en/latest/).
+`optics_table` builds a [`miepython`](https://miepython.readthedocs.io/en/latest/)-grounded,
+gamma-averaged rₑ → (ω, Q_ext, Legendre) lookup table whose `table_lookup` is differentiable
+(the earlier JAX-Mie front-end `miejax_lite` is retired; kept as a sibling package for legacy
+validation only).
 
 ### When to use which solver
 
@@ -57,18 +59,21 @@ See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_re
 
 | Path | What |
 |---|---|
-| `src/` | the solver — 3 modules (`pydisort_riccati_jax.py`, `_riccati_solver_jax.py`, `_solve_bc_riccati_jax.py`) |
+| `src/pydisort_riccati_jax/` | the package: solver (`solver.py` + kernels) and the retrieval stack (`retrieval_oe`, `optics_table`, `info_content`, `noise_model`, `vocals_io`, `osse_config`, `runtime_setup`, `reference`) |
+| `scripts/` | worker/analysis entry points for the all-125 VOCALS OSSE runs |
 | `tests/` | PyTest suite (float32 default + a `float64` opt-in partition) |
-| `docs/*.ipynb` | VOCALS-retrieval notebook (solver tour, validation, and full retrieval) |
+| `hpc/` | re-runnable HPC task specs, run strategy, rigor gates, Slurm drivers |
+| `docs/riccati_solver_VOCALS_retrieval.ipynb` | VOCALS-retrieval notebook (solver tour, validation, and full retrieval) |
 | `docs/DESIGN_DECISIONS.md` | **settled** design decisions and their rationale |
 | `docs/OUTSTANDING.md` | **open** problems and decisions (read this before assuming a feature exists) |
-| `report_riccati_solver.tex` | the formal report (math + design justification) |
+| `docs/report_riccati_solver.tex` | the formal report (math + design justification) |
 
 ## Install & test
 
-Requires Python ≥ 3.11 with `numpy`, `scipy`, `jax`, `diffrax`, plus **PythonicDISORT** (for
-test references). Optionally `pip install -e .` to expose the `src/` modules; the test suite
-also adds them to `sys.path` via `tests/conftest.py`.
+Requires Python ≥ 3.11 with `numpy`, `scipy`, `jax`, `diffrax`, and **PythonicDISORT** (a core
+dependency: the solver uses its `subroutines`, and the tests use `pydisort()` as reference).
+`pip install -e .` installs the package (`.[retrieval]` adds `netCDF4` + `miepython` for the
+VOCALS workers); the test suite also adds `src/` to `sys.path` via `tests/conftest.py`.
 
 ```bash
 # float32 production suite (default)

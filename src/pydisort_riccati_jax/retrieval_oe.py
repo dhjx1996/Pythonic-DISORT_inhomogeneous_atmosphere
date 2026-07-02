@@ -706,7 +706,7 @@ def auto_k_active(K_pool, Se, sigma_prior, *, filter_threshold=0.5, margin=1,
     prior those fit noise (the §13 sub-adiabatic overfit). The earlier ``0.25`` was tuned
     on a **3 %**-noise sweep and was superseded when the measurement noise was grounded to
     the PACE-OCI **2 %** model: a 0.25-vs-0.5 sweep at 2 %
-    (``tests/supplementary/sweep_threshold_2pct.py``) showed 0.5 leaves the thin case
+    (DESIGN_DECISIONS.md §10f) showed 0.5 leaves the thin case
     unchanged, fixes the shielded RF10 overfit (drop-cap 172 %→58 %, RMSE 0.69→0.52), and
     costs the thick case only +0.1 µm (within uncertainty, both χ²≪1, from a node sitting
     *at* f≈0.5). Computed **once** at the first guess so the count is frozen for the
@@ -936,9 +936,8 @@ def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.
 
     Replaces the earlier hand-picked (and inadvertently *inverted*, r_base>r_top)
     broad prior. The structure follows the optimal-estimation principle revealed by
-    the prior-sensitivity study (``tests/supplementary/prior_investigation.py``;
-    DESIGN_DECISIONS.md §11): **make the prior tight exactly where the measurement
-    is blind, loose where it is strong.**
+    the prior-sensitivity study (DESIGN_DECISIONS.md §11): **make the prior tight
+    exactly where the measurement is blind, loose where it is strong.**
 
     * **r_top** — observable (averaging-kernel A_top≈1 for thick cloud), so its prior
       barely matters: a *moderate* ``sigma_top`` (≈ the VOCALS MAD 2.3 µm). Effective

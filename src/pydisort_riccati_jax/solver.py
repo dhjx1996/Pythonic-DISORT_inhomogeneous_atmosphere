@@ -541,7 +541,7 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
     count) instead of unrolled K times, which removes the forward/jacrev
     compile-memory OOM while preserving each mode's *independent* adaptive
     stepping. Each mode's solve is identical to the old unrolled body (validated to
-    ~1e-15, scan-vs-unrolled, fwd + jacrev + jacfwd; see tests/supplementary).
+    ~1e-15, scan-vs-unrolled, fwd + jacrev + jacfwd).
 
     With ``return_grid=False`` nothing forces a host sync, so the whole call is
     ``jit`` / ``grad`` / ``jacfwd``-able; with ``return_grid=True`` the m=0 ODE

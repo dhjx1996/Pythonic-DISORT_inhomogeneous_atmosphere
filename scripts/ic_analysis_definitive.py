@@ -433,7 +433,7 @@ def noise_sweep(caches, levels=(0.01, 0.02, 0.03, 0.05), prior="loo"):
     noise-independent), so this is a row-subset re-evaluation, not a re-run. The deep-base / angular
     gains rest on near-0.5 filter factors — the most noise-sensitive modes — so this is what defends
     the headline against realistic radiometry. Needs ``y_full``/``y_flux`` in the cache (newer workers)."""
-    import noise_model as nm
+    from pydisort_riccati_jax import noise_model as nm
     have = [c for c in caches if c.y is not None]
     nph = caches[0].nphys
     keys = ["dofs_albedo", "dofs_nadir", "dofs_fullview", "sic_albedo", "sic_nadir", "sic_fullview"]
@@ -523,9 +523,26 @@ def main(dirs):
     print(f"  data-greedy band order: {VALUE_LABELS}")
 
 
+def aggregate_mechanism(c_dir, out_path):
+    """Bundle the per-index mechanism records (``_ic_C_parts/<idx>.json``, written by
+    ic_worker_mechanism.py) into the single index-ordered list the notebook reads
+    (fig 5, ``info_content_mechanism.json``). Verified to reproduce the previously
+    ad-hoc aggregation exactly (2026-07-02)."""
+    recs = [json.loads(f.read_text())
+            for f in sorted(Path(c_dir).glob("*.json"), key=lambda p: int(p.stem))]
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(recs, indent=1))
+    print(f"wrote {out_path} ({len(recs)} mechanism records)")
+
+
 if __name__ == "__main__":
-    # default = the definitive all-125 raw-Jacobian sidecars (A=priormean, B=draw),
-    # downloaded from the HPC run into the workspace ic_bundle/
+    # defaults = the definitive all-125 sidecars (A=priormean, B=draw raw Jacobians;
+    # C=mechanism records), downloaded from the HPC run into the workspace ic_bundle/
     _ws = Path(__file__).resolve().parents[2]
     main(sys.argv[1:] or [str(_ws / "ic_bundle" / "_ic_A_parts"),
                           str(_ws / "ic_bundle" / "_ic_B_parts")])
+    _c = Path(os.environ.get("IC_C_PARTS", _ws / "ic_bundle" / "_ic_C_parts"))
+    if _c.is_dir():
+        aggregate_mechanism(_c, os.environ.get(
+            "IC_MECHANISM_OUT", OUT.parent / "info_content_mechanism.json"))

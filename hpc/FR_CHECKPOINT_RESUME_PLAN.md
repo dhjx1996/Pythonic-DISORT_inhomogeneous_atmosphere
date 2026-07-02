@@ -1,5 +1,12 @@
 # Hand-off — checkpoint/resume + resume-scoped compile cache for the `fr` full-retrieval worker
 
+> **STATUS (2026-07-02, final):** **L1 implemented + production-verified** (9bc7e5f;
+> `retrieval_oe` GN checkpoint). **L2 implemented** (aad2e5a; `FR_SETUP_CACHE`, atomic write-bug
+> F7 fixed, cache key hardened with signature+index per F2) — gate per platform with
+> `hpc/gates/_fr_l2_test.py`. **L3 REMOVED for FR** (measured no-op, Lustre liability —
+> `hpc/fable_assessment_2026-07-01.md` §1-L3); IC keeps its own `_jax_cache` (ptxas mitigation).
+> The rest of this document is the original design spec, kept for rationale.
+
 *(Spec for the HPC agent — well-placed to implement AND test on the cluster. This is the original
 plan, preserved on Git for posterity; the implementing agent may revise it as it sees fit. **No
 timing/walltime numbers are prescribed — the HPC agent owns scheduling.**)*

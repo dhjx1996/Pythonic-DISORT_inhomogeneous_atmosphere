@@ -44,8 +44,8 @@ Env:  VOCALS_DATA   in-situ flight netCDFs (default = the jovyan path).
       ENSEMBLE_NQUAD (48 — the converged operating point; N = NQuad//2 streams).
       OPTICS_CACHE   cached miepython table (.npz; profile-INDEPENDENT, built once,
                      shared with the IC run when the signature matches).
-      COST_RTOL      BP criterion-1 relative-misfit threshold (tuned; see
-                     tune_cost_rtol.py / DESIGN §10h). Default 0.01.
+      COST_RTOL      BP criterion-1 relative-misfit threshold (tuned; DESIGN §10h).
+                     Default 0.01.
 """
 import os
 import sys
