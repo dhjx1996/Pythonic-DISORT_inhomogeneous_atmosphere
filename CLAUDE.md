@@ -13,7 +13,8 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 - **`hpc/`** — everything about the HPC production runs: the re-runnable AGENT task specs
   (`AGENT_all125_{rad,ic,fr}.md`, `AGENT_gpu_probe.md`), `STRATEGY_hpc_retrieval_runs.md`
   (compute-minimization playbook), `FR_CHECKPOINT_RESUME_PLAN.md` (L1/L2 resume design + status),
-  batch postmortem/assessment records, `gates/` (rigor gates), `sbatch/` (Slurm drivers).
+  batch postmortem/assessment records, `sbatch/` (Slurm drivers). The production-scale rigor
+  gates are the standardized `tests/hpc/` suite (opt-in: `PYDISORT_HPC_GATES=1 pytest -m hpc`).
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
   its two inputs live in `docs/cached_results/`). `docs/report_riccati_solver.tex` — formal report.
 
@@ -22,8 +23,8 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 ```
 src/pydisort_riccati_jax/   the package (all importable code)
 scripts/                    the 6 worker/analysis entry points the AGENT specs run
-tests/                      pytest suite (float32 default / float64 partition) + reference_results/
-hpc/                        run specs, strategy, gates, sbatch
+tests/                      pytest suite (float32 default / float64 / hpc partitions) + reference_results/
+hpc/                        run specs, strategy, sbatch
 docs/                       results notebook + its 2 cached inputs, figures, report, design docs
 runs/                       (untracked) worker outputs: parts dirs, logs, checkpoints
 ../data/                    (untracked, workspace-level) large caches: optics table,

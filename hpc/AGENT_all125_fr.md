@@ -147,7 +147,7 @@ echo "N=$N profiles"
 > **Layer 2 (setup cache) is implemented (aad2e5a)** — opt-in `FR_SETUP_CACHE=1`; a resume (or a
 > GPU run whose setup an idle CPU slot already computed) SKIPS the whole `build_forward_and_obs`
 > setup (~106 min A100 thick / ~50–100 min CPU). Re-gate per platform with
-> `hpc/gates/_fr_l2_test.py` (bit-exact; asserts the cache was actually WRITTEN) — **GPU gate
+> `tests/hpc/test_l2_setup_cache.py` (bit-exact; asserts the cache was actually WRITTEN) — **GPU gate
 > PASSED on the HPC (2026-07-02)**.
 > **Layer 3 (persistent compile cache) is REMOVED for FR** — measured no-op (FR is
 > execution-bound; its forward/Jacobian executables never persisted) and a Lustre file-count
@@ -166,7 +166,7 @@ fit `short`) and run aggressive walls without losing work.
   and continues; completed configs/profiles are skipped.
 - **Checkpoints are portable** across CPU↔GPU and GPU types (plain numpy) — a profile may start on
   GPU and resume on CPU (CPU spill); a cross-card resume recompiles (correct, just slower).
-- Gate on the **resume-equivalence test** (`hpc/gates/_fr_resume_test.py`: a resumed run must match
+- Gate on the **resume-equivalence test** (`tests/hpc/test_l1_resume.py`: a resumed run must match
   an uninterrupted one) before trusting a chunked production sweep.
 - **E4 setup farm (2026-07-02):** `FR_SETUP_ONLY=1 FR_SETUP_CACHE=1 python scripts/retrieval_worker.py
   <idx> runs/_fr_parts/<idx>` builds + caches the setup, then exits before the GN configs (and without

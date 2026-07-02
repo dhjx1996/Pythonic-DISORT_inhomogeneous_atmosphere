@@ -18,8 +18,8 @@ export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 export RADIANCE_CACHE=$ROOT/../data/osse_radiances.npz RADIANCE_TOL=1e-4
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 OMP_WAIT_POLICY=passive
-export DIAG_IDX=95 L2_CKPT=$ROOT/runs/_fr_ctest/95_gpu.setup.npz
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
-srun $PY _fr_l2_test.py
+export PYDISORT_HPC_GATES=1
+srun $PY -m pytest tests/hpc/test_l2_setup_cache.py -m hpc -v

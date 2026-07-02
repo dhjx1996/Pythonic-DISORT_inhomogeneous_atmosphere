@@ -11,7 +11,6 @@
 ROOT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere
 cd $ROOT
 export JAX_PLATFORMS=cuda PYDISORT_RICCATI_JAX_X64=1 MODE_MAP=vmap SOLVER_TOL=1e-4 COST_RTOL=0.01 RADIANCE_TOL=1e-4
-export DIAG_IDX=95 RESUME_CKPT=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere/runs/_fr_gate/_resume.ckpt.npz
 export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 export RADIANCE_CACHE=/burg-archive/home/dh3065/cloud_profile_retrieval/data/osse_radiances.npz
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
@@ -19,4 +18,5 @@ export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4 OMP_WAIT_POLIC
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
 NVLIB=$($PY -c "import nvidia,os;b=os.path.dirname(nvidia.__file__);print(':'.join(os.path.join(b,d,'lib') for d in sorted(os.listdir(b)) if os.path.isdir(os.path.join(b,d,'lib'))))")
 export LD_LIBRARY_PATH="$NVLIB:${LD_LIBRARY_PATH}"
-srun $PY -u _fr_resume_test.py
+export PYDISORT_HPC_GATES=1
+srun $PY -u -m pytest tests/hpc/test_l1_resume.py -m hpc -v

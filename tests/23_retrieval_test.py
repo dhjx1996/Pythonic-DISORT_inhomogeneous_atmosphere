@@ -262,3 +262,26 @@ def test_23j_best_fit_adiabatic():
     assert fit["success"] and fit["rmse"] < 1e-6       # exact class member -> 0
     np.testing.assert_allclose([fit["r_top"], fit["r_base"]], [R_TOP, R_BASE],
                                rtol=1e-4)
+
+
+# --- 23l: production numerics tier (float64, tol=1e-4) end-to-end -------------------
+@pytest.mark.float64
+def test_23l_gn_float64_production_tol(opt_bands):
+    """The production precision point (float64 + tol=1e-4, DESIGN §15) on the toy —
+    the retrieval stack's only sub-HPC float64 coverage. The noiseless in-class truth
+    must be recovered to a much deeper floor than the float32 case."""
+    fwd64 = make_fwd(opt_bands, tol=1e-4)
+    x_true = fwd64._encode_state(truth_state())
+    y64 = np.asarray(fwd64.forward(x_true, S_NODES), float)
+    Se = _Se(fwd64.m)
+    clim = dict(r_top_mean=9.0, r_top_std=2.0, r_base_mean=7.5, r_base_std=1.0,
+                tau_bot_mean=6.5, tau_bot_std=3.0)
+    x_a, Sa = roe.make_climatology_prior(S_NODES, clim, log=True)
+    res = roe.gauss_newton_oe(fwd64, y64, S_NODES, x_a, Sa, Se,
+                              n_iter=10, lm=1e-2, xtol=1e-5, max_n_outer=1)
+    assert res.converged
+    r = res.y - res.Fx
+    chi2_red = float(r @ np.linalg.inv(res.Se) @ r) / len(r)
+    assert chi2_red < 1e-3
+    _, _, tau_bot = fwd64._split_state(res.x, S_NODES)
+    assert abs(float(tau_bot) - TAU_BOT) < 0.1

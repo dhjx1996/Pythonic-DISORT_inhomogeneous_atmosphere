@@ -14,6 +14,6 @@ export OPTICS_CACHE=$ROOT/../data/optics_table_10band_nleg1536_re20.npz
 export RADIANCE_CACHE=$ROOT/../data/osse_radiances.npz RADIANCE_TOL=1e-4
 export VOCALS_DATA=/burg-archive/apam/projects/multispectral-retrieval-using-MODIS/VOCALS_REx_data
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_WAIT_POLICY=passive
-export DIAG_IDX=95 L2_CKPT=$ROOT/runs/_fr_ctest/95.setup.npz
 PY=/burg-archive/home/dh3065/miniconda3/envs/JAX/bin/python
-srun --cpu-bind=cores $PY _fr_l2_test.py
+export PYDISORT_HPC_GATES=1
+srun --cpu-bind=cores $PY -m pytest tests/hpc/test_l2_setup_cache.py -m hpc -v

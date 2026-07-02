@@ -1,27 +1,82 @@
 name: tests
 
+# Tiers (tests/pytest.ini):
+#   solver     — float32 solver suite, every push/PR, Python 3.11 + 3.12
+#   retrieval  — float32 retrieval-stack suite (tests/23, builds a small
+#                miepython optics table), every push/PR; parallel to `solver`
+#                so the wall time stays ~the solver suite's
+#   float64    — the slow tight-tolerance partition, weekly + on demand
+# The `hpc` partition never runs here (production-scale gates; see tests/hpc/).
+
 on:
   push:
   pull_request:
     branches: ["main"]
+  schedule:
+    - cron: "17 3 * * 1" # weekly float64 partition (Mon 03:17 UTC)
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  pytest:
+  solver:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy scipy jax diffrax pytest PythonicDISORT
-      - name: Run float32 test suite
+      - name: Run float32 solver suite
         run: |
-          cd tests && python -m pytest . -v
+          cd tests && python -m pytest . -v --ignore=23_retrieval_test.py
+
+  retrieval:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy jax diffrax pytest PythonicDISORT miepython
+      - name: Run retrieval-stack suite
+        run: |
+          cd tests && python -m pytest 23_retrieval_test.py -v
+
+  float64:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy jax diffrax pytest PythonicDISORT miepython
+      - name: Run float64 partition
+        env:
+          PYDISORT_RICCATI_JAX_X64: "1"
+        run: |
+          cd tests && python -m pytest -m float64 -v
