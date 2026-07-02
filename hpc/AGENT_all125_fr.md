@@ -147,7 +147,8 @@ echo "N=$N profiles"
 > **Layer 2 (setup cache) is implemented (aad2e5a)** — opt-in `FR_SETUP_CACHE=1`; a resume (or a
 > GPU run whose setup an idle CPU slot already computed) SKIPS the whole `build_forward_and_obs`
 > setup (~106 min A100 thick / ~50–100 min CPU). Re-gate per platform with
-> `hpc/gates/_fr_l2_test.py` (bit-exact; asserts the cache was actually WRITTEN).
+> `hpc/gates/_fr_l2_test.py` (bit-exact; asserts the cache was actually WRITTEN) — **GPU gate
+> PASSED on the HPC (2026-07-02)**.
 > **Layer 3 (persistent compile cache) is REMOVED for FR** — measured no-op (FR is
 > execution-bound; its forward/Jacobian executables never persisted) and a Lustre file-count
 > liability; verdict in `hpc/fable_assessment_2026-07-01.md` §1-L3. IC keeps `_jax_cache` (its
@@ -167,6 +168,15 @@ fit `short`) and run aggressive walls without losing work.
   GPU and resume on CPU (CPU spill); a cross-card resume recompiles (correct, just slower).
 - Gate on the **resume-equivalence test** (`hpc/gates/_fr_resume_test.py`: a resumed run must match
   an uninterrupted one) before trusting a chunked production sweep.
+- **E4 setup farm (2026-07-02):** `FR_SETUP_ONLY=1 FR_SETUP_CACHE=1 python scripts/retrieval_worker.py
+  <idx> runs/_fr_parts/<idx>` builds + caches the setup, then exits before the GN configs (and without
+  writing the combined `<i>.json`) — so idle CPU `short` slots can pre-seed `<idx>.setup.npz` for
+  profiles a later GPU run picks up (each skips its 2–6 h setup). Caveats (HPC agent, 2026-07-02):
+  thin profiles' CPU setup can exceed a 12 h wall with no internal checkpoint — farm THICK/MID
+  profiles only; and CPU→GPU cache reuse rests on the frozen-setup design argument (the gate proves
+  same-platform bit-exactness). **Version discipline:** setup caches are keyed `v2|…` after the
+  E1/E2/E3 efficiency refactor — seed the farm only with the same code version that will consume it
+  (pre-refactor `.setup.npz` files config-mismatch and are recomputed, which is correct but wasted).
 
 ## Step 2 — run it (Venue A: a SINGLE SLURM array)
 

@@ -147,6 +147,8 @@ VIEW_PHI = np.full(N_PHYS, pi)
 NFOURIER = [24] * NB                                 # re-tuned on the FIXED forward (DESIGN: NFourier
 #   re-tune): 0.55 µm / r_e=20 / thin τ=2 worst case → rel<1% (PythonicDISORT tol) at K=24, abs<1e-3
 #   (≈ dark-scene noise) at K=22. The old 30 carried an over-strict 1e-4 + the retired r_e=25 margin.
+#   KEEP THE CEILINGS UNIFORM: ragged per-band NFourier breaks _bands_share_setup and with it the
+#   bands×modes GPU batch (fable assessment E1) — a per-band ceiling is a CPU-only saving.
 
 
 def signature():

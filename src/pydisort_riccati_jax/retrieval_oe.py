@@ -197,8 +197,24 @@ class RetrievalForward:
         self._bands_share_setup = (
             len(set(NF_list)) == 1
             and all(list(b) == list(BDRF_bands[0]) for b in BDRF_bands))
+        # (E5) The per-band optics tables are handed to the jitted callables as
+        # TRACED arguments (stacked along a leading band axis), never as closure
+        # constants: a closure-captured table is baked into every HLO as a large
+        # constant — bloating each compile, defeating any compile cache, and
+        # forcing a full re-trace on any table change. Requires every band to
+        # share one (re_min, dr, n_re) r_e grid (they come from one build).
+        meta = {k: self.opt_bands[0][k] for k in ("re_min", "dr", "n_re")}
+        if any(o[k] != meta[k] for o in self.opt_bands for k in meta):
+            raise ValueError("per-band optics tables must share one r_e grid "
+                             "(build them in a single build_re_table call)")
+        self._opt_meta = meta
+        self._omega_stack = jnp.stack(
+            [jnp.asarray(o["omega"], float) for o in self.opt_bands])
+        self._leg_stack = jnp.stack(
+            [jnp.asarray(o["leg"], float) for o in self.opt_bands])
         self._fwd_jit = None
         self._jac_jit = None
+        self._fwd_jac_jit = None
         self._jac_grid_jit = None
         self._jac_flux_grid_jit = None
 
@@ -378,42 +394,52 @@ class RetrievalForward:
         flux_up = 2.0 * jnp.pi * jnp.dot(setup.mu_arr_pos_jax * setup.W_jax, u0)
         return flux_up / (self.mu0 * self.I0)                  # plane albedo (scalar)
 
-    def _forward_raw_vmap_bands(self, s_knots, vals, tau_bot):
-        """GPU second axis: vmap the band solve over the stacked per-band optics.
+    @property
+    def _can_batch_bands(self):
+        """(E1) The bands×modes SIMT batch is valid: GPU mode map, shareable
+        setups, and a uniform ``K_list`` (``select_num_modes`` pads to uniform on
+        the vmap path precisely to keep this True)."""
+        return (self.mode_map == "vmap" and self._bands_share_setup
+                and len(set(self.K_list)) == 1)
 
-        Bands differ ONLY in (omega, leg); the setup (quadrature, BDRF, mode
-        tensors) is shared (asserted shareable by ``_bands_share_setup`` + a uniform
-        ``K_list``). vmapping ``_band_reflectance`` over the (B, ...) optics nests the
-        modes-vmap inside (setup.mode_map=='vmap') → one (bands x modes) SIMT batch
-        instead of ``n_bands`` sequential mode-vmaps. Bit-identical to the band loop
-        (validated fwd + jacfwd); a win only on GPU (fills the under-used A100), a
-        bigger no-win batch on CPU — hence guarded by mode_map=='vmap'. Output order
-        matches the loop's concatenate (band-major: band0 all views, band1, ...)."""
-        setup, K, o0 = self.setups[0], self.K_list[0], self.opt_bands[0]
-        re_min, dr, n_re = o0["re_min"], o0["dr"], o0["n_re"]
-        omega_stack = jnp.stack([jnp.asarray(o["omega"]) for o in self.opt_bands])
-        leg_stack = jnp.stack([jnp.asarray(o["leg"]) for o in self.opt_bands])
+    def _opt_from(self, omega, leg):
+        """Optics dict for one band from traced ``(omega, leg)`` arrays — THE single
+        place the optics-dict schema is assembled (E5)."""
+        return {**self._opt_meta, "omega": omega, "leg": leg}
 
-        def one_band(omega_b, leg_b):
-            opt_b = {"re_min": re_min, "dr": dr, "n_re": n_re,
-                     "omega": omega_b, "leg": leg_b}
-            return self._band_reflectance(opt_b, setup, K, s_knots, vals, tau_bot)
+    def _band_opt(self, b, omega_stack, leg_stack):
+        return self._opt_from(omega_stack[b], leg_stack[b])
 
-        R = jax.vmap(one_band)(omega_stack, leg_stack)         # (n_bands, n_view)
-        return R.reshape(-1)                                   # (n_bands*n_view,)
+    def _reflectance_stack(self, s_knots, vals, tau_bot, omega_stack, leg_stack):
+        """Band-major reflectance vector from interpolation knots — the shared body
+        of the state forward AND the pool-grid Jacobian (E1 extends the bands×modes
+        batch to both).
 
-    def _forward_raw(self, x, s_nodes):
-        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
-        # GPU: batch bands x modes in one vmap when bands are interchangeable. Else
-        # (scan, or non-uniform bands) the Python band loop — which still vmaps the
-        # modes per band when mode_map=='vmap' (graceful, just not bands-batched).
-        if (self.mode_map == "vmap" and self._bands_share_setup
-                and len(set(self.K_list)) == 1):
-            return self._forward_raw_vmap_bands(s_knots, vals, tau_bot)
+        GPU (``_can_batch_bands``): bands differ ONLY in (omega, leg) — the setup and
+        K are shared — so ONE ``jax.vmap`` over the stacked optics nests the modes-vmap
+        inside → a single (bands × modes) SIMT batch instead of ``n_bands`` sequential
+        mode-vmaps; the flatten keeps the loop's band-major order. The two paths agree
+        to within the adaptive solver tolerance (equally valid tol-level solves; NOT
+        bit-identical in float32 — tests/23a,23c). CPU / ragged-K: the Python band
+        loop, which still vmaps the modes per band when mode_map=='vmap' (graceful,
+        just not bands-batched)."""
+        if self._can_batch_bands:
+            setup, K = self.setups[0], self.K_list[0]
+            R = jax.vmap(lambda om_b, lg_b: self._band_reflectance(
+                self._opt_from(om_b, lg_b), setup, K, s_knots, vals, tau_bot))(
+                omega_stack, leg_stack)                        # (n_bands, n_view)
+            return R.reshape(-1)                               # band-major flatten
         return jnp.concatenate([
-            self._band_reflectance(opt, setup, K, s_knots, vals, tau_bot)
-            for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
+            self._band_reflectance(self._band_opt(b, omega_stack, leg_stack),
+                                   self.setups[b], self.K_list[b],
+                                   s_knots, vals, tau_bot)
+            for b in range(self.n_bands)
         ])                                                     # (n_bands*n_view,)
+
+    def _forward_raw(self, x, s_nodes, omega_stack, leg_stack):
+        s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
+        return self._reflectance_stack(s_knots, vals, tau_bot,
+                                       omega_stack, leg_stack)
 
     # -- per-mode reflectance amplitudes (drives the S_ε mode selector) -------
     def mode_amplitudes(self, x_ref, s_nodes):
@@ -433,16 +459,15 @@ class RetrievalForward:
         partial sum) is the meaningful quantity to compare against the noise floor.
         """
         s_knots, vals, tau_bot = self._knots_vals(x_ref, s_nodes)
-        amps = []
-        for opt, setup in zip(self.opt_bands, self.setups):
-            def om(tau, opt=opt):
-                return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
 
-            def leg(tau, opt=opt):
-                return table_lookup(opt, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
+        def _band_modes(opt_b, setup):
+            om = lambda tau: table_lookup(
+                opt_b, self._re_of_tau(tau, s_knots, vals, tau_bot))[0]
+            leg = lambda tau: table_lookup(
+                opt_b, self._re_of_tau(tau, s_knots, vals, tau_bot))[1]
+            return riccati_solve(setup, om, leg, tau_bot).u_modes  # (NFourier, N)
 
-            res = riccati_solve(setup, om, leg, tau_bot)        # all NFourier
-            u_modes = res.u_modes                               # (NFourier, N)
+        def _decompose(setup, u_modes):
             # u_m at each view μ: barycentric interp of each mode's (N,) vector.
             u_view = _barycentric_interpolate(
                 self.view_mu, setup.mu_nodes, u_modes.T, setup.bary_weights
@@ -451,14 +476,29 @@ class RetrievalForward:
             cosm = jnp.cos(m_arr[None, :]
                            * (setup.phi0 - self.view_phi)[:, None])  # (n_view, NF)
             contrib = jnp.pi * u_view * cosm / (self.mu0 * self.I0)  # (n_view, NF)
-            amps.append(np.asarray(jnp.max(jnp.abs(contrib), axis=0)))  # (NF,)
-        return np.stack(amps)                                   # (n_bands, NF)
+            return np.asarray(jnp.max(jnp.abs(contrib), axis=0))     # (NF,)
+
+        # (E1) one bands×modes SIMT batch for the full-NFourier mode census when
+        # the bands share a setup and modes are vmapped; else the band loop (the
+        # only option for ragged per-band NFourier — mode-tensor shapes differ).
+        if self.mode_map == "vmap" and self._bands_share_setup:
+            u_modes_all = jax.vmap(lambda ob, lb: _band_modes(
+                self._opt_from(ob, lb), self.setups[0]))(
+                self._omega_stack, self._leg_stack)             # (B, NFourier, N)
+        else:
+            u_modes_all = [
+                _band_modes(self._band_opt(b, self._omega_stack, self._leg_stack),
+                            self.setups[b])
+                for b in range(self.n_bands)]
+        return np.stack([_decompose(self.setups[b], u_modes_all[b])
+                         for b in range(self.n_bands)])         # (n_bands, NF)
 
     # -- jitted forward + Jacobian (compiled once, cached) -------------------
     def forward(self, x, s_nodes):
         if self._fwd_jit is None:
             self._fwd_jit = jax.jit(self._forward_raw)
-        return self._fwd_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
+        return self._fwd_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float),
+                             self._omega_stack, self._leg_stack)
 
     def jacobian(self, x, s_nodes):
         """K = ∂y/∂x  (m × p) through the jitted seam. ``jac_mode='fwd'`` uses
@@ -467,7 +507,27 @@ class RetrievalForward:
         if self._jac_jit is None:
             _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
             self._jac_jit = jax.jit(_jac(self._forward_raw, argnums=0))
-        return self._jac_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float))
+        return self._jac_jit(jnp.asarray(x, float), jnp.asarray(s_nodes, float),
+                             self._omega_stack, self._leg_stack)
+
+    def forward_and_jacobian(self, x, s_nodes):
+        """``(F(x), K)`` in ONE augmented AD pass (E6): the differentiated solve
+        already computes the primal internally, so returning it via ``has_aux``
+        saves the separate ``forward`` call the GN init/resume path used to pay.
+        (Full per-iteration fusion was evaluated and rejected: the backtracking
+        accept test needs a plain forward *before* the Jacobian is known to be
+        wanted, and diffrax's ForwardMode computes primal+tangents jointly, so
+        speculatively fusing would waste p tangent solves on every rejected step.)"""
+        if self._fwd_jac_jit is None:
+            def g(xx, ss, om, lg):
+                y = self._forward_raw(xx, ss, om, lg)
+                return y, y
+            _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
+            self._fwd_jac_jit = jax.jit(_jac(g, argnums=0, has_aux=True))
+        K, y = self._fwd_jac_jit(jnp.asarray(x, float),
+                                 jnp.asarray(s_nodes, float),
+                                 self._omega_stack, self._leg_stack)
+        return y, K
 
     # -- ODE grid (adaptive candidate pool, DESIGN §3) -----------------------
     def ode_grid(self, x, s_nodes):
@@ -500,16 +560,17 @@ class RetrievalForward:
         if tau_bot is None:
             tau_bot = self.tau_bot
         if self._jac_grid_jit is None:
-            def fwd(rv, sg, tb):
-                return jnp.concatenate([
-                    self._band_reflectance(opt, setup, K, sg, rv, tb)
-                    for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)
-                ])
+            # (E1) routes through _reflectance_stack, so the pool Jacobian gets the
+            # same bands×modes batch as the state forward (it previously always
+            # paid the sequential band loop — the setup's grid-select phase cost).
+            def fwd(rv, sg, tb, om, lg):
+                return self._reflectance_stack(sg, rv, tb, om, lg)
             _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
             self._jac_grid_jit = jax.jit(_jac(fwd, argnums=0))
         return np.asarray(self._jac_grid_jit(jnp.asarray(re_vals, float),
                                              jnp.asarray(s_grid, float),
-                                             jnp.asarray(tau_bot, float)))
+                                             jnp.asarray(tau_bot, float),
+                                             self._omega_stack, self._leg_stack))
 
     # -- flux-reflectance (plane albedo) observable + Jacobian ---------------
     def flux_reflectance(self, x, s_nodes):
@@ -518,8 +579,10 @@ class RetrievalForward:
         view angle."""
         s_knots, vals, tau_bot = self._knots_vals(x, s_nodes)
         return np.asarray(jnp.stack([
-            self._band_flux_reflectance(opt, setup, K, s_knots, vals, tau_bot)
-            for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)]))
+            self._band_flux_reflectance(
+                self._band_opt(b, self._omega_stack, self._leg_stack),
+                self.setups[b], self.K_list[b], s_knots, vals, tau_bot)
+            for b in range(self.n_bands)]))
 
     def flux_reflectance_on_grid(self, re_vals, s_grid, tau_bot=None):
         """``K_flux = ∂(per-band flux reflectance)/∂r_e(s_j)``; ``(n_bands × len)``. The
@@ -528,15 +591,19 @@ class RetrievalForward:
         if tau_bot is None:
             tau_bot = self.tau_bot
         if self._jac_flux_grid_jit is None:
-            def fwd(rv, sg, tb):
+            def fwd(rv, sg, tb, om, lg):
                 return jnp.stack([
-                    self._band_flux_reflectance(opt, setup, K, sg, rv, tb)
-                    for opt, setup, K in zip(self.opt_bands, self.setups, self.K_list)])
+                    self._band_flux_reflectance(
+                        self._band_opt(b, om, lg), self.setups[b], self.K_list[b],
+                        sg, rv, tb)
+                    for b in range(self.n_bands)])
             _jac = jax.jacfwd if self.jac_mode == "fwd" else jax.jacrev
             self._jac_flux_grid_jit = jax.jit(_jac(fwd, argnums=0))
         return np.asarray(self._jac_flux_grid_jit(jnp.asarray(re_vals, float),
                                                   jnp.asarray(s_grid, float),
-                                                  jnp.asarray(tau_bot, float)))
+                                                  jnp.asarray(tau_bot, float),
+                                                  self._omega_stack,
+                                                  self._leg_stack))
 
 
 def build_forward(*args, **kw):
@@ -582,8 +649,16 @@ def select_num_modes(fwd: RetrievalForward, x_ref, s_nodes, Se, *, frac=1/3.0):
         sig = np.where(amp >= thresh)[0]            # modes above the noise floor
         K = int(sig.max()) + 1 if sig.size else 1   # smallest K dropping only sub-noise modes
         K_list.append(max(1, min(K, amp.shape[0])))
+    # (E1) On the GPU path, pad K uniform: a ragged per-band K silently disables
+    # the bands×modes batch (production FR degraded to a 10-band sequential loop),
+    # while the extra padded modes are each < frac·min σ_ε by construction (≈+5 %
+    # modes for ~10× more SIMT width). The per-band trim is kept for 'scan' (CPU),
+    # where trimmed modes are real sequential savings.
+    if fwd.mode_map == "vmap" and fwd._bands_share_setup:
+        K_list = [max(K_list)] * fwd.n_bands
     fwd.K_list = K_list
-    fwd._fwd_jit = fwd._jac_jit = fwd._jac_grid_jit = None
+    fwd._fwd_jit = fwd._jac_jit = fwd._fwd_jac_jit = None
+    fwd._jac_grid_jit = fwd._jac_flux_grid_jit = None          # K is baked into ALL jits
     return fwd.K_list
 
 
@@ -1070,8 +1145,8 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         # (never persisted — ~1 iteration's cost). Bit-exact to the top of iter it_done.
         x, lm_cur, history, it_start = _load_gn_checkpoint(checkpoint_path)
         x = fwd._clamp_state(np.asarray(x, float), s_nodes)
-        Fx = np.asarray(fwd.forward(x, s_nodes), float)
-        K = np.asarray(fwd.jacobian(x, s_nodes), float)
+        Fx, K = fwd.forward_and_jacobian(x, s_nodes)           # (E6) one augmented pass
+        Fx, K = np.asarray(Fx, float), np.asarray(K, float)
         J, dchi2, r = _cost(x, Fx)
         phi = np.sqrt(dchi2)
         converged = False
@@ -1080,17 +1155,17 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     else:
         it_start = 0
         x = fwd._clamp_state(np.asarray(x0, float), s_nodes)
-        _tf = _time.time(); Fx = np.asarray(fwd.forward(x, s_nodes), float)
-        _t_fwd0 = _time.time() - _tf
-        _tj = _time.time(); K = np.asarray(fwd.jacobian(x, s_nodes), float)   # (m, p)
-        _t_jac0 = _time.time() - _tj
+        _tj = _time.time()
+        Fx, K = fwd.forward_and_jacobian(x, s_nodes)           # (E6) one augmented pass
+        Fx, K = np.asarray(Fx, float), np.asarray(K, float)    # (m,), (m, p)
+        _t_fj0 = _time.time() - _tj
         J, dchi2, r = _cost(x, Fx)
         phi = np.sqrt(dchi2)
         history = [J]
         converged = False
         lm_cur = max(float(lm), LM_MIN)
         _log(f"init: p={K.shape[1]} J={J:.4g} chi2_red={dchi2/m:.3g} "
-             f"(forward {_t_fwd0:.1f}s, jacobian {_t_jac0:.1f}s [compile-incl])")
+             f"(fused forward+jacobian {_t_fj0:.1f}s [compile-incl])")
     for _it in range(it_start, n_iter):
         lhs_base = K.T @ Se_inv @ K
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
@@ -1401,8 +1476,14 @@ def make_Se(fwd: RetrievalForward, y, noise_model):
 
 
 def retrieve_tau_bot(fwd, y, Se, clim, s_nodes, *,
-                     re_sigma_tight=0.1, n_iter=8, lm=1e-1, xtol=5e-3):
+                     re_sigma_tight=0.1, n_iter=4, lm=1e-1, xtol=2e-2):
     """Cheap τ_bot pre-retrieval on a fixed grid; r_e nodes pinned tight.
+
+    (E2) ``n_iter=4`` / ``xtol=2e-2`` replace the original 8 / 5e-3: this produces
+    only an *informed prior anchor* (τ_bot stays free in the joint retrieval), so
+    the tolerance for slack is high — halving the Jacobian count here removes
+    ~30–50 % of the per-profile setup cost that made this the flagged MAJOR
+    INEFFICIENCY (hpc/AGENT_batch3_postmortem.md §3, fable assessment E2).
 
     Runs a few Gauss–Newton iterations on the FULL observation vector ``y``
     (all bands) with r_e nodes strongly pinned to the climatological prior mean

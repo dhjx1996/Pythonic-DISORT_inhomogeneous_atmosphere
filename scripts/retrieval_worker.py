@@ -90,7 +90,7 @@ BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
 NOISE = nm.oci_swir()                                             # OCI 2 % calibration-relative + 1e-3 floor
 VIEW_MU, VIEW_PHI = oc.VIEW_MU, oc.VIEW_PHI                        # the irregular 24-view operational fan
 S_REF_MODES = np.linspace(0.0, 1.0, 5)[:-1]                       # coarse grid for mode selection
-S_COARSE = np.linspace(0.0, 1.0, 6)[:-1]                          # first-guess pool grid for QRCP
+S_COARSE = np.linspace(0.0, 1.0, 6)[:-1]                          # QRCP first-guess pool + the τ_bot pre-retrieval grid (E3)
 S_DENSE = np.linspace(0.0, 1.0, 50)                              # thickness-neutral RMSE / LWP grid
 TAU_BOT_OK = (0.3, 100.0)                                         # degenerate-profile guard
 
@@ -101,11 +101,13 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
     QRCP retrieval grid.
 
-    Two-phase grid selection: first select at the LOO-prior ``tau_bot_mean``, run a cheap
-    τ_bot pre-retrieval (:func:`retrieval_oe.retrieve_tau_bot`) on that grid to get a
-    per-profile estimate, then re-select at the updated ``tau_bot``. The pre-retrieval
-    pins r_e nodes tight and uses all bands — conservative-band (ω=1) rows dominate the
-    τ_bot signal through the prior weighting, achieving the same physical effect as a
+    Setup sequence (E2+E3 diet): select the mode count, run the cheap τ_bot
+    pre-retrieval (:func:`retrieval_oe.retrieve_tau_bot`) directly on the fixed
+    coarse grid ``S_COARSE`` (the pre-retrieval pins r_e tight, so grid quality is
+    irrelevant to it — the initial QRCP selection it used to run on bought nothing),
+    then run the ONE QRCP grid selection at the pre-retrieved τ_bot anchor. The
+    pre-retrieval uses all bands — conservative-band (ω=1) rows dominate the τ_bot
+    signal through the prior weighting, achieving the same physical effect as a
     VIS-only subset (``osse_config.VIS_BANDS`` is the documented physical motivation)
     while reusing the already-compiled full forward (zero extra JIT cost).
 
@@ -149,13 +151,16 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     # NOT mode_map (scan/vmap = execution only, same setup) -> CPU cache valid on GPU.
     # The signature guards against a future NFourier/band/view retune silently loading a
     # stale setup; the index guards against a misplaced/renamed cache file.
-    _cfg = f"{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+    # "v2" = the E1/E2/E3 setup semantics (uniform-K pad on vmap, pre-retrieval on
+    # S_COARSE, single grid selection) — a pre-refactor cache must NOT be loaded.
+    _cfg = f"v2|{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
     if setup_cache_path is not None and os.path.exists(setup_cache_path):
         try:
             _sc = np.load(setup_cache_path, allow_pickle=True)
             if str(_sc["cfg"]) == _cfg:
                 fwd.K_list = [int(v) for v in _sc["K_list"]]
-                fwd._fwd_jit = fwd._jac_jit = fwd._jac_grid_jit = None   # invalidate (as select_num_modes)
+                fwd._fwd_jit = fwd._jac_jit = fwd._fwd_jac_jit = None    # invalidate (as select_num_modes)
+                fwd._jac_grid_jit = fwd._jac_flux_grid_jit = None
                 s_grid = np.asarray(_sc["s_grid"], float)
                 tau_bot_pre, sigma_tau_pre = float(_sc["tau_bot_pre"]), float(_sc["sigma_tau_pre"])
                 clim = dict(clim, tau_bot_mean=tau_bot_pre, tau_bot_std=sigma_tau_pre)
@@ -172,27 +177,22 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
             if VERBOSE:
                 print(f"    [build] Layer-2 cache unreadable ({_e}) -> recompute setup", flush=True)
 
-    # MODE COUNT + INITIAL GRID at the climatology first guess.
+    # MODE COUNT at the climatology first guess.
     _t = time.time()
     x_ref = fwd._encode_state(roe.make_climatology_prior(S_REF_MODES, clim)[0])
     roe.select_num_modes(fwd, x_ref, S_REF_MODES, Se)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] select_num_modes -> K={fwd.K_list}", flush=True)
-    _t = time.time()
-    x_fg = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
-    pb_phys0 = lambda sn: roe.make_climatology_prior(sn, clim)      # clim-prior builder for initial grid
-    s_grid_init, _, _ = roe.select_retrieval_grid(
-        fwd, x_fg, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys0)
-    if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] initial select_retrieval_grid "
-              f"-> k={len(s_grid_init)}", flush=True)
 
-    # τ_BOT PRE-RETRIEVAL on the initial grid — reuses the compiled full forward (zero
-    # extra JIT cost). r_e nodes pinned tight; conservative-band rows dominate τ_bot.
+    # τ_BOT PRE-RETRIEVAL directly on the fixed coarse grid (E3): the pre-retrieval
+    # pins r_e tight, so grid quality is irrelevant to it — the initial QRCP grid
+    # selection it used to run on (~800 s A100 / profile) bought nothing, and its
+    # k=6-ish shape recompiled against the final k anyway; S_COARSE's shape is the
+    # common final one, so compile reuse improves. One grid selection per profile.
     _t = time.time()
     _clim_tau_prior = clim["tau_bot_mean"]
     tau_bot_pre, sigma_tau_pre = roe.retrieve_tau_bot(
-        fwd, y, Se, clim, s_grid_init)
+        fwd, y, Se, clim, S_COARSE)
     clim = dict(clim, tau_bot_mean=tau_bot_pre, tau_bot_std=sigma_tau_pre)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] τ_bot pre-retrieval -> "
@@ -327,6 +327,9 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
 
 
 def main():
+    if os.environ.get("FR_SETUP_ONLY") and not os.environ.get("FR_SETUP_CACHE"):
+        raise SystemExit("FR_SETUP_ONLY requires FR_SETUP_CACHE=1 "
+                         "(there is no setup artifact to farm otherwise)")
     index = int(sys.argv[1])
     out_prefix = sys.argv[2]
     profiles = vio.load_all_profiles(DATA)
@@ -374,6 +377,17 @@ def main():
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "
               f"grid({len(s_grid)}) in s={np.round(s_grid,3)}, K={fwd.K_list} "
               f"tau_bot_pre={tau_bot_pre:.2f} [{time.time()-t0:.0f}s]", flush=True)
+
+        # (E4) setup-only farm mode: idle CPU slots pre-write the L2 setup cache for
+        # profiles a later GPU run picks up (setups are platform-portable by design —
+        # the cfg key excludes mode_map). Exit BEFORE the GN configs and WITHOUT
+        # writing the combined <i>.json, so a farmed profile can never be mistaken
+        # for completed/skipped by the coverage semantics.
+        if os.environ.get("FR_SETUP_ONLY"):
+            print(f"[{index}] FR_SETUP_ONLY: setup cached "
+                  f"({Path(_setup_ckpt).name}) [{time.time()-t0:.0f}s]; "
+                  f"exiting before GN", flush=True)
+            return
 
         # shared LOG climatology prior on the selected grid (Sa_log shared by A & B)
         x_a_clim_log, Sa_log = roe.make_climatology_prior(s_grid, clim, log=True)

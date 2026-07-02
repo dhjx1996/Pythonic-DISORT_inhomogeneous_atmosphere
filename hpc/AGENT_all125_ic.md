@@ -9,6 +9,10 @@
 > `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
 > `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
 > submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
+> **E1 note (2026-07-02):** on the GPU/vmap path `select_num_modes` now pads `K_list` uniform to
+> keep the bands×modes batch alive; the padded modes are each sub-noise by construction, so a re-run
+> of the IC workers produces Jacobians that differ from the definitive bundle at SUB-NOISE level
+> (same signature — the truth-radiance tier never mode-trims and is unaffected).
 > The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
 > `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
 
