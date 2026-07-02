@@ -5,6 +5,10 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 
 ## Sources of truth (read these first)
 
+- **`docs/user_guide.md`** — how to run everything (executed examples);
+  **`docs/technical_documentation.md`** — the math + methodology (successor to the retired
+  LaTeX report, which lives on in git history); **`docs/hyperparameter_audit_2026-07.md`**
+  — per-knob evidence and flags.
 - **`docs/DESIGN_DECISIONS.md`** — settled decisions and *why* (solver lineage, the
   no-positive-exponents invariant, delta-M/TMS, precision policy, priors, IC findings,
   full-retrieval design). **`docs/OUTSTANDING.md`** — open problems. Check OUTSTANDING before
@@ -16,7 +20,7 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   batch postmortem/assessment records, `sbatch/` (Slurm drivers). The production-scale rigor
   gates are the standardized `tests/hpc/` suite (opt-in: `PYDISORT_HPC_GATES=1 pytest -m hpc`).
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
-  its two inputs live in `docs/cached_results/`). `docs/report_riccati_solver.tex` — formal report.
+  its two inputs live in `docs/cached_results/`).
 
 ## Layout
 

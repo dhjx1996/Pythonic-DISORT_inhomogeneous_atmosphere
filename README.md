@@ -55,6 +55,19 @@ truth; blue: retrieved ±1σ; dashed orange: adiabatic prior; red dot: (assumed)
 **Right:** thick, non-adiabatic cloud (RF03, τ ≈ 23).
 See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_retrieval.ipynb).
 
+## Documentation
+
+Two levels, mirroring PythonicDISORT's docs:
+
+- **[User guide](docs/user_guide.md)** — install and run: the forward solver,
+  gradients/jit, Mie optics, an OE retrieval, information-content profiling, the
+  HPC pipeline, troubleshooting. All code blocks executed.
+- **[Comprehensive technical documentation](docs/technical_documentation.md)** —
+  for scientists/mathematicians: governing equations, the invariant-imbedding
+  Riccati formulation and its stability guarantee, delta-M/TMS, the integrator,
+  differentiability, Mie optics, the full OE retrieval + information-content
+  methodology, the OSSE rigor discipline, and references.
+
 ## Layout
 
 | Path | What |
@@ -66,7 +79,7 @@ See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_re
 | `docs/riccati_solver_VOCALS_retrieval.ipynb` | VOCALS-retrieval notebook (solver tour, validation, and full retrieval) |
 | `docs/DESIGN_DECISIONS.md` | **settled** design decisions and their rationale |
 | `docs/OUTSTANDING.md` | **open** problems and decisions (read this before assuming a feature exists) |
-| `docs/report_riccati_solver.tex` | the formal report (math + design justification) |
+| `docs/technical_documentation.md` | the comprehensive technical documentation (math + methodology) |
 
 ## Install & test
 
