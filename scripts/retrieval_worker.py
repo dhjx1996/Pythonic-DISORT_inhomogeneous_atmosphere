@@ -51,7 +51,6 @@ import os
 import sys
 import json
 import time
-import warnings
 from math import pi
 from pathlib import Path
 
@@ -84,6 +83,7 @@ RADIANCE_CACHE = oc.RADIANCE_CACHE          # batch-1 truth cache (sig d71a8559,
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
+REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton_oe remesh_if_chi2_red_gt
 VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')
 NQ, N_PHYS, NB = oc.NQUAD, oc.N_PHYS, oc.NB                        # 48, 24, 10
 BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
@@ -228,38 +228,46 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
 
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
-                 cost_rtol=COST_RTOL, chi2_floor=None, config="A", checkpoint_path=None):
+                 cost_rtol=COST_RTOL, chi2_floor=None, config="A", checkpoint_path=None,
+                 max_n_outer=1, remesh_chi2_thr=REMESH_CHI2_THR):
     """Run ONE Gauss–Newton OE retrieval (a given prior/first-guess) on the fixed
     grid and assemble the raw sidecar dict + slim monitoring scalars. All inputs that
     differ between configs are x_a / x0 / Sa; everything else (fwd, y, Se, s_grid) is
-    shared. No grid move (max_n_outer=1) — only a structural-misfit warning."""
+    shared. ``max_n_outer`` defaults to 1 (no grid move — only a structural-misfit
+    warning; the production A-vs-B path); the _fr_remesh_rerun driver passes 2 to
+    enable the placement re-mesh on the flagged structural-misfit configs.
+    ``remesh_chi2_thr`` is the reduced-χ² gate for warranting a re-mesh (default from
+    env REMESH_CHI2_THR, else 2.0) — exposed per-call so a caller can tune it without
+    an env-var round trip."""
     k = len(s_grid)
     if VERBOSE:
         print(f"  [{index}] config {config}: GN retrieve on k={k} grid ...", flush=True)
     _t = time.time()
-    with warnings.catch_warnings(record=True) as wlog:
-        warnings.simplefilter("always")
-        res = roe.gauss_newton_oe(
-            fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
-            cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-            max_n_outer=1, prior_builder=pb_log, remesh_if_chi2_red_gt=2.0, warn=True,
-            verbose=VERBOSE, checkpoint_path=checkpoint_path)
+    res = roe.gauss_newton_oe(
+        fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
+        cost_rtol=cost_rtol, chi2_floor=chi2_floor,
+        max_n_outer=max_n_outer, prior_builder=pb_log, remesh_if_chi2_red_gt=remesh_chi2_thr, warn=True,
+        verbose=VERBOSE, checkpoint_path=checkpoint_path)
     if VERBOSE:
         print(f"  [{index}] config {config}: GN done in {time.time()-_t:.0f}s "
               f"({len(res.cost_history)} accepted iters, converged={res.converged})", flush=True)
-    structural_misfit = any(isinstance(w.message, roe.RemeshWarning) for w in wlog)
 
+    # The grid the RESULT is on: == input s_grid for max_n_outer=1 (grid never moves),
+    # but a placement re-mesh (max_n_outer≥2) returns a re-selected grid in res.tau_nodes.
+    # ALL grid-dependent post-processing below must use this, not the input s_grid.
+    grid = np.asarray(res.tau_nodes, float)
+    k = len(grid)
     post = roe.posterior_diagnostics(res.K, res.Sa, res.Se)         # log-space Ŝ/A/DOFS/SIC
     dby = roe.dofs_by_component(post, k, retrieve_r_base=True, retrieve_tau_bot=True)
 
     # physical decode of the retrieved state
     r_nodes, r_base_ret, tau_bot_ret = (np.asarray(v, float) for v in
-                                        fwd._split_state(res.x, s_grid))
+                                        fwd._split_state(res.x, grid))
     r_nodes = np.atleast_1d(r_nodes)
     r_base_ret, tau_bot_ret = float(r_base_ret), float(tau_bot_ret)
 
     # dense, thickness-neutral profiles (RT-free — pure interpolation)
-    re_ours = fwd.profile(res.x, s_grid, S_DENSE * tau_bot_ret)     # retrieved r_e(s_dense)
+    re_ours = fwd.profile(res.x, grid, S_DENSE * tau_bot_ret)       # retrieved r_e(s_dense)
     s_truth = np.asarray(truth.tau, float) / truth.tau_bot
     o = np.argsort(s_truth)
     re_truth_dense = np.interp(S_DENSE, s_truth[o], np.asarray(truth.r_e, float)[o])
@@ -280,13 +288,18 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
                                                      np.asarray(truth.tau, float)))
 
     chi2_red = float((res.y - res.Fx) @ np.linalg.inv(res.Se) @ (res.y - res.Fx)) / max(len(res.y), 1)
+    # structural_misfit is a FINAL-profile property: the retrieval left a reduced-χ² above the
+    # re-mesh gate. Uniform across main-FR (max_n_outer=1) and re-mesh (max_n_outer≥2) runs —
+    # unlike the old `any(RemeshWarning)` flag, which on a re-mesh run also fired on the benign
+    # recompile notice (⇔ grid moved), mislabeling successfully-resolved re-meshes as misfits.
+    structural_misfit = bool(chi2_red > remesh_chi2_thr)
 
     sidecar = dict(
         index=int(index), flight=getattr(truth, 'flight', '?'), config=config,
-        state_space='log', cost_rtol=float(cost_rtol),
+        state_space='log', cost_rtol=float(cost_rtol), remesh_chi2_thr=float(remesh_chi2_thr),
         chi2_floor=(float(chi2_floor) if chi2_floor is not None else np.nan),
         bands=np.asarray(BANDS), view_mu=VIEW_MU, NQuad=NQ, n_view=N_PHYS,
-        s_grid=np.asarray(s_grid), k=k,
+        s_grid=np.asarray(grid), k=k,
         # --- raw OE outputs (LOG space; analysis un-chain-rules K_lin=K_log/r_e) ---
         x_hat_log=np.asarray(res.x), x_a_log=np.asarray(res.x_a),
         K_log=np.asarray(res.K), Sa_log=np.asarray(res.Sa),
@@ -312,7 +325,8 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
         structural_misfit=bool(structural_misfit), K_list=np.asarray(fwd.K_list))
 
     mon = dict(config=config, converged=bool(res.converged), n_gn=len(res.cost_history),
-               chi2_red=round(chi2_red, 4), structural_misfit=bool(structural_misfit),
+               chi2_red=round(chi2_red, 4), remesh_chi2_thr=float(remesh_chi2_thr),
+               structural_misfit=bool(structural_misfit),
                tau_bot_ret=round(tau_bot_ret, 3), tau_bot_truth=round(float(truth.tau_bot), 3),
                r_base_ret=round(r_base_ret, 3), r_top_ret=round(float(r_nodes[0]), 3),
                rmse_ours=round(rmse_ours, 4), rmse_adia=round(rmse_adia, 4),

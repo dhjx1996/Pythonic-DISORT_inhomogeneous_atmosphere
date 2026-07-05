@@ -1111,8 +1111,10 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
 
     - *no further decrease* — if even maximal damping cannot lower J, we are at a
       (local) minimum → converged.
-    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step improved the
-      data-misfit norm ``φ = ‖y−F‖_{Sε⁻¹}`` (√χ²) by a fraction **< ``cost_rtol``**.
+    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step changed the
+      data-misfit norm ``φ = ‖y−F‖_{Sε⁻¹}`` (√χ²) by a fraction **< ``cost_rtol`` in
+      magnitude** (either direction — φ is data-only and can tick up slightly on an
+      accepted step even though J, data+prior, is monotone by construction).
       ``None`` (default) disables it.
     - *noise floor* (BP crit 2, ``chi2_floor`` set): reduced χ² ``= φ²/m ≤ chi2_floor``.
       **Default INACTIVE** (``None``): Sε magnitude not reliably profiled (DESIGN §10h).
@@ -1186,7 +1188,10 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
             converged = True
             break
         phi_new = np.sqrt(dchi2_new)
-        rel = (phi - phi_new) / max(phi, 1e-300)              # ≥0 (monotone by construction)
+        # NOT ≥0: J (data + prior) is monotone by construction (accept requires J_new<J), but
+        # phi=sqrt(dchi2) is data-only, so an accepted step can still let dchi2 tick up slightly
+        # (the prior term absorbed the rest) -> rel can go negative. Compare |rel| below.
+        rel = (phi - phi_new) / max(phi, 1e-300)
         step_small = np.linalg.norm(dx) < xtol * (np.linalg.norm(x_new) + xtol)
         x, Fx, r, J, dchi2, phi = x_new, Fx_new, r_new, J_new, dchi2_new, phi_new
         _tj = _time.time(); _t_bt = _tj - _tb       # backtrack (forward evals) wall time
@@ -1198,7 +1203,7 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
              f"({_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
         if checkpoint_path is not None:                       # Layer-1: persist POST-ease lm_cur
             _save_gn_checkpoint(checkpoint_path, x, lm_cur, history, _it + 1)
-        if cost_rtol is not None and rel < cost_rtol:
+        if cost_rtol is not None and abs(rel) < cost_rtol:
             converged = True
             break
         if chi2_floor is not None and dchi2 / m <= chi2_floor:
