@@ -24,7 +24,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.hpc
+pytestmark = [
+    pytest.mark.hpc,
+    pytest.mark.skip(
+        reason="RETIRED 2026-07-06 (user-directed). The precision_probe_out probes are a "
+        "stale, different-grid-selection reference: the pre-refactor FR production ALSO "
+        "fails the 5e-2 re_dense bound against them, and the OE retrieval is inherently "
+        "grid-sensitive, so re_ours_dense cannot match a different grid-selection within "
+        "5e-2 (not a rigorous cross-version check). The refactor is validated instead via "
+        "the float32/float64 pytest suites vs PythonicDISORT ground truth + the L1/L2 "
+        "retrieval-equivalence gates + per-retrieval sanity checks (converged, chi2 at "
+        "floor, tau_bot recovered, RMSE~adiabatic). See CHANGELOG and memory "
+        "golden-gate-stale-probe-not-regression."
+    ),
+]
 
 GOLD_DIR = Path(os.environ.get("FR_GOLD_DIR", "runs/precision_probe_out"))
 PARTS_DIR = Path(os.environ.get("FR_PARTS_DIR", "runs/_fr_parts"))
