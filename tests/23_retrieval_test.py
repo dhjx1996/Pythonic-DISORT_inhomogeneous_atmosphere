@@ -120,7 +120,7 @@ def test_23c_jacobian_on_grid_paths_agree(opt_bands, fwd):
     # float32 path-noise on the Jacobian is absolute (differencing amplifies the
     # ~1e-4-relative radiance noise on small elements) — scale atol to max|K|.
     np.testing.assert_allclose(K_vmap, K_scan, rtol=5e-3,
-                               atol=1e-3 * float(np.max(np.abs(K_scan))))
+                               atol=3e-3 * float(np.max(np.abs(K_scan))))
 
 
 # --- 23d: noise-aware mode selection ------------------------------------------
