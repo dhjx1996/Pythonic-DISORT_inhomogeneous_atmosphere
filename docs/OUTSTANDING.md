@@ -284,17 +284,43 @@ see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **ope
 
 ---
 
-## L. Post-refactor validation + audit flags  [open — the current action list]
+## L. Post-refactor validation + audit flags  [updated 2026-07-07]
 
 The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evidence in
 [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md)):
 
-- **Golden-gate sign-off [gate-blocking].** The numerics-adjacent efficiency upgrades
-  (E1/E2a/E3/E5/E6a) are toy-suite-verified only; run `tests/hpc/` on the cluster — L2 + L1 gates,
-  then the 3-profile golden cross-check (idx 20/47/49) — before the next production sweep.
-- **IC re-run decision [user + HPC agent].** The mode-selection Se fix (audit §2.1) means re-run
-  IC Jacobians/DOFS/SIC won't bit-match the definitive bundle (accuracy-safe direction). Decide
-  whether to re-run `hpc/AGENT_all125_ic.md`; the truth-radiance cache stays valid either way.
+- ~~**Golden-gate sign-off.**~~ **RESOLVED (2026-07-06):** L1/L2 equivalence gates PASSED on the
+  cluster; float32 suite 68/68 (CPU) + float64 26/26 (GPU) vs PythonicDISORT. The 3-profile
+  golden cross-check is **retired** (stale different-grid reference — the retrieval is
+  grid-sensitive across code versions, so it was never a valid cross-version gate; DESIGN §16).
+- ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06):** the IC re-run on the reconciled refactor
+  is the canonical bundle (`hpc/FINAL_RESULTS_MANIFEST.md`); the Se-fix erratum was *measured* on
+  the fixed selection — |ΔDOFS| ≤ 0.7 %, |ΔSIC| ≤ 0.21 % (mechanism ≤ 1.4 %), negligible.
+- **FR bundle transfer + notebook §16 finalization [jovyan, immediate].** The FR raw sidecars
+  (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
+  the primary; notebook §16 (supersession-aware loader + the full metric ladder, smoke-tested)
+  auto-fills and its Findings get finalized on first execution with the bundle present.
+- **Optimizer vNext [deferred — post-campaign, for comparability].** From
+  `docs/optimizer_critique.txt` + the batch-3 backtrack observations, four accepted improvements,
+  deliberately NOT applied mid-campaign (the published 250 configs and any near-term re-run must
+  share one optimizer): (i) evaluate cost stagnation on the **monotone total cost J**, not the
+  data-only φ (kills the trade-φ-for-prior false-positive class the `abs(rel)` sign fix only
+  narrows); (ii) `xtol` on the **actual (clamped) step** `x_new − x`, not the proposed `dx` (a
+  boundary-pinned solve currently exits via backtrack exhaustion instead of step-small); (iii)
+  **gain-ratio (Nielsen) λ adaptation** to shorten the observed expensive reject/backtrack chains
+  (each reject = one full forward eval); (iv) Cholesky (`assume_a='pos'`) + hoisting
+  `H_gn = lhs_base + Sa_inv` out of the backtrack loop (pure micro-opts). On
+  **trust-region-vs-clamping**: a formal box-constrained TR is *not* warranted here — the bounds
+  bind rarely (essentially the `re_max`-edge class), projected-step LM is standard practice for
+  that regime, and TR radius control is functionally equivalent to LM damping (it would not
+  remove the reject evals); revisit only if boundary-active retrievals become common (then a
+  projected/reflective TR à la TRF is the right form).
+- **v_e-corrected OSSE [branch `ve_rerun`].** §5c shows v_e=0.10 is a poor VOCALS constant
+  (zero-median-bias 0.037 / min-RMS 0.046). The *bookkeeping* consequence is already handled
+  post-hoc (`retrieval_analysis` C-corrected LWP columns — first-order equivalent of a re-run);
+  a config-A re-run at `OSSE_VEFF≈0.046` tests the residual *optics* consequence (radiance
+  realism — the §15 angular findings ride on v_e-sensitive glory/cloudbow features, notebook
+  §15 Fig 0b). Pilot-first; spec in `hpc/AGENT_ve_rerun.md`.
 - **μ0 = 0.9 conditionality [scope].** All published IC/FR numbers are single-geometry; quantify
   DOFS/band-ranking sensitivity to μ0 (cheap spot-check) and adopt μ0 binning for operational
   per-scene work (compile-per-bin; STRATEGY §4).

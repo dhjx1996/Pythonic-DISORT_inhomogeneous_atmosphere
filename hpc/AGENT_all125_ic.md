@@ -16,8 +16,20 @@
 > radiances (audit §2.1) — the accuracy-safe direction (same or more modes kept), but a re-run's
 > Jacobians/DOFS/SIC will NOT bit-match the definitive bundle. The truth-radiance tier never
 > mode-trims and is unaffected (same signature). Re-run decision: user + HPC agent (CHANGELOG.md).
-> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
-> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — measured a
+> no-op for FR; keep `_jax_cache` for IC's ptxas mitigation (now at `runs/_jax_cache`).
+
+> **✅ COMPLETE — the canonical bundle is the post-refactor re-run (2026-07-06):** 125 ok +
+> idx-0 skip per array (A/B/C), 0 null / non-finite Jacobians; delivered as `ic_bundle.zip` and
+> aggregated on the primary by `scripts/ic_analysis_definitive.py` (which also writes the §15
+> penetration-depth cache). The mode-selection **Se erratum** (flat (0.005)² vs the OCI model)
+> was *measured* on the fixed selection: |ΔDOFS| ≤ 0.7 % / |ΔSIC| ≤ 0.21 % (mechanism worker ≤
+> 1.4 %) — negligible at the level of any §14/§15 conclusion; the bundle stands. Operational
+> notes for a re-run: walls can be 4 h (observed max 177 min); ~7 % transient `ptxas` SIGABRTs
+> are NOT memory — just resubmit (the persistent compile cache removes the repeat exposure);
+> CPU ≈ a slow GPU here, an *additive* spill only once GPUs saturate
+> (`STRATEGY_hpc_retrieval_runs.md` §2.6, §3-ic); give each submission a unique log path
+> (`%A_%a`), not `%a` alone.
 
 # Delegated task — re-run the information-content profiling, all VOCALS profiles (FIXED forward)
 

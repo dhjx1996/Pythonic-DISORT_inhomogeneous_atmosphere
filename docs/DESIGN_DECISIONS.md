@@ -1071,8 +1071,11 @@ the adiabatic lower bound `d²_adia,min` of the posterior Mahalanobis diagnostic
 (which our retrieval must itself infer). The fit spans the full 2-parameter re5 family (**not** constrained
 to `r_top≥r_base`) — i.e. the best fit within the retrieval's own re5-linear class, the like-for-like
 "collapse our k-node state to 2 adiabatic DOF and fit perfectly" baseline; a monotone-constrained variant
-is a one-line bounds change and, being post-hoc, is not baked into any run. ΔRMSE = RMSE_adia − RMSE_ours
-(>0 ⇒ we beat the floor; ≈0 near-adiabatic).
+is a one-line bounds change and, being post-hoc, is not baked into any run. The oracle-adiabat *curve*
+is this L2-best-in-s fit; the PRIMARY scoring of it (and of our retrieval) is the **1-Wasserstein
+distance W1** (RMSE retired 2026-07-08, user directive — see §16), so d_W1 = W1_adia − W1_ours
+(>0 ⇒ we beat the floor; ≈0 near-adiabatic). `metric='maha'` still supplies the Mahalanobis
+adiabatic lower bound `d²_adia,min`.
 
 **Observation = noiseless OSSE** (recap of §10b/§12): `y = F(x_truth)` with no noise realization added;
 `Se` (oci_swir 2 % calibration-relative) enters only as the assumed weighting / posterior covariance, so
@@ -1099,7 +1102,7 @@ if float32 were ever wanted:* each forward-mode tangent propagates through **all
 dropping bands shrinks the augmented solve, and the §14 IC shows the 10-band set is **redundant** for r_e
 information — but float64 is the clean fix and all-10-at-float64 is harmless, so we keep them. float64 integrates cleanly (proven on all 125 by the IC run) and keeps
 the posterior IC directly comparable to the float64 §14. Raw sidecars bundle back to jovyan where
-`retrieval_analysis.py` computes every metric (RMSE/ΔRMSE, LWP bias, Mahalanobis, posterior IC). Grid
+`retrieval_analysis.py` computes every metric (1-Wasserstein W1/d_W1 — PRIMARY, RMSE retired; LWP bias, Mahalanobis, posterior IC). Grid
 fixed per profile (`max_n_outer=1` — a clean A-vs-B comparison; a structural-misfit χ²>thr still warns,
 flagged in the sidecar).
 
@@ -1109,7 +1112,7 @@ flagged in the sidecar).
 
 ---
 
-## 16. The all-125 FR capstone + the 2026-07 refactor  [RUN IN FLIGHT; refactor pending the golden gate]
+## 16. The all-125 FR capstone + the 2026-07 refactor  [SETTLED — run complete 2026-07-06; canonical set in `hpc/FINAL_RESULTS_MANIFEST.md`]
 
 The **capstone full-retrieval campaign** (`hpc/AGENT_all125_fr.md`): for every valid VOCALS profile,
 the §15 joint log-space retrieval in two leak-free prior configurations sharing one compiled forward —
@@ -1117,17 +1120,41 @@ the §15 joint log-space retrieval in two leak-free prior configurations sharing
 *realization* as x_a = x0; tests where the regularizer is centred) — on a frozen per-profile grid
 (`max_n_outer=1`), noiseless observation, OCI-2 % assumed Se. Raw sidecars carry everything
 (log-space K, Sa, Ŝ, A, DOFS/SIC, states, truth); every metric is post-hoc
-(`scripts/retrieval_analysis.py`: RMSE vs the oracle-adiabatic floor, ΔRMSE, LWP, Mahalanobis).
-Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile setup cache (both
-production-verified; the would-be L3 compile cache was measured a no-op for FR and removed).
+(`scripts/retrieval_analysis.py`: **1-Wasserstein W1** of r_e(τ) as an r_e-mass density on absolute τ
+(larger-τ_bot support) vs the oracle-adiabatic floor + the constant/prior ladder — the PRIMARY
+shape metric, d_W1 = W1_adia − W1_ours; RMSE **retired 2026-07-08** (it penalized truth jaggedness
+and its verdict flipped under τ_bot bookkeeping); LWP-bias (the disjoint **magnitude** metric) incl.
+the §5c v_e-corrected bookkeeping AND the oracle-adiabat LWP baseline; Mahalanobis; consumed by
+notebook §16). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
+setup cache (both production-verified; the would-be L3 compile cache was measured a no-op for FR
+and removed).
+
+**Outcome (2026-07-06):** all 125 × {A,B} complete, **0 unresolved failures**; 25 configs flagged
+LOW-CONFIDENCE (worst-decile d_W1, ≤ −0.335 τ on the canonical set: good data-fit, under-constrained
+r_e(τ) deep in optically-thick cloud — inherent OE ill-posedness, flagged not dropped; 8×A/17×B,
+median τ_bot ≈ 26). Two solver findings from the run, both
+folded into the code and the strategy doc: (i) the **cost-stagnation sign bug** — the stop compared
+signed `rel` (not `abs(rel)`) on the data-only misfit, which an accepted LM step can push negative;
+fixed 2026-07-04, all 29 technically-affected configs continued/re-run and superseded per the
+manifest; (ii) **`max_n_outer` semantics** — the worker's `max_n_outer=1` (select-once, NO re-mesh
+of any tier; the escalation counter starts at 2 by design) is deliberate for the A-vs-B paired
+comparison; the placement re-mesh tier is the library default `max_n_outer=2` and was used for the
+7 genuinely grid-inadequate configs via `retrieve_one(..., max_n_outer=2)` +
+`REMESH_CHI2_THR`; the confusing 2/3 tier numbering stays (user decision 2026-07-03, no renumber).
+`converged=False` at the iteration cap *at* the χ² floor (thin profiles) is a technicality.
+χ²_red is promoted to a reported headline metric (orthogonal to profile fidelity: it flags both
+good-shape/bad-fit and good-fit/bad-shape failure modes).
 
 The **2026-07-02 refactor** (this repo's `CHANGELOG.md` is the authoritative record + the HPC
 validation brief): package layout; efficiency upgrades **E1** (bands×modes GPU batch restored,
 uniform-K pad), **E2a** (τ_bot pre-retrieval diet 8→4 iters, xtol 2e-2), **E3** (pre-retrieval on
 fixed `S_COARSE`; initial QRCP selection deleted), **E4** (`FR_SETUP_ONLY` setup farm), **E5**
 (optics as traced args), **E6a** (fused init forward+Jacobian); the **IC mode-selection Se fix**
-(flat (0.005)² → measured-radiance OCI Se — audit §2.1); the tiered test suite (default / float64 /
-`hpc` gates incl. the 3-profile golden cross-check). **Status:** toy-suite verified; the
-numerics-adjacent E-changes are signed off only by the golden gate on the cluster
-(`tests/hpc/test_golden_profiles.py`) — see OUTSTANDING §L. L2 setup caches are keyed `v2|…`
-(pre-refactor caches recompute by design).
+(flat (0.005)² → measured-radiance OCI Se — audit §2.1; post-hoc erratum probe on the definitive
+bundle: |ΔDOFS| ≤ 0.7 %, |ΔSIC| ≤ 0.21 % — negligible, bundle stands); the tiered test suite
+(default / float64 / `hpc` L1/L2 equivalence gates). **Validated:** float32 suite 68/68 (CPU) and
+float64 26/26 (GPU, production precision) vs PythonicDISORT; merged to `main` at `3f51839`. The
+old golden-probe gate is **retired** (stale different-grid reference — the retrieval is inherently
+grid-sensitive across code versions, so it was never a valid cross-version check; validation is
+the pytest suites + the L1/L2 gates + per-retrieval sanity checks). L2 setup caches are keyed
+`v2|…` (pre-refactor caches recompute by design).

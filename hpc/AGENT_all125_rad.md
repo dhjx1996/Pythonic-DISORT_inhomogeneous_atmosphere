@@ -9,8 +9,16 @@
 > `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
 > `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
 > submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
-> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
-> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — measured a
+> no-op for FR; keep `_jax_cache` for IC's ptxas mitigation (now at `runs/_jax_cache`).
+
+> **✅ COMPLETE (sig `d71a8559`, tol=1e-4, 125 valid + idx-0 skip)** — delivered as
+> `rad_bundle` (`osse_radiances.npz` + per-index metadata). This batch is near-optimal as-is
+> (`STRATEGY_hpc_retrieval_runs.md` §3-rad). **It must be re-run whenever
+> `osse_config.signature()` changes** — any band/view/μ0/NQuad/`V_EFF`/r_e-grid/NLeg change
+> (e.g. a corrected-v_e OSSE) re-keys the truth; the downstream signature gates then refuse the
+> stale cache, so `rad` is always batch 1 of any re-campaign. Unique log paths (`%A_%a`) on
+> resubmissions.
 
 # Delegated task — precompute the OSSE radiances (synthetic L1B), all VOCALS profiles
 

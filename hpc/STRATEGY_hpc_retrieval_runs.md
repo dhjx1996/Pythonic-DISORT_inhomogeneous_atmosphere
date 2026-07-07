@@ -1,9 +1,6 @@
 # Strategy guide — minimizing wall-clock for the OSSE retrieval batches (`rad` / `ic` / `fr`)
 
-*(Written 2026-07-01 by the run-manager agent, mid-batch-3, from measured production numbers —
-batch-1 `rad`, batch-2 `ic`, batch-3 `fr` on Ginsburg. Companions: `AGENT_all125_{rad,ic,fr}.md`
-(the task hand-offs), `FR_CHECKPOINT_RESUME_PLAN.md` (resume architecture + field status),
-`AGENT_batch3_postmortem.md` (what actually happened). §1–2 and §5–7 generalize beyond this
+*(Companions: `AGENT_all125_{rad,ic,fr}.md` (the task hand-offs). §1–2 and §5–7 generalize beyond this
 cluster; §3–4 carry the cluster- and pipeline-specific numbers.)*
 
 ---
@@ -43,7 +40,7 @@ the *same* one twice.
    unlocks §2.9.
 4. **Cache the *setup output*, not the compile** (L2: `K_list / s_grid / τ_bot_pre / σ_τ`,
    config-keyed). Skipping the setup phase removes its *compute and* its *compile*; a compile
-   cache at best removes the compile. Persistent **compile caches (L3) only pay when the workload
+   cache at best removes the compile. Persistent **compile caches (L3; depreciated) only pay when the workload
    is compile-bound and shapes recur exactly** — measured: useless for `fr` (execution-bound; the
    heavy executables never even landed in the cache), genuinely useful for `ic` only as a
    `ptxas`-crash mitigation (a cache hit replays a stored cubin and runs no `ptxas` at all).
@@ -71,7 +68,7 @@ the *same* one twice.
    — intra-user priority is free and reversible (`scontrol update jobid=… nice=…`).
 9. **Make interruption cheap instead of walls precise.** Per-task totals are unpredictable (§2.5),
    so don't tune per-task walltimes — standardize on a chunk length that fits the *most permissive
-   pool* (11:55 h fits `short`, which is where the A100s live) and let the resume chain
+   pool* (12:00 h fits `short`, which is where the A100s live) and let the resume chain
    (L1+L2 + a resubmit driver) absorb the tail. One conservative wall + cheap resume strictly
    dominates per-task wall tuning.
 10. **Watch outputs, not the scheduler.** Poll result files for completion markers; `squeue`
@@ -98,24 +95,17 @@ transient `ptxas` SIGABRTs (~7 %) — they land on a healthy node.
 - **Venue:** GPU, float64, `cpus-per-task=1` (16-core canary: no speedup; the algorithm is
   sequential), `MODE_MAP=vmap` on GPU (`scan` on CPU). 32 G for big profiles.
 - **Architecture:** L1 (GN checkpoint) + L2 (setup cache, once the equivalence gate passes) +
-  11:55 walls + hourly resubmit driver = a self-healing chain toward all-125. L3 compile cache
+  12:00 walls + hourly resubmit driver = a self-healing chain toward all-125. L3 compile cache
   OFF for `fr` (measured no-op + a 26k-small-file Lustre liability).
 - **Launch:** one array idx 1–125, `--partition=crew1,ocp_gpu,short`, `%`-throttled wide. An
-  **A100 "gate" job on one representative profile first** as bug-catcher — in batch-3 it caught
-  nothing late (the state-space bug was batch-2's) and its output was folded in as a free
-  completed profile (idx-47).
-- **Straggler routing (the batch-3 rule):** tasks that walled with **no checkpoint** (died in
+  **A100 "gate" job on one representative profile first** as bug-catcher and its output can be folded in as a free
+  completed profile.
+- **Straggler routing:** tasks that walled with **no checkpoint** (died in
   setup — thin profiles on slow cards) → resubmit `--constraint=a100 --partition=short`; tasks
   with banked GN checkpoints → resubmit generic. Once L2 is live the first class mostly vanishes
   (setup is paid once per profile, ever).
 - **CPU spill** only when GPUs are saturated, `short` partition, outputs on shared FS, and only
   for profiles whose A100-equivalent time is small (§2.6).
-- **The standing MAJOR INEFFICIENCY** (user-flagged, future work): the τ_bot pre-retrieval is a
-  full 8-iteration GN mini-retrieval over **all 10 bands** when only ~3 conservative/near-VIS
-  bands carry τ_bot signal, at a tolerance far tighter than an informed prior needs. Masking the
-  7 dead bands in the *eval* (keeping the compile shape) + loosening `n_iter`/`xtol` should cut
-  ~30–50 % of setup (~1–3 Jacobian-equivalents/profile) — multiplicative with L2, which removes
-  the *re-pay* of whatever remains.
 
 ---
 
@@ -144,7 +134,7 @@ Ordered by likelihood (new profiles are certain; geometry/bands/streams plausibl
 3. One-time env sanity on a GPU node: plugin versions, `LD_LIBRARY_PATH` nvidia prepend,
    `runtime_setup.setup()` before JAX, affinity print.
 4. Calibration pass = `ic`-A (or a 1-Jacobian probe) timed over all profiles on one card class.
-5. `fr`: gate job on one representative profile (A100) → then the wide array, L1+L2 on, 11:55
+5. `fr`: gate job on one representative profile (A100) → then the wide array, L1+L2 on, 12:00
    walls, all partitions, hourly coverage/resubmit driver, straggler routing per §3.
 6. End-of-run: zip raw sidecars (never git), structural sanity vs the previous run (correlation,
    no-null-Jacobian check), delete Lustre-hostile cache data.
@@ -157,7 +147,7 @@ Ordered by likelihood (new profiles are certain; geometry/bands/streams plausibl
   `short` and advertise `Features=a100`. Measured latency-bound ratios vs A100: V100S ~1.5×,
   A40 ~4–5×, RTX8000 ~5–6×, CPU ~17–21×.
 - **Submit:** `--account=crew --partition=crew1,ocp_gpu,short` (crew1/ocp_gpu ≤7 d walls; `short`
-  ≤12 h — hence the 11:55 standard chunk). `apam1` is CPU-only, low-priority burst QOS — avoid
+  ≤12 h — hence the 12:00 standard chunk). `apam1` is CPU-only, low-priority burst QOS — avoid
   for anything urgent. ~278 idle 8-core `short` CPU slots exist for spill.
 - **Env traps:** login profile's `~/cuda-12.6` shadows pip CUDA libs (prepend `$NVLIB`);
   `runtime_setup.setup()` must run before JAX imports or XLA grabs all 32 node cores;
@@ -192,5 +182,4 @@ The load-bearing ideas map cleanly:
   forced on us here).
 
 *The single highest-leverage future change for this pipeline remains algorithmic, not
-infrastructural: the τ_bot pre-retrieval band-mask + tolerance fix (§3), which attacks the
-dominant setup term at its source; L2 then makes whatever survives a one-time cost per profile.*
+infrastructural.*
