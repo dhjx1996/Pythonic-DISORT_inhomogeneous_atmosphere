@@ -11,8 +11,8 @@ Sanity-swept over every result: **0 genuine failures / bugs.**
 **Supersession (a corrected result replaces the bugged/misfit original).** Priority, highest first:
 
 1. **Post-hoc, new code** (uncached sign-bug victims re-run on the reconciled refactor):
-   - `runs/_fr_negrel_posthoc/`: **9A, 34B, 45B, 78A, 80A**
-   - `runs/_fr_continuation_posthoc/`: **5A, 119A**
+   - `docs/cached_results/_fr_negrel_posthoc/`: **9A, 34B, 45B, 78A, 80A**
+   - `docs/cached_results/_fr_continuation_posthoc/`: **5A, 119A**
    - (These worker runs also produced the sibling config as a byproduct — the **sibling is NOT
      superseded**; it keeps its `_fr_parts` result, e.g. 78B/80B.)
 2. **Continuation / continuation-verify** (cached sign-bug victims, continued on the *original*
@@ -37,10 +37,11 @@ then 66A, 62B, 42B, 32B, 102A, 80B, 13B, 101B, 57B, 109B, 119A, 85A, 123A/B (−
 
 ## IC — information content (canonical = the refactor re-run on the fixed forward)
 
-`runs/_ic_{A,B,C}_parts/` (refactor tree), A=priormean, B=draw, C=mechanism; 125 real + idx-0 skip
-per array. Raw Jacobian K-sidecars (`_ic_{A,B}` `.npz`) are the product — all non-null, finite,
-fully populated (the historical physical-vs-log null-Jacobian bug is absent). DOFS/SIC re-derived
-downstream by `scripts/ic_analysis_definitive.py`. The pre-refactor `_ic_*` are superseded.
+`docs/cached_results/_ic_{A,B,C}_parts/` (the refactor re-run, now consolidated here), A=priormean,
+B=draw, C=mechanism; 125 real + idx-0 skip per array. Raw Jacobian K-sidecars (`_ic_{A,B}` `.npz`)
+are the product — all non-null, finite, fully populated (the historical physical-vs-log
+null-Jacobian bug is absent). DOFS/SIC re-derived downstream by `scripts/ic_analysis_definitive.py`.
+The superseded pre-refactor IC is archived alongside as `_ic_{A,B,C}_parts_SUPERSEDED_prerefactor/`.
 
 ## Notes
 
