@@ -249,3 +249,57 @@ def vocals_climatology(profiles: list[CloudProfile], *,
         r_base_mean=r_base_m, r_base_std=max(r_base_s, 0.5),
         tau_bot_mean=tau_m, tau_bot_std=max(tau_s, 1.0),
     )
+
+
+# ----------------------------------------------------------------------------
+# 4. LWP and the zero-bias constant v_e (the width-factor algebra)
+# ----------------------------------------------------------------------------
+# The τ built above uses the monodisperse second-moment shortcut r_e²·N_c
+# (Buggee-MATLAB heritage). The exact second moment is smaller by the width
+# factor C = M2/(M0 r_e²) = M2³/(M0 M3²) ≤ 1 (Lyapunov moment inequality) — for
+# the Hansen & Travis (1974, §2.4, Eq. 2.56) "standard" gamma DSD, whose
+# parameters are exactly (r_eff, v_eff) [their Eqs. 2.53–2.54], the gamma
+# moments give C = (1 − v_e)(1 − 2 v_e). So the retrieval-native
+# LWP = (2/3)∫r_e dτ [exact vs TRUE τ at Q_ext→2: van de Hulst 1957;
+# Stephens 1978] overshoots the in-situ ∫LWC dz even for a perfect r_e(τ)
+# (the "+8–21 %, median ~16 %" artifact in scripts/retrieval_analysis.py).
+# Inverting the factor per profile gives THE single v_e that zeroes that
+# profile's LWP bias. Full derivation: notebook §5b.
+
+def lwp_true_z(profile: CloudProfile) -> float:
+    """In-situ truth LWP [g/m²] = |∫ LWC dz| over the penetration."""
+    return float(abs(np.trapezoid(profile.lwc, profile.altitude)))
+
+
+def lwp_native(profile: CloudProfile) -> float:
+    """Retrieval-native LWP [g/m²] = (2/3)∫ r_e[µm] dτ (width-blind, Q_ext=2)."""
+    return float((2.0 / 3.0) * np.trapezoid(profile.r_e, profile.tau))
+
+
+def width_factor_gamma(v_e):
+    """Gamma-DSD width factor ``C = (1 − v_e)(1 − 2 v_e)`` (= M2/(M0 r_e²) =
+    M3/(M0 r_e³) for the Hansen & Travis 1974 standard distribution, §2.4,
+    Eqs. 2.53–2.56; derivation in notebook §5b). Clipped to the gamma-valid
+    v_e ∈ [0, 0.45] — the family itself requires v_e < 1/2."""
+    v = np.clip(np.asarray(v_e, float), 0.0, 0.45)
+    return (1.0 - v) * (1.0 - 2.0 * v)
+
+
+def veff_from_width_factor(C):
+    """Invert the gamma closure: the v_e ∈ [0, ½) with ``(1−v)(1−2v) = C``,
+    i.e. ``v = (3 − √(1 + 8C))/4`` (physical branch)."""
+    C = np.clip(np.asarray(C, float), 0.0, 1.0)
+    return (3.0 - np.sqrt(1.0 + 8.0 * C)) / 4.0
+
+
+def zero_bias_veff(profile: CloudProfile) -> float:
+    """The profile's **zero-LWP-bias constant**: the single v_e satisfying
+
+        lwp_native(p) · (1 − v)(1 − 2v) = lwp_true_z(p).
+
+    A constant v_e in the LWP bookkeeping is exactly a constant width factor,
+    so this inversion is the *best-fit constant by construction* for this
+    profile; its ensemble spread is what no single global constant can remove.
+    """
+    return float(veff_from_width_factor(lwp_true_z(profile)
+                                        / lwp_native(profile)))
