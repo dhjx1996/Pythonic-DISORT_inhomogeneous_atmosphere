@@ -146,3 +146,6 @@ ui-tests/playwright-report
 **/disort4.0.99_f2py/**
 # HPC worker run outputs (parts dirs, logs, setup/GN checkpoints)
 runs/
+
+# pre-refactor test-support leftover (optics-table cache, retired golden probes, old workers)
+tests/supplementary/
