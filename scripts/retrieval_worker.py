@@ -84,6 +84,9 @@ SOLVER_TOL = oc.SOLVER_TOL                                         # operational
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
 REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton_oe remesh_if_chi2_red_gt
+FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior configs to run
+if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
+    raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
 VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')
 NQ, N_PHYS, NB = oc.NQUAD, oc.N_PHYS, oc.NB                        # 48, 24, 10
 BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
@@ -359,23 +362,22 @@ def main():
             raise ValueError(f"degenerate (tau_bot={truth.tau_bot:.2f}, npts={len(truth.tau)})")
         rec["tau_bot"] = float(truth.tau_bot)
 
-        # Finalize-only fast path: BOTH configs already persisted (a prior wall landed
+        # Finalize-only fast path: every REQUESTED config already persisted (a prior wall landed
         # between the last _persist and the combined record below) -> rebuild <i>.json
         # from the persisted sidecars WITHOUT re-paying the multi-hour setup.
         if all(Path(f"{out_prefix}_{t}{s}").exists()
-               for t in ("A", "B") for s in (".npz", ".json")):
+               for t in FR_CONFIGS for s in (".npz", ".json")):
             _t0 = time.time()
-            _zA = np.load(f"{out_prefix}_A.npz", allow_pickle=True)
+            _z0 = np.load(f"{out_prefix}_{FR_CONFIGS[0]}.npz", allow_pickle=True)
             _rt = os.environ.get("RADIANCE_TOL")
             rec.update(radiance_tol=(float(_rt) if _rt else None), finalize_only=True,
-                       grid=np.round(np.asarray(_zA["s_grid"], float), 4).tolist(),
-                       K_list=[int(v) for v in _zA["K_list"]],
+                       grid=np.round(np.asarray(_z0["s_grid"], float), 4).tolist(),
+                       K_list=[int(v) for v in _z0["K_list"]],
                        runtime_s=round(time.time() - _t0, 1),
-                       A=json.loads(Path(f"{out_prefix}_A.json").read_text()),
-                       B=json.loads(Path(f"{out_prefix}_B.json").read_text()),
-                       npz=[f"{Path(out_prefix).name}_A.npz",
-                            f"{Path(out_prefix).name}_B.npz"])
-            print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: both configs persisted "
+                       npz=[f"{Path(out_prefix).name}_{t}.npz" for t in FR_CONFIGS],
+                       **{t: json.loads(Path(f"{out_prefix}_{t}.json").read_text())
+                          for t in FR_CONFIGS})
+            print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: configs {FR_CONFIGS} persisted "
                   f"— finalize-only (combined json rebuilt, no setup)", flush=True)
             Path(f"{out_prefix}.json").write_text(json.dumps(rec))
             return
@@ -424,40 +426,44 @@ def main():
             os.replace(_tj, f"{out_prefix}_{tag}.json")
             Path(f"{out_prefix}_{tag}.ckpt.npz").unlink(missing_ok=True)
 
+        mons = {}
         # config A — LOO prior mean is x_a and x0
-        if Path(f"{out_prefix}_A.npz").exists() and Path(f"{out_prefix}_A.json").exists():
-            # resume-skip: reload the persisted monitoring record (mon_A feeds the
-            # combined <i>.json below — leaving it unbound was the NameError that
-            # mislabelled resumed profiles as skipped).
-            mon_A = json.loads(Path(f"{out_prefix}_A.json").read_text())
-            print(f"[{index}] config A already persisted — resume-skip", flush=True)
-        else:
-            sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
-                                       Sa_log, truth, pb_log, index=index, config="A",
-                                       checkpoint_path=f"{out_prefix}_A.ckpt.npz")
-            _persist("A", sc_A, mon_A)
+        if "A" in FR_CONFIGS:
+            if Path(f"{out_prefix}_A.npz").exists() and Path(f"{out_prefix}_A.json").exists():
+                # resume-skip: reload the persisted monitoring record (mons['A'] feeds the
+                # combined <i>.json below — leaving it unbound was the NameError that
+                # mislabelled resumed profiles as skipped).
+                mons["A"] = json.loads(Path(f"{out_prefix}_A.json").read_text())
+                print(f"[{index}] config A already persisted — resume-skip", flush=True)
+            else:
+                sc_A, mons["A"] = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
+                                               Sa_log, truth, pb_log, index=index, config="A",
+                                               checkpoint_path=f"{out_prefix}_A.ckpt.npz")
+                _persist("A", sc_A, mons["A"])
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
-        if Path(f"{out_prefix}_B.npz").exists() and Path(f"{out_prefix}_B.json").exists():
-            mon_B = json.loads(Path(f"{out_prefix}_B.json").read_text())
-            print(f"[{index}] config B already persisted — resume-skip", flush=True)
-        else:
-            draw, info = roe.draw_climatology_realization(
-                clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
-            x_draw_log = fwd._encode_state(draw)
-            sc_B, mon_B = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
-                                       Sa_log, truth, pb_log, index=index, config="B",
-                                       checkpoint_path=f"{out_prefix}_B.ckpt.npz")
-            sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
-                                            for k_, v in info.items()})
-            _persist("B", sc_B, mon_B)
+        if "B" in FR_CONFIGS:
+            if Path(f"{out_prefix}_B.npz").exists() and Path(f"{out_prefix}_B.json").exists():
+                mons["B"] = json.loads(Path(f"{out_prefix}_B.json").read_text())
+                print(f"[{index}] config B already persisted — resume-skip", flush=True)
+            else:
+                draw, info = roe.draw_climatology_realization(
+                    clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
+                x_draw_log = fwd._encode_state(draw)
+                sc_B, mons["B"] = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
+                                               Sa_log, truth, pb_log, index=index, config="B",
+                                               checkpoint_path=f"{out_prefix}_B.ckpt.npz")
+                sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
+                                                for k_, v in info.items()})
+                _persist("B", sc_B, mons["B"])
 
         rec.update(grid=np.round(s_grid, 4).tolist(), K_list=list(map(int, fwd.K_list)),
-                   runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,
-                   npz=[f"{Path(out_prefix).name}_A.npz", f"{Path(out_prefix).name}_B.npz"])
-        print(f"[{index}] {flight} tau={truth.tau_bot:.1f} DONE [{time.time()-t0:.0f}s] | "
-              f"A: dRMSE={mon_A['d_rmse']:+.3f} (ours {mon_A['rmse_ours']:.3f} vs adia "
-              f"{mon_A['rmse_adia']:.3f}) DOFS={mon_A['dofs']:.2f} conv={mon_A['converged']} | "
-              f"B: dRMSE={mon_B['d_rmse']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
+                   runtime_s=round(time.time() - t0, 1), fr_configs=FR_CONFIGS, **mons,
+                   npz=[f"{Path(out_prefix).name}_{t}.npz" for t in FR_CONFIGS])
+        _msg = " | ".join(
+            f"{t}: dRMSE={m['d_rmse']:+.3f} (ours {m['rmse_ours']:.3f} vs adia "
+            f"{m['rmse_adia']:.3f}) DOFS={m['dofs']:.2f} conv={m['converged']}"
+            for t, m in mons.items())
+        print(f"[{index}] {flight} tau={truth.tau_bot:.1f} DONE [{time.time()-t0:.0f}s] | {_msg}",
               flush=True)
     except Exception as e:                                          # noqa: BLE001
         import traceback

@@ -92,7 +92,13 @@ PHI0 = 0.0
 # ≥ ~2.35×NLeg_all to project accurately; 4096/1536≈2.67 satisfies this (3072 too coarse).
 NLEG_ALL = 1536
 N_GL = 4096
-V_EFF = 0.10
+# Effective variance (gamma-DSD width) of the OSSE optics. 0.10 = the standard operational
+# choice the published campaign used; notebook §5c shows the VOCALS zero-LWP-bias constant is
+# ~0.037 (median) / 0.046 (min-RMS). The ve_rerun campaign overrides via OSSE_VEFF — safe by
+# construction: signature() includes V_EFF, so an override re-keys the optics table, the
+# radiance-cache gate and the L2 setup caches automatically (stale artifacts are REFUSED, not
+# silently reused). Export OSSE_VEFF identically in EVERY job of a campaign.
+V_EFF = float(os.environ.get("OSSE_VEFF", "0.10"))
 ALBEDO = 0.06                                        # Lambertian sea-surface (BDRF)
 RE_BOUNDS = (2.0, 20.0)                              # optics-table support / GN clamp. STANDARD = 20
 #   (VOCALS truth max r_e = 18.1 µm + ~2 margin; r_e never exceeds 18 in VOCALS). 25 also works with
