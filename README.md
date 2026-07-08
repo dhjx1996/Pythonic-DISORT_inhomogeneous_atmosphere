@@ -109,4 +109,4 @@ Contact: Dion Ho, dh3065@columbia.edu.
 
 License: MIT (see `LICENSE.md`).
 
-Claude Opus 4.6 & 4.8 and Fable 5 have been heavily used in this project.
+This project has been assisted by Claude Opus 4.6 & 4.8 and Fable 5.
