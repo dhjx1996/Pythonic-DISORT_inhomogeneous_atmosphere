@@ -155,6 +155,7 @@ class Cache:
         self.y = np.asarray(rec["y_full"], float) if "y_full" in rec else None      # reflectance ->
         self.y_flux = np.asarray(rec["y_flux"], float) if "y_flux" in rec else None  # rebuild Se @ any noise
         self.x_lin = np.asarray(rec["x_lin"], float) if "x_lin" in rec else None     # [r_e(s_ref), r_base, tau]
+        self.view_mu = np.asarray(rec["view_mu"], float) if "view_mu" in rec else None
 
     def rows(self, band_idx, views):
         return np.array([b * self.nvm + v for b in band_idx for v in views])
@@ -461,6 +462,61 @@ def noise_sweep(caches, levels=(0.01, 0.02, 0.03, 0.05), prior="loo"):
     return out
 
 
+def penetration_weights(caches, out_path, n_s=201):
+    """Vertical WEIGHTING FUNCTIONS w_{b,v}(s) — the Platnick-2000 / BP2025-Fig-1 analog for
+    our observing system, from the same cached Jacobians as everything else here (no forward
+    solves). Per (band b, view v): w(s) = |K row| normalized to unit ∫ds on the profile's own
+    ODE grid, interpolated to a common ``n_s``-point s grid. Writes an npz with
+
+      SG (n_s,)              common normalized-depth grid s = τ/τ_bot
+      w_pop (nb, nv, n_s)    population-MEAN weighting functions (125 profiles)
+      w_rep (nb, nv, n_s)    the representative (median-τ_bot) profile's curves
+      centroid/tail05 (nb, nv)  pop-mean ∫s·w ds and mass at s>0.5 (depth summaries)
+      amp_rel (nb, nv)       pop-mean noise-relative signal ∫|K/σ|ds, normalized to own nadir
+                             (the magnitude axis: does a band's r_e signal survive obliquity?)
+      posfrac (nb, nv)       pop-mean fraction of nodes with K>0 (sign purity; |K| caveat for 3.7/4.05)
+      view_mu (nv,), bands (nb,), tau_bot_rep, index_rep
+
+    The notebook's §15 penetration-depth cells read this cache (docs/cached_results)."""
+    nb, nvm = caches[0].nb, caches[0].nvm
+    SG = np.linspace(0.0, 1.0, n_s)
+    w_acc = np.zeros((nb, nvm, n_s))
+    cen = np.zeros((nb, nvm)); tail = np.zeros((nb, nvm))
+    amp = np.zeros((nb, nvm)); pos = np.zeros((nb, nvm))
+    tb = np.array([c.tau_bot for c in caches])
+    i_rep = int(np.argmin(np.abs(tb - np.median(tb))))
+    w_rep = None
+    for i, c in enumerate(caches):
+        K = c.K_full.reshape(nb, nvm, -1)
+        s = c.s
+        Wn = np.zeros((nb, nvm, n_s))
+        for b in range(nb):
+            for v in range(nvm):
+                w = np.abs(K[b, v])
+                nrm = np.trapezoid(w, s)
+                if nrm > 0:
+                    Wn[b, v] = np.interp(SG, s, w / nrm)
+        w_acc += Wn
+        if i == i_rep:
+            w_rep = Wn.copy()
+        cen += np.trapezoid(Wn * SG, SG, axis=2)
+        tail += np.trapezoid(np.where(SG > 0.5, Wn, 0.0), SG, axis=2)
+        A = np.trapezoid(np.abs(K) / c.sig.reshape(nb, nvm, 1), s, axis=2)
+        amp += A / A[:, :1]
+        pos += (K > 0).mean(axis=2)
+    n = len(caches)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_path, SG=SG, w_pop=w_acc / n, w_rep=w_rep, centroid=cen / n, tail05=tail / n,
+        amp_rel=amp / n, posfrac=pos / n,
+        view_mu=(caches[0].view_mu if caches[0].view_mu is not None else np.arange(nvm)),
+        bands=np.asarray(BANDS, float), n_profiles=n,
+        tau_bot_rep=caches[i_rep].tau_bot, index_rep=i_rep)
+    print(f"wrote {out_path} (penetration weighting functions, {n} profiles, "
+          f"rep tau_bot={caches[i_rep].tau_bot:.2f})")
+
+
 def robustness(groups):
     """Scalar fullview DOFS/SIC across priors (loo/weak/loo2x) and modes (priormean/draw)."""
     out = {}
@@ -514,6 +570,7 @@ def main(dirs):
         data_greedy=dg,
         noise=noise_sweep(caches),
         robustness=robustness(groups))
+    penetration_weights(caches, OUT.parent / "penetration_depth.npz")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(result, indent=1, default=lambda o: (
         int(o) if isinstance(o, np.integer) else

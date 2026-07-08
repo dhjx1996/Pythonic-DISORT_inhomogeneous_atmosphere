@@ -2,10 +2,30 @@
 
 Consumes the per-(index, config) sidecar ``*_{A,B}.npz`` files written by
 ``retrieval_worker._persist`` (fields defined in ``retrieve_one``) and computes the full
-suite DESIGN_DECISIONS §15 specifies: **RMSE / ΔRMSE, LWP-bias, Mahalanobis (+ adiabatic
-floor), posterior IC (DOFS/SIC/data_fraction)**. Pure NumPy/SciPy — no RT, no re-run;
-every number is a re-computation from the saved arrays. Nothing is committed: it writes a
-JSON summary and prints tables (results are delivered by zip, per project rule).
+suite DESIGN_DECISIONS §15 specifies, with the PRIMARY error metric being the
+**1-Wasserstein distance W1(r_e(τ)) + LWP-bias** pair (RMSE retired 2026-07-08, user
+directive — RMSE penalizes the jaggedness of the in-situ truth, which the retrieval cannot
+and should not reproduce, and its sign flipped under coordinate/τ_bot bookkeeping). Also
+reported: **Mahalanobis (+ adiabatic floor), posterior IC (DOFS/SIC)**. Pure NumPy/SciPy —
+no RT, no re-run; every number is a re-computation from the saved arrays. Nothing is
+committed: it writes a JSON summary and prints tables (results delivered by zip, per rule).
+
+WASSERSTEIN as the profile-shape metric (2026-07-08). Each r_e(τ) profile is viewed as an
+r_e-MASS density over ABSOLUTE optical depth τ: p(τ) ∝ r_e(τ), because LWP = (2/3)∫r_e dτ —
+so the density's total mass IS (proportional to) the LWP that the *companion* metric carries.
+W1 = ∫|F_truth − F_model| dτ on the common support [0, max τ_bot] — the LARGER τ_bot, so a
+τ_bot mismatch is a SUPPORT discrepancy penalized natively (no coordinate normalization, no
+double-counting of magnitude: W1 = pure shape, LWP-bias = pure magnitude). W1 is in
+optical-depth units and is oscillation-insensitive — it compares *integrated* CDFs, so a
+jagged in-situ truth and a smooth retrieval with the same size-mass distribution are close
+(the property RMSE lacked). The DOF-graded LADDER is unchanged in spirit — best CONSTANT r_e
+(1 DOF) ≥ best re⁵-adiabat fit to truth (2 DOF, the oracle floor) ≥ us — now scored in W1,
+plus the NO-RETRIEVAL prior-mean baseline. d_w1 ≡ W1_adia − W1_ours (> 0 ⇒ we beat the floor).
+LWP is reported under §5c's post-hoc constant-v_e width corrections (C(0.037), C(0.046)) and
+the per-profile oracle C*, for OUR retrieval AND for the oracle adiabatic best-fit — the
+latter is the LWP-bias BASELINE: even a perfect-shape adiabat carries the same width/Q_ext
+artifact, proving the LWP bias is bookkeeping, not retrieval-shape error. This is the no-re-run
+first-order equivalent of re-running the OSSE at those v_e values.
 
 LWP definition (pinned by the user, 2026-07-01): **piecewise-adiabatic**, consistent with
 the retrieval's own re⁵-linear interpolation between nodes. From the extinction–LWC–r_e
@@ -47,6 +67,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy import stats as sps
 
 _SRC = str(Path(__file__).resolve().parents[1] / "src")
 if _SRC not in sys.path:
@@ -104,6 +125,49 @@ def mahalanobis(delta, cov):
     return float(delta @ np.linalg.solve(np.asarray(cov, float), delta))
 
 
+# ────────────────────────────── comparison-point ladder helpers ──────────────────────────────
+def _re5_interp(s_eval, s_bp, re_bp):
+    """Dense r_e(s) through breakpoints by the retrieval's own re⁵-linear interpolation."""
+    return np.interp(np.asarray(s_eval, float), np.asarray(s_bp, float),
+                     np.asarray(re_bp, float) ** 5) ** 0.2
+
+
+def _mass_cdf(re, tau):
+    """CDF of the r_e-MASS density p(τ) ∝ r_e(τ) over the profile's own support [0, max τ].
+    Total mass ∫r_e dτ ∝ LWP is normalized out (the companion LWP-bias carries magnitude).
+    Returns sorted (τ, F) with F(0)=0, F(τ_bot)=1 — the inputs to the 1-D W1 CDF form."""
+    re = np.asarray(re, float)
+    tau = np.asarray(tau, float)
+    o = np.argsort(tau)
+    tau, re = tau[o], re[o]
+    c = np.concatenate([[0.0], np.cumsum(0.5 * (re[1:] + re[:-1]) * np.diff(tau))])
+    tot = c[-1]
+    F = c / tot if tot > 0 else np.linspace(0.0, 1.0, len(tau))
+    return tau, F
+
+
+def wasserstein_tau(re1, tau1, re2, tau2, n_grid=512):
+    """1-Wasserstein distance [optical-depth units] between two r_e(τ) profiles viewed as
+    r_e-mass densities over ABSOLUTE optical depth, on the common support [0, max τ_bot] —
+    the LARGER τ_bot, so a τ_bot mismatch is a SUPPORT discrepancy penalized natively.
+    W1 = ∫|F₁−F₂| dτ (1-D optimal transport, CDF form): oscillation-insensitive (integrated
+    CDFs, not point-by-point differences) — the primary profile-shape metric (RMSE retired)."""
+    t1, F1 = _mass_cdf(re1, tau1)
+    t2, F2 = _mass_cdf(re2, tau2)
+    tb = max(t1[-1], t2[-1])
+    if tb <= 0:
+        return 0.0
+    g = np.linspace(0.0, tb, n_grid)
+    G1 = np.interp(g, t1, F1, left=0.0, right=1.0)   # past a profile's own τ_bot, CDF = 1
+    G2 = np.interp(g, t2, F2, left=0.0, right=1.0)
+    return float(np.trapezoid(np.abs(G1 - G2), g))
+
+
+def width_factor_gamma(v_e):
+    """C = (1−v_e)(1−2v_e): the gamma-DSD width factor (notebook §5b; vocals_io)."""
+    return (1.0 - v_e) * (1.0 - 2.0 * v_e)
+
+
 # ────────────────────────────── per-sidecar analysis ──────────────────────────────
 def _coerce_str(v):
     try:
@@ -141,14 +205,47 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
     lwp_bias_z = lwp_ours - lwp_truth_z                    # absolute: vs in-situ ∫LWC dz
     lwp_bias_tau = lwp_ours - lwp_truth_tau                # SKILL: vs (2/3)∫r_e_truth dτ (artifact cancels)
     lwp_geomopt_artifact = lwp_truth_tau - lwp_truth_z     # Q_ext=2/v_eff floor (perfect-retrieval bias vs in-situ)
+    # ---- v_e-corrected LWP (post-hoc; §5b/§5c width factor) ----
+    # A constant v_e enters the LWP bookkeeping ONLY through C=(1−v)(1−2v), so the corrected
+    # estimate is C·lwp_ours — to first order this IS what a re-run with that v_e optics table
+    # would report (the OSSE loop is v_e-self-consistent; only optics second-order terms differ).
+    # 0.037/0.046 = §5c zero-median-bias / min-RMS constants; 'oracle' = each profile's own
+    # zero-bias C* = lwp_truth_z/lwp_truth_tau (per-profile perfect v_e → pure retrieval skill).
+    _rb = lambda C: (100.0 * (C * lwp_ours - lwp_truth_z) / lwp_truth_z) if lwp_truth_z else float("nan")
+    lwp_relbias_C037 = _rb(width_factor_gamma(0.037))
+    lwp_relbias_C046 = _rb(width_factor_gamma(0.046))
+    lwp_relbias_Coracle = _rb(lwp_truth_z / lwp_truth_tau) if lwp_truth_tau else float("nan")
 
-    # ---- RMSE / ΔRMSE (dense, thickness-neutral) ----
+    # ---- profile-shape fidelity: 1-Wasserstein LADDER (absolute-τ, larger-τ_bot support) ----
+    # W1 = ∫|F_truth−F_model|dτ on p(τ)∝r_e (LWP-mass), oscillation-insensitive; RMSE retired.
+    s_dense = np.asarray(d["s_dense"], float)
     re_ours_d = np.asarray(d["re_ours_dense"], float)
     re_truth_d = np.asarray(d["re_truth_dense"], float)
     re_adia_d = np.asarray(d["re_adia_dense"], float)
-    rmse_ours = float(np.sqrt(np.mean((re_ours_d - re_truth_d) ** 2)))
-    rmse_adia = float(np.sqrt(np.mean((re_adia_d - re_truth_d) ** 2)))
-    d_rmse = rmse_adia - rmse_ours                          # >0 ⇒ we beat the oracle floor
+    tb_t = float(d["truth_tau_bot"])
+    tau_truth_abs = s_dense * tb_t                          # truth & oracle adiabat: TRUE support
+    tau_ours_abs = s_dense * tau_bot_ret                    # our profile: its RETRIEVED support
+    w1_ours = wasserstein_tau(re_truth_d, tau_truth_abs, re_ours_d, tau_ours_abs)
+    w1_adia = wasserstein_tau(re_truth_d, tau_truth_abs, re_adia_d, tau_truth_abs)   # oracle floor
+    w1_const = wasserstein_tau(re_truth_d, tau_truth_abs,                            # 1-DOF baseline
+                               np.full_like(re_truth_d, float(re_truth_d.mean())), tau_truth_abs)
+    d_w1 = w1_adia - w1_ours                                # >0 ⇒ we beat the oracle floor (in W1)
+    # NO-RETRIEVAL baseline: the prior mean profile itself, on ITS OWN τ_bot (did the data help?)
+    w1_prior = float("nan")
+    if "x_a_log" in d:
+        xa = np.exp(np.asarray(d["x_a_log"], float))        # [r_e(nodes), r_base, τ_bot] physical
+        re_pr = _re5_interp(s_dense, np.r_[s_grid, 1.0], np.r_[xa[:k], xa[k]])
+        w1_prior = wasserstein_tau(re_truth_d, tau_truth_abs, re_pr, s_dense * float(xa[k + 1]))
+    # ---- LWP of the oracle adiabatic best-fit = the LWP-bias BASELINE: a perfect-SHAPE adiabat
+    #      carries the SAME width/Q_ext artifact as us → the LWP bias is bookkeeping, not shape error.
+    lwp_adia = lwp_trapz_tau(re_adia_d, tau_truth_abs)
+    _rba = lambda C: (100.0 * (C * lwp_adia - lwp_truth_z) / lwp_truth_z) if lwp_truth_z else float("nan")
+    lwp_relbias_adia_z = _rba(1.0)
+    lwp_relbias_adia_C037 = _rba(width_factor_gamma(0.037))
+    lwp_relbias_adia_C046 = _rba(width_factor_gamma(0.046))
+    # C* (per-profile oracle v_e) baseline: reduces to 100·(∫r_e_adia dτ / ∫r_e_truth dτ − 1),
+    # the adiabat's residual τ-integral error under perfect width bookkeeping (parallel to ours).
+    lwp_relbias_adia_Coracle = _rba(lwp_truth_z / lwp_truth_tau) if lwp_truth_tau else float("nan")
 
     # ---- Mahalanobis (full-state log; r_e-block physical + adiabatic floor) ----
     s_tr = np.asarray(d["truth_tau"], float) / float(d["truth_tau_bot"])
@@ -160,12 +257,20 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
     S_phys = _phys_reblock_cov(S_hat_log, re_nodes)
     d2_re = mahalanobis(re_nodes - re_truth_nodes, S_phys)             # r_e block, physical
     try:
-        adia_m = roe.best_fit_adiabatic(s_grid, re_truth_nodes, tau_bot_ret,
-                                        metric="maha", Sinv=np.linalg.inv(S_phys))
-        d2_adia_min = float(adia_m["d2"])
+        Sinv = np.linalg.inv(S_phys)
+        # d²_adia,min: closest adiabat to the TRUTH (the non-adiabatic residual of the truth)
+        d2_adia_min = float(roe.best_fit_adiabatic(s_grid, re_truth_nodes, tau_bot_ret,
+                                                   metric="maha", Sinv=Sinv)["d2"])
+        # d²_adia→x̂: closest adiabat to our ESTIMATE x̂ — the SIGNIFICANCE test (below): if the
+        # nearest adiabat lies OUTSIDE the 95% posterior ellipsoid, the retrieved profile is
+        # statistically distinguishable from every adiabat given our own uncertainty.
+        d2_adia_xhat = float(roe.best_fit_adiabatic(s_grid, re_nodes, tau_bot_ret,
+                                                    metric="maha", Sinv=Sinv)["d2"])
     except Exception as e:                                             # singular block, etc.
-        d2_adia_min = float("nan")
+        d2_adia_min = d2_adia_xhat = float("nan")
         warns.append(f"maha floor failed: {type(e).__name__}")
+    chi2_thr95 = float(sps.chi2.ppf(0.95, k))                          # r_e-block 95% ellipsoid
+    sig_nonadia = bool(np.isfinite(d2_adia_xhat) and d2_adia_xhat > chi2_thr95)
 
     flight = _coerce_str(d["flight"])
     top_node = float(re_nodes[0])
@@ -174,17 +279,24 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         tau_bot_ret=tau_bot_ret, tau_bot_truth=float(d["truth_tau_bot"]),
         converged=bool(d["converged"]), n_gn=int(d["n_gn"]),
         chi2_red=float(d["chi2_red"]), structural_misfit=bool(d["structural_misfit"]),
-        # fidelity
-        rmse_ours=rmse_ours, rmse_adia=rmse_adia, d_rmse=d_rmse,
+        # profile-shape fidelity: the Wasserstein ladder (W1 in optical-depth units; RMSE retired)
+        w1_ours=w1_ours, w1_adia=w1_adia, d_w1=d_w1,
+        w1_const=w1_const, w1_prior=w1_prior,
         # LWP
         lwp_ours=lwp_ours, lwp_truth_z=lwp_truth_z, lwp_truth_tau=lwp_truth_tau,
         lwp_bias_z=lwp_bias_z, lwp_bias_tau=lwp_bias_tau,
+        lwp_relbias_C037=lwp_relbias_C037, lwp_relbias_C046=lwp_relbias_C046,
+        lwp_relbias_Coracle=lwp_relbias_Coracle,
+        # LWP-bias BASELINE: the oracle adiabatic best-fit's own LWP bias (perfect-shape floor)
+        lwp_relbias_adia_z=lwp_relbias_adia_z, lwp_relbias_adia_C037=lwp_relbias_adia_C037,
+        lwp_relbias_adia_C046=lwp_relbias_adia_C046, lwp_relbias_adia_Coracle=lwp_relbias_adia_Coracle,
         lwp_relbias_z=(100.0 * lwp_bias_z / lwp_truth_z) if lwp_truth_z else float("nan"),
         # both ÷ in-situ (BP denominator) so relbias_z == lwp_skill_pct + lwp_geomopt_artifact_pct exactly
         lwp_skill_pct=(100.0 * lwp_bias_tau / lwp_truth_z) if lwp_truth_z else float("nan"),
         lwp_geomopt_artifact_pct=(100.0 * lwp_geomopt_artifact / lwp_truth_z) if lwp_truth_z else float("nan"),
-        # Mahalanobis
+        # Mahalanobis (+ the adiabat-inside-posterior significance test on x̂)
         d2_full=d2_full, d2_re=d2_re, d2_adia_min=d2_adia_min,
+        d2_adia_xhat=d2_adia_xhat, chi2_thr95=chi2_thr95, sig_nonadia=sig_nonadia,
         # posterior IC
         dofs=float(d["dofs"]), sic=float(d["sic"]),
         dofs_profile=float(d["dofs_profile"]), dofs_r_base=float(d["dofs_r_base"]),
@@ -208,6 +320,17 @@ def _stats(xs):
                 p90=float(np.percentile(a, 90)), min=float(a.min()), max=float(a.max()))
 
 
+def _low_confidence(rows, q=10.0):
+    """The worst-decile of d_w1: good data-fit (χ² at floor) but the profile trails the oracle
+    adiabat in W1 — inherent deep-cloud OE ill-posedness (flag, don't drop). Self-scaling
+    threshold (no magic constant): the q-th percentile of pooled d_w1."""
+    dw = np.array([r["d_w1"] for r in rows], float)
+    thr = float(np.percentile(dw, q))
+    members = sorted([[r["index"], r["config"], round(r["d_w1"], 3)]
+                      for r in rows if r["d_w1"] <= thr], key=lambda t: t[2])
+    return {"thr_dw1": thr, "q_pct": q, "members": members}
+
+
 def summarize(rows):
     """Aggregate per config + overall; surface the review flags (A–F checklist)."""
     out = {"n_sidecars": len(rows), "by_config": {}, "flags": {}}
@@ -216,8 +339,25 @@ def summarize(rows):
         out["by_config"][cfg] = {
             "n": len(R),
             "converged_frac": float(np.mean([r["converged"] for r in R])),
-            "rmse_ours": _stats([r["rmse_ours"] for r in R]),
-            "d_rmse": _stats([r["d_rmse"] for r in R]),
+            # PRIMARY profile-shape metric: 1-Wasserstein (optical-depth units; RMSE retired)
+            "w1_ours": _stats([r["w1_ours"] for r in R]),
+            "w1_adia": _stats([r["w1_adia"] for r in R]),
+            "d_w1": _stats([r["d_w1"] for r in R]),
+            "d_w1_win_rate": float(np.mean([r["d_w1"] > 0 for r in R])),
+            # DOF-graded floors + no-retrieval baseline (population stats), all in W1
+            "w1_const": _stats([r["w1_const"] for r in R]),
+            "w1_prior": _stats([r["w1_prior"] for r in R]),
+            # v_e-corrected LWP ladder (avg |%| vs in-situ — the BP2026 Table-2 form)
+            "lwp_avg_abs_pct_C1": float(np.nanmean(np.abs([r["lwp_relbias_z"] for r in R]))),
+            "lwp_avg_abs_pct_C037": float(np.nanmean(np.abs([r["lwp_relbias_C037"] for r in R]))),
+            "lwp_avg_abs_pct_C046": float(np.nanmean(np.abs([r["lwp_relbias_C046"] for r in R]))),
+            "lwp_avg_abs_pct_Coracle": float(np.nanmean(np.abs([r["lwp_relbias_Coracle"] for r in R]))),
+            # LWP-bias BASELINE — the oracle adiabatic best-fit (perfect-shape) carries the same artifact
+            "lwp_adia_avg_abs_pct_C1": float(np.nanmean(np.abs([r["lwp_relbias_adia_z"] for r in R]))),
+            "lwp_adia_avg_abs_pct_C037": float(np.nanmean(np.abs([r["lwp_relbias_adia_C037"] for r in R]))),
+            "lwp_adia_avg_abs_pct_C046": float(np.nanmean(np.abs([r["lwp_relbias_adia_C046"] for r in R]))),
+            "lwp_adia_avg_abs_pct_Coracle": float(np.nanmean(np.abs([r["lwp_relbias_adia_Coracle"] for r in R]))),
+            "lwp_adia_signed_pct_C1": float(np.nanmean([r["lwp_relbias_adia_z"] for r in R])),
             "lwp_bias_z": _stats([r["lwp_bias_z"] for r in R]),
             # LWP-% vs in-situ, reported in BP2026's two forms: signed mean = Fig-5 "bias"
             # (hyperspectral +6.8%); mean|%| = Table-2 "avg % difference" (hyperspectral 17.7%,
@@ -232,12 +372,18 @@ def summarize(rows):
             "lwp_geomopt_artifact_pct_mean": float(np.nanmean([r["lwp_geomopt_artifact_pct"] for r in R])),
             "d2_re": _stats([r["d2_re"] for r in R]),
             "d2_adia_min": _stats([r["d2_adia_min"] for r in R]),
+            "d2_adia_xhat": _stats([r["d2_adia_xhat"] for r in R]),
+            # significance: fraction of estimates with NO adiabat inside the 95% posterior ellipsoid
+            "sig_nonadia_frac": float(np.mean([r["sig_nonadia"] for r in R])),
             "dofs": _stats([r["dofs"] for r in R]),
             "sic": _stats([r["sic"] for r in R]),
         }
     out["flags"] = {
         "non_converged": [(r["index"], r["config"]) for r in rows if not r["converged"]],
         "structural_misfit": [(r["index"], r["config"]) for r in rows if r["structural_misfit"]],
+        # good data-fit but worst-decile d_w1 (trails the oracle adiabat in W1): inherent OE
+        # ill-posedness deep in optically-thick cloud (manifest 2026-07-06) — flag, don't drop
+        "low_confidence": _low_confidence(rows),
         "re_max_edge (E: RF13 etc.)": [(r["index"], r["flight"], round(r["top_node_re"], 1))
                                        for r in rows if r["re_max_edge"]],
         "thick_tail_tau>=%g" % THICK_TAU: sorted({r["index"] for r in rows if r["thick_tail"]}),
@@ -247,15 +393,15 @@ def summarize(rows):
 
 
 def _print_table(rows):
-    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'RMSE':>6} "
-           f"{'ΔRMSE':>6} {'LWPbias':>8} {'rel%':>6} {'d²_re':>7} {'d²adia':>7} {'DOFS':>5}")
+    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'W1':>7} "
+           f"{'dW1':>7} {'LWPbias':>8} {'rel%':>6} {'d²_re':>7} {'d²a→x̂':>7} {'sig':>4} {'DOFS':>5}")
     print(hdr)
     print("-" * len(hdr))
     for r in sorted(rows, key=lambda r: (r["index"], r["config"])):
         print(f"{r['index']:>4} {r['flight']:>5} {r['config']:>1} {r['tau_bot_truth']:>6.1f} "
-              f"{str(r['converged']):>4} {r['rmse_ours']:>6.2f} {r['d_rmse']:>+6.2f} "
+              f"{str(r['converged']):>4} {r['w1_ours']:>7.3f} {r['d_w1']:>+7.3f} "
               f"{r['lwp_bias_z']:>+8.1f} {r['lwp_relbias_z']:>+6.1f} {r['d2_re']:>7.2f} "
-              f"{r['d2_adia_min']:>7.2f} {r['dofs']:>5.2f}")
+              f"{r['d2_adia_xhat']:>7.2f} {'Y' if r['sig_nonadia'] else '.':>4} {r['dofs']:>5.2f}")
 
 
 def run(sidecar_dir, out_json=None, re_max=RE_MAX_DEFAULT):
