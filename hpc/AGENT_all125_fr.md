@@ -9,8 +9,42 @@
 > `mv docs/cached_results/_rad_parts docs/cached_results/_ic_*_parts docs/cached_results/_fr_parts runs/ 2>/dev/null`;
 > `mv tests/supplementary/precision_probe_out runs/ 2>/dev/null`. In-flight SLURM arrays keep their
 > submitted script copies; resubmit only with the updated `hpc/sbatch/` files after migrating.
-> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — verdict in
-> `hpc/fable_assessment_2026-07-01.md` §1-L3 (keep `_jax_cache` for IC's ptxas mitigation, now at `runs/_jax_cache`).
+> The FR L3 compile cache is deleted (`rm -rf docs/cached_results/_jax_cache_fr*`) — measured a
+> no-op for FR (execution-bound) + a Lustre small-file liability; keep `_jax_cache` for IC's
+> ptxas mitigation (now at `runs/_jax_cache`). See `STRATEGY_hpc_retrieval_runs.md` §2.4.
+
+> **✅ BATCH-3 COMPLETE (2026-07-06)** — all 125×{A,B} done, 0 unresolved failures; canonical
+> set + supersessions in `FINAL_RESULTS_MANIFEST.md`. **This spec stays as the template for the
+> next FR-class run** (e.g. a corrected-v_e OSSE). Lessons already baked into the code or this
+> spec — honor them on a re-run:
+>
+> 1. **Venue verdict:** GPU, `MODE_MAP=vmap`, float64, `cpus-per-task=1`; **12:00 walls**
+>    (fits `short`, where the A100s live) + L1+L2 + an hourly idempotent resubmit driver;
+>    straggler routing: tasks that walled with *no checkpoint* (died in setup) → `-C a100`;
+>    CPU only as saturated-spill for small A100-equivalent profiles
+>    (`STRATEGY_hpc_retrieval_runs.md` §2–3).
+> 2. **Unique log path per submission** (`--output=logs/fr_%A_%a.out` or `--open-mode=append`):
+>    batch-3's `%a`-only paths let resubmissions truncate 68 completed configs' logs (results
+>    valid, stopping-criterion traces lost — an avoidable audit hole).
+> 3. **Thin ≠ cheap — settled.** The thin/over-sensitive profiles were the end-to-end slow tail
+>    (multi-wall on slow cards; the priciest setups). Never pre-sort "fast/slow" by τ — use the
+>    IC config-A calibration times per §2 below, and let L1/L2 absorb the tail.
+> 4. **Post-run audit is part of the task:** sweep final-iteration `rel` (cost-stagnation)
+>    values population-wide; continuation-test suspicious stops from the persisted `x_hat_log`
+>    (near-free with L2 — but on GPU: a continuation driver pays a fresh ~25–40 min Jacobian
+>    compile; on CPU it is effectively unbounded). The `_gn_inner` criterion is sign-symmetric
+>    (`abs(rel)`) since 2026-07-04 — the audit guards the *next* latent variant of this class.
+> 5. **Corrective paths that exist (use, don't reinvent):** structural-misfit configs (χ²_red >
+>    `REMESH_CHI2_THR`, default 2.0) can be re-run with `retrieve_one(..., max_n_outer=2)`
+>    (placement re-mesh); a pathological config-B draw can be re-drawn with a truth-free
+>    climatology filter (seed base `3000+index`). Corrected results go to flagged supersession
+>    dirs (`_fr_parts_remesh/` etc.) recorded in the manifest — never overwrite `_fr_parts/`.
+>    `conv=False` at the iteration cap *at* the χ² floor is a technicality, not a failure.
+> 6. **Changing the observing system (bands, views, μ0, NQuad, `V_EFF`, r_e grid, NLeg) re-keys
+>    everything automatically** — `osse_config.signature()` covers all of it, so the radiance
+>    cache gate refuses stale truth and L2 setup caches config-mismatch (recompute, correct by
+>    design). Budget accordingly: new signature ⇒ rebuild optics table (minutes) + re-run the
+>    `rad` batch (hours) *before* any FR task starts.
 
 # Delegated task — all-VOCALS **FULL r_e(τ) RETRIEVALS** (the capstone; NQuad=48)
 
@@ -43,8 +77,8 @@ Three upgrades vs the pre-§15 retrievals, all in `src/retrieval_oe.py` (already
   (positivity free; better GN convergence);
 - **BP2026 cost-stagnation convergence** (`cost_rtol`, **tuned = 0.01**); the noise-floor stop
   (`chi2_floor`) is implemented but **INACTIVE** (Se magnitude not reliably profiled);
-- the **oracle best-fit-adiabatic floor** (`best_fit_adiabatic`) — the RMSE lower bound under the
-  adiabatic constraint — computed post-hoc by the worker for monitoring (the headline ΔRMSE).
+- the **oracle best-fit-adiabatic floor** (`best_fit_adiabatic`) — the Wasserstein lower bound under the
+  adiabatic constraint — computed post-hoc by the worker for monitoring (the headline ΔWasserstein).
 
 **One worker** (`scripts/retrieval_worker.py`), run as **a SINGLE SLURM array** (both configs
 A+B per task; no per-mode arrays). Each task writes, for index `i`:
@@ -55,7 +89,7 @@ A+B per task; no per-mode arrays). Each task writes, for index `i`:
 - `<i>_A.json` / `<i>_B.json` — slim per-config monitoring scalars;
 - `<i>.json` — a combined monitoring record (both configs + grid + runtime).
 
-**No analysis on the cluster** — every metric (RMSE/ΔRMSE, LWP bias, Mahalanobis, posterior IC) is a
+**No analysis on the cluster** — every metric (Wasserstein/ΔWasserstein, LWP bias, Mahalanobis, posterior IC) is a
 post-hoc computation the primary runs on jovyan (`retrieval_analysis.py`) from the raw sidecars.
 
 ## Repo & output
@@ -140,7 +174,7 @@ N=$($PY -c "import sys;sys.path.insert(0,'/burg-archive/home/dh3065/cloud_profil
 echo "N=$N profiles"
 ```
 
-## Checkpoint / resume (`hpc/FR_CHECKPOINT_RESUME_PLAN.md`) — implemented; use it
+## Checkpoint / resume (L1 + L2) — implemented and production-verified; use it
 
 > **✅ STATUS (2026-07-02):** **Layer 1 (GN-iteration checkpoint) is implemented (9bc7e5f) and
 > production-verified** — a walled task resumes at its last GN iteration, losing ≤1 iteration.
@@ -151,13 +185,15 @@ echo "N=$N profiles"
 > PASSED on the HPC (2026-07-02)**.
 > **Layer 3 (persistent compile cache) is REMOVED for FR** — measured no-op (FR is
 > execution-bound; its forward/Jacobian executables never persisted) and a Lustre file-count
-> liability; verdict in `hpc/fable_assessment_2026-07-01.md` §1-L3. IC keeps `_jax_cache` (its
-> real ptxas mitigation). More CPU cores don't help FR (keep cpus-per-task=1).
+> liability. IC keeps `_jax_cache` (its real ptxas mitigation). More CPU cores don't help FR
+> (keep cpus-per-task=1).
 
-Checkpoint/resume is specified in **`hpc/FR_CHECKPOINT_RESUME_PLAN.md`** and wired into
-`scripts/retrieval_worker.py`. It makes a walled task **resumable** (a wall loses ≤1 GN iteration,
-not the whole task), so you can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to
-fit `short`) and run aggressive walls without losing work.
+Checkpoint/resume (L1 per-GN-iteration checkpoint + L2 setup cache) is wired into
+`scripts/retrieval_worker.py` / `retrieval_oe.gauss_newton_oe` (design + validation record:
+`CHANGELOG.md`; equivalence gates: `tests/hpc/test_l1_resume.py`, `test_l2_setup_cache.py`).
+It makes a walled task **resumable** (a wall loses ≤1 GN iteration, not the whole task), so you
+can **chunk a long retrieval into shorter resubmittable jobs** (e.g. to fit `short`) and run
+aggressive walls without losing work.
 
 - **⚠️ Checkpoints (L1 `.ckpt.npz` + L2 `.setup.npz`) MUST live on shared, persistent storage** (`/burg-archive/…`,
   mirror the `_*_parts/` convention), **never** node-local `/local` or `$SCRATCH` — a dying node wipes
@@ -190,8 +226,11 @@ signals exist and neither is doctrine: §A3 flagged thin profiles as convergence
 older "thin is slowest" note, tol=1e-5 regime), whereas the IC tol=1e-4 per-Jac times have thin profiles
 *cheapest* per-iter and mid-τ (τ≈9–14, high `n_int`) dearest. **You MAY use the IC times as a soft
 signal** (e.g. run cheap-per-iter profiles first), but **don't pre-commit any τ band as "the tail"** —
-keep walls **defensive** and lean on **resume**. The thin-vs-mid question is **unsettled until FR's own
-end-to-end walls exist — revisit/revise then (for posterity).** The worker prints `built fwd + selected grid…` then `… DONE`; a task silent for *hours* on CPU
+keep walls **defensive** and lean on **resume**. *(Settled by batch-3's end-to-end walls, for
+posterity: the **thin/over-sensitive profiles were the slow tail** — the priciest setups and the
+multi-wall stragglers on slow cards, e.g. idx-20/22 — while per-index totals remained unpredictable
+from any cheap metadata, r ≤ 0.12. So: no τ-based pre-sorting either way; calibration times + the
+L1/L2 resume chain are the scheduling mechanism.)* The worker prints `built fwd + selected grid…` then `… DONE`; a task silent for *hours* on CPU
 is the thread-oversubscription bug (Troubleshooting). Don't change NQuad (48), bands, views, `COST_RTOL`,
 or worker physics. The sbatch below is a **CPU example** — adjust venue/resources to your plan.
 
@@ -295,8 +334,9 @@ Results are delivered **as the zip (Step 3), NOT via Git** — do **not** commit
 the array finishes and the bundle is built, report: (1) records vs `skipped` (expect 1 skip — RF01
 τ≈1585); (2) the **`npz in bundle` count** (≈250 = 125×{A,B}) and the bundle path + size; (3) how many
 retrievals flagged `converged:false` or `structural_misfit:true` (per config); (4) **per-task wall times —
-min / median / max, and which indices walled / needed resume** (NOT pre-judged by τ — the thin-vs-mid-τ
-tail is unsettled pre-FR; these walls are what settle it for posterity) — so the primary can judge scheduling; (5) venue + whether the `XLA_FLAGS` single-thread fix held
-(no hung tasks) + whether checkpoint/resume was exercised; (6) any errors / timed-out task indices. The
-primary downloads `cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`)
-on jovyan.
+min / median / max, and which indices walled / needed resume** — so the primary can judge scheduling;
+(5) venue + whether the `XLA_FLAGS` single-thread fix held (no hung tasks) + whether checkpoint/resume
+was exercised; (6) any errors / timed-out task indices; (7) the **post-run stopping-criterion audit**
+(banner item 4): population-wide final-iteration `rel` sweep + which configs were continuation-tested,
+and any supersessions recorded manifest-style. The primary downloads
+`cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`) on jovyan.

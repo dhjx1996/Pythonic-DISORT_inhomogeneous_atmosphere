@@ -58,18 +58,10 @@ templates).
 2. **`rad` batch** (the truth tier MUST be regenerated — new signature): per
    `AGENT_all125_rad.md`, writing `RADIANCE_CACHE=$ROOT/../data/osse_radiances_ve046.npz`.
    Expect sig `25160fe82d1654f2`, tol tag 1e-4, 125 valid + idx-0 skip.
-3. **FR pilot (GO/NO-GO gate; ~12 profiles, A100/V100S):** run
-   `FR_CONFIGS=A` on indices spanning the τ range + the known classes, e.g.
-   `{20, 95 (thin) · 5, 47, 49, 55, 75 (mid) · 11, 28 (remesh-history) · 110, 119 (deep,
-   low-confidence) · 13 (RF13 re_max-edge)}`, outputs to `runs/_fr_ve046_parts/`.
-   Report to the primary: per-profile ΔRMSE and χ²_red vs the published config-A values, and
-   the C(0.046)-corrected LWP vs the post-hoc-predicted column (they should agree to well
-   within the profile scatter — that agreement IS the first-order-equivalence validation).
-   **The primary decides** whether the remaining ~113 profiles run.
-4. **Full array (on GO):** `AGENT_all125_fr.md` Step 2 verbatim, with the three env overrides
-   and the new cache paths; L1+L2 on; 11:55 walls; unique log paths (`%A_%a`); hourly resubmit
+3. **Full array (on GO):** `AGENT_all125_fr.md` Step 2 verbatim, with the three env overrides
+   and the new cache paths; L1+L2 on; 12:00 walls; unique log paths (`%A_%a`); hourly resubmit
    driver; post-run stopping-criterion audit (fr-spec banner item 4).
-5. **Deliverable:** `fr_ve046_bundle.zip` = `_fr_ve046_parts/` (+ any supersession dirs +
+4. **Deliverable:** `fr_ve046_bundle.zip` = `_fr_ve046_parts/` (+ any supersession dirs +
    logs) **plus** the step-2 radiance bundle, to the workspace root for manual download.
    Manifest-style supersession records if any corrective re-runs were needed.
 
@@ -81,7 +73,7 @@ Budget ≈ 55–70 % of batch-3's per-profile wall on the same card class; the p
 ## Analysis (primary, jovyan — no cluster analysis)
 
 `scripts/retrieval_analysis.py` on the new sidecars; notebook §16's loader accepts an alternate
-parts dir. The headline comparisons: RMSE/ΔRMSE distribution shift vs the published A (expect
+parts dir. The headline comparisons: Wasserstein distribution shift vs the published A (expect
 ≈ nil), C-corrected LWP vs post-hoc prediction (expect agreement), and any change in the
 per-band/angle structure of K on the pilot profiles (the §15 Fig 0b features are the place a
 v_e change is *expected* to show).
