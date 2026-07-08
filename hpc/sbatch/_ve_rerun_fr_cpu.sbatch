@@ -1,7 +1,9 @@
 #!/bin/bash
 # ve_rerun campaign (hpc/AGENT_ve_rerun.md) — Step 3: full FR array, config A only, CPU primary
-# venue (mirrors batch-3's actual launch: CPU short partition, 12h walls, L1-checkpoint resumable
-# across successive submissions; GPU used for the gate + straggler realloc, not here).
+# venue (mirrors batch-3's actual launch: CPU, 12h walls, L1-checkpoint resumable across
+# successive submissions; GPU used for the gate + straggler realloc, not here). All eligible
+# partitions listed (crew1/ocp_gpu also take CPU-only jobs, not just short) to maximize scheduler
+# surface (STRATEGY §2.8).
 # MAJOR DEVIATIONS vs the spec: OSSE_VEFF=0.046, OSSE_RE_MAX=22 (raised r_e clamp), MAX_N_OUTER=2
 # (every profile opted into placement re-meshing, not just flagged structural-misfit configs).
 # Indices 1..125 are the real profiles (0 = degenerate header, excluded); idx-47 excluded here —
@@ -10,7 +12,7 @@
 #SBATCH --array=1-46,48-125%125
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
-#SBATCH --partition=short
+#SBATCH --partition=crew1,ocp_gpu,short
 #SBATCH --time=11:55:00
 #SBATCH --job-name=ve046_fr
 #SBATCH --output=/burg-archive/home/dh3065/cloud_profile_retrieval/Pythonic-DISORT_inhomogeneous_atmosphere/runs/_ve_rerun_logs/fr_%A_%a.out

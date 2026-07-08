@@ -5,7 +5,7 @@
 # free completed profile (writes into the same runs/_ve_rerun_fr_parts/47 prefix).
 #SBATCH --account=crew
 #SBATCH --gres=gpu:1
-#SBATCH --partition=short
+#SBATCH --partition=crew1,ocp_gpu,short
 #SBATCH --constraint=a100
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
