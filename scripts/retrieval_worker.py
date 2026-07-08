@@ -46,6 +46,8 @@ Env:  VOCALS_DATA   in-situ flight netCDFs (default = the jovyan path).
                      shared with the IC run when the signature matches).
       COST_RTOL      BP criterion-1 relative-misfit threshold (tuned; DESIGN §10h).
                      Default 0.01.
+      MAX_N_OUTER    re-mesh cap for the main A/B retrievals (default 1 = select-once,
+                     published-campaign behavior; 2 = fixed-count placement re-mesh).
 """
 import os
 import sys
@@ -84,6 +86,9 @@ SOLVER_TOL = oc.SOLVER_TOL                                         # operational
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
 REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton_oe remesh_if_chi2_red_gt
+MAX_N_OUTER = int(os.environ.get('MAX_N_OUTER', '1'))             # main-path re-mesh cap (default 1 =
+#   select-once, the published-campaign behavior; corrective re-runs pass 2 via retrieve_one() directly —
+#   this env lets a whole campaign (e.g. ve_rerun) opt every profile into placement re-meshing up front)
 FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior configs to run
 if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
     raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
@@ -438,7 +443,8 @@ def main():
             else:
                 sc_A, mons["A"] = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
                                                Sa_log, truth, pb_log, index=index, config="A",
-                                               checkpoint_path=f"{out_prefix}_A.ckpt.npz")
+                                               checkpoint_path=f"{out_prefix}_A.ckpt.npz",
+                                               max_n_outer=MAX_N_OUTER)
                 _persist("A", sc_A, mons["A"])
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
         if "B" in FR_CONFIGS:
@@ -451,7 +457,8 @@ def main():
                 x_draw_log = fwd._encode_state(draw)
                 sc_B, mons["B"] = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
                                                Sa_log, truth, pb_log, index=index, config="B",
-                                               checkpoint_path=f"{out_prefix}_B.ckpt.npz")
+                                               checkpoint_path=f"{out_prefix}_B.ckpt.npz",
+                                               max_n_outer=MAX_N_OUTER)
                 sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
                                                 for k_, v in info.items()})
                 _persist("B", sc_B, mons["B"])

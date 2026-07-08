@@ -100,11 +100,15 @@ N_GL = 4096
 # silently reused). Export OSSE_VEFF identically in EVERY job of a campaign.
 V_EFF = float(os.environ.get("OSSE_VEFF", "0.10"))
 ALBEDO = 0.06                                        # Lambertian sea-surface (BDRF)
-RE_BOUNDS = (2.0, 20.0)                              # optics-table support / GN clamp. STANDARD = 20
-#   (VOCALS truth max r_e = 18.1 µm + ~2 margin; r_e never exceeds 18 in VOCALS). 25 also works with
-#   NO ISSUE — NLEG_ALL=1536 keeps the r_e=25 phase function positive & converged — so 20 is a
-#   sufficiency choice (avoid over-extending the table), NOT a correctness limit. (If the clamp is
-#   actually raised to 25, re-confirm NFOURIER: the mode study saw K≈27 at r_e=25 vs 24 tuned at 20.)
+# optics-table support / GN clamp. STANDARD = 20 (VOCALS truth max r_e = 18.1 µm + ~2 margin;
+# r_e never exceeds 18 in VOCALS). 25 also works with NO ISSUE — NLEG_ALL=1536 keeps the r_e=25
+# phase function positive & converged — so 20 is a sufficiency choice (avoid over-extending the
+# table), NOT a correctness limit. Override via OSSE_RE_MAX (ve_rerun campaign: 22) — same
+# re-keying safety as OSSE_VEFF, re_bounds is already in signature() so a mismatched table/cache
+# is refused, not silently reused. (If the clamp is raised toward 25, re-confirm NFOURIER: the
+# mode study saw K≈27 at r_e=25 vs 24 tuned at 20.)
+RE_BOUNDS = (2.0, float(os.environ.get("OSSE_RE_MAX", "20.0")))
+
 RE_GRID_N = 32                                       # optics-table r_e grid points
 N_RADII = 600                                        # optics-table gamma-quadrature radii
 RE_CLASS = "re5-linear"
