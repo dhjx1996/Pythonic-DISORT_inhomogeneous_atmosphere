@@ -908,13 +908,9 @@ def _compute_bary_weights(nodes):
     weights : (N,) numpy array, w_j = 1 / prod_{k != j} (x_j - x_k).
     """
     nodes = np.asarray(nodes, dtype=float)
-    n = len(nodes)
-    weights = np.ones(n)
-    for j in range(n):
-        for k in range(n):
-            if k != j:
-                weights[j] /= (nodes[j] - nodes[k])
-    return weights
+    diff = nodes[:, None] - nodes[None, :]
+    np.fill_diagonal(diff, 1.0)
+    return 1.0 / diff.prod(axis=1)
 
 
 def _barycentric_interpolate(mu_query, mu_nodes, values, bary_weights):

@@ -26,7 +26,7 @@ views = NQuad//2, μ0=0.9, NQuad=48).
 Three §16 upgrades vs the pre-§15 retrievals (all in retrieval_oe):
   * state_space='log' (BP2026 §2.4) + a log-space climatology prior (to_log_prior);
   * BP2026 cost-stagnation convergence (cost_rtol; chi2_floor coded but INACTIVE);
-  * the oracle best-fit-adiabatic floor (best_fit_adiabatic) — the RMSE lower bound
+  * the oracle best-fit-adiabatic floor (best_fit_adiabatic) — the W1 lower bound
     under the adiabatic constraint, computed post-hoc here for monitoring.
 
 RAW sidecar (the product; every metric is a post-hoc computation by
@@ -106,10 +106,10 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     coarse grid ``S_COARSE`` (the pre-retrieval pins r_e tight, so grid quality is
     irrelevant to it — the initial QRCP selection it used to run on bought nothing),
     then run the ONE QRCP grid selection at the pre-retrieved τ_bot anchor. The
-    pre-retrieval uses all bands — conservative-band (ω=1) rows dominate the τ_bot
-    signal through the prior weighting, achieving the same physical effect as a
-    VIS-only subset (``osse_config.VIS_BANDS`` is the documented physical motivation)
-    while reusing the already-compiled full forward (zero extra JIT cost).
+    pre-retrieval uses all bands — conservative-band (ω=1 at 0.55/0.67/0.86 µm)
+    rows dominate the τ_bot signal through the prior weighting, achieving the same
+    physical effect as a VIS-only subset while reusing the already-compiled full
+    forward (zero extra JIT cost).
 
     Returns ``(fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre)``
     — shared by both prior configs (one compiled forward). ``tau_bot_pre`` is the
@@ -271,12 +271,15 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
     s_truth = np.asarray(truth.tau, float) / truth.tau_bot
     o = np.argsort(s_truth)
     re_truth_dense = np.interp(S_DENSE, s_truth[o], np.asarray(truth.r_e, float)[o])
-    rmse_ours = float(np.sqrt(np.mean((re_ours - re_truth_dense) ** 2)))
+    # primary profile-shape metric: W1 on absolute-τ supports (truth on its TRUE
+    # support, ours on the RETRIEVED support — a τ_bot error is penalized natively)
+    w1_ours = roe.wasserstein_tau(re_truth_dense, S_DENSE * truth.tau_bot,
+                                  re_ours, S_DENSE * tau_bot_ret)
 
-    # oracle best-fit adiabatic floor (known τ_bot; r_top/r_base fit to truth)
-    adia = roe.best_fit_adiabatic(S_DENSE, re_truth_dense, truth.tau_bot, metric='rmse')
-    rmse_adia = adia['rmse']
-    d_rmse = rmse_adia - rmse_ours                                  # >0 ⇒ we beat the floor
+    # oracle best-fit adiabatic floor (known τ_bot; W1-fit to truth, mass-matched)
+    adia = roe.best_fit_adiabatic(S_DENSE, re_truth_dense, truth.tau_bot)
+    w1_adia = adia['w1']
+    d_w1 = w1_adia - w1_ours                                        # >0 ⇒ we beat the floor
 
     # LWP (z-free optical-depth integral) + the Q_ext=2 consistency check
     tau_dense = S_DENSE * tau_bot_ret
@@ -329,8 +332,8 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
                structural_misfit=bool(structural_misfit),
                tau_bot_ret=round(tau_bot_ret, 3), tau_bot_truth=round(float(truth.tau_bot), 3),
                r_base_ret=round(r_base_ret, 3), r_top_ret=round(float(r_nodes[0]), 3),
-               rmse_ours=round(rmse_ours, 4), rmse_adia=round(rmse_adia, 4),
-               d_rmse=round(d_rmse, 4), dofs=round(float(post.dofs), 3),
+               w1_ours=round(w1_ours, 4), w1_adia=round(w1_adia, 4),
+               d_w1=round(d_w1, 4), dofs=round(float(post.dofs), 3),
                sic=round(float(post.sic), 3),
                dofs_split=dict(profile=round(float(dby['profile']), 3),
                                r_base=round(float(dby['r_base']), 3),
@@ -455,9 +458,9 @@ def main():
                    runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,
                    npz=[f"{Path(out_prefix).name}_A.npz", f"{Path(out_prefix).name}_B.npz"])
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f} DONE [{time.time()-t0:.0f}s] | "
-              f"A: dRMSE={mon_A['d_rmse']:+.3f} (ours {mon_A['rmse_ours']:.3f} vs adia "
-              f"{mon_A['rmse_adia']:.3f}) DOFS={mon_A['dofs']:.2f} conv={mon_A['converged']} | "
-              f"B: dRMSE={mon_B['d_rmse']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
+              f"A: dW1={mon_A['d_w1']:+.3f} (ours {mon_A['w1_ours']:.3f} vs adia "
+              f"{mon_A['w1_adia']:.3f}) DOFS={mon_A['dofs']:.2f} conv={mon_A['converged']} | "
+              f"B: dW1={mon_B['d_w1']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
               flush=True)
     except Exception as e:                                          # noqa: BLE001
         import traceback

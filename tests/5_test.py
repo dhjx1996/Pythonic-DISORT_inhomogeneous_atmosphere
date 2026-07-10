@@ -6,7 +6,6 @@ surface reflectance with direct-beam + diffuse scattering).
 Exercises both the scalar and callable BDRF code paths in _solve_bc_riccati.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/5{a-e}.npz
 """
 import numpy as np
 from math import pi
@@ -39,7 +38,7 @@ def test_5a():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "5a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -60,7 +59,7 @@ def test_5b():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "5b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -90,7 +89,7 @@ def test_5c():
 
     # Reference uses scalar BDRF (equivalent result for Lambertian surface)
     u_func_ref = get_reference(
-        "5c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF_scalar,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -112,7 +111,7 @@ def test_5d():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "5d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -134,7 +133,7 @@ def test_5e():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "5e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(

@@ -66,10 +66,6 @@ VOCALS_DATA = str(os.environ.get(
 # --- the fixed observing system -------------------------------------------------
 BANDS = [0.55, 0.67, 0.86, 1.038, 1.24, 1.64, 2.13, 2.26, 3.7, 4.05]
 NB = len(BANDS)
-# Bands used for the τ_bot pre-retrieval (conservative scattering: ω=1.000 at
-# 0.55/0.67/0.86 µm → reflectance dominated by total optical depth, r_e coupling
-# only through g which is weak over the VOCALS r_e range).
-VIS_BANDS = (0, 1, 2)
 NQUAD = 48
 N_PHYS = NQUAD // 2                                  # = 24 operational retrieval views (= NQuad//2)
 N_VIEW_FULL = N_PHYS + 8                             # = 32 superset (8 extras = IC sanity check)

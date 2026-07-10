@@ -1,4 +1,4 @@
-"""optics_table.py — miepython-grounded r_e → (ω, Q_ext, Legendre) lookup table.
+"""optics_table.py — miepython-grounded r_e → (ω, Legendre) lookup table.
 
 The production replacement for the JAX-Mie build path
 (``miejax_lite.mie_avg_legendre``). **The retrieval / information-content
@@ -147,7 +147,7 @@ def _mie_radius_block(m, x, pc):
 
 def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
                    n_radii=600, NLeg=128, n_gl=1024, max_nstop=None, m=None):
-    """Build the (r_e, λ) → (ω, Leg_coeffs, Q_ext) table with miepython.
+    """Build the (r_e, λ) → (ω, Leg_coeffs) table with miepython.
 
     Drop-in for ``miejax_lite.build_re_table`` (same output dict keys), but the
     Mie is miepython (offline, numba). One r_e-table per entry of ``wavelengths``
@@ -168,7 +168,6 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
 
     omega = np.empty((wavelengths.size, n_re))
     leg = np.empty((wavelengths.size, n_re, NLeg))
-    qext = np.empty((wavelengths.size, n_re))
     for wi, lam in enumerate(wavelengths):
         if m is None:
             m_real, m_imag = water_refractive_index(float(lam))
@@ -180,10 +179,8 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
             x = 2.0 * np.pi * r / float(lam)
             qe, qs, chi = _mie_radius_block(mc, x, pc)
             w = _gamma_weights(float(re), v_eff, r) * r ** 2  # Q_sca·r²·n(r) weight base
-            tw = np.trapezoid(w, r)
             sca_int = np.trapezoid(qs * w, r)
             omega[wi, ri] = sca_int / np.trapezoid(qe * w, r)
-            qext[wi, ri] = np.trapezoid(qe * w, r) / tw
             wq = qs * w
             leg[wi, ri] = np.trapezoid(wq[:, None] * chi, r, axis=0) / np.trapezoid(wq, r)
 
@@ -192,24 +189,20 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
         "re_min": float(re_min), "re_max": float(re_max), "n_re": int(n_re),
         "dr": float((re_max - re_min) / (n_re - 1)), "v_eff": float(v_eff),
         "NLeg": int(NLeg), "max_nstop": int(max_nstop),
-        "omega": omega, "leg": leg, "qext": qext,
+        "omega": omega, "leg": leg,
     }
 
 
 # ---------------------------------------------------------------------------
 # Channel resolution + differentiable lookup (ported from miejax_lite._table)
 # ---------------------------------------------------------------------------
-def _opt1d(table, omega, leg, qext, wavelength):
-    return {"re_min": table["re_min"], "re_max": table["re_max"],
-            "n_re": table["n_re"], "dr": table["dr"],
-            "omega": jnp.asarray(omega), "leg": jnp.asarray(leg),
-            "qext": jnp.asarray(qext), "wavelength": float(wavelength)}
-
-
 def select_channel(table, channel):
     """Resolve an exact built wavelength by index → single-λ r_e-table (``opt``)."""
-    return _opt1d(table, table["omega"][channel], table["leg"][channel],
-                  table["qext"][channel], np.asarray(table["wavelengths"])[channel])
+    return {"re_min": table["re_min"], "re_max": table["re_max"],
+            "n_re": table["n_re"], "dr": table["dr"],
+            "omega": jnp.asarray(table["omega"][channel]),
+            "leg": jnp.asarray(table["leg"][channel]),
+            "wavelength": float(np.asarray(table["wavelengths"])[channel])}
 
 
 def table_lookup(opt, r_e, n_leg=None):
@@ -257,7 +250,7 @@ def save_table(table, path):
              re_min=table["re_min"], re_max=table["re_max"], n_re=table["n_re"],
              dr=table["dr"], v_eff=table["v_eff"], NLeg=table["NLeg"],
              max_nstop=table["max_nstop"], omega=table["omega"],
-             leg=table["leg"], qext=table["qext"])
+             leg=table["leg"])
 
 
 def load_table(path):
@@ -265,7 +258,7 @@ def load_table(path):
     z = np.load(Path(path), allow_pickle=True)
     return {k: (z[k].item() if z[k].ndim == 0 else z[k])
             for k in ("re_min", "re_max", "n_re", "dr", "v_eff", "NLeg",
-                      "max_nstop", "wavelengths", "omega", "leg", "qext")}
+                      "max_nstop", "wavelengths", "omega", "leg")}
 
 
 def build_or_load_table(wavelengths, re_min, re_max, n_re, v_eff, *,

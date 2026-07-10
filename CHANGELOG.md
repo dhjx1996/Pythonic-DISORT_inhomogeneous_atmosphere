@@ -1,3 +1,47 @@
+# CHANGELOG — 2026-07-10 ponytail audit + W1 metric unification
+
+One cleanup pass (repo-wide over-engineering audit, applied) plus the code-side completion
+of the 2026-07-08 metric directive. Nothing changes production numerics; the float32 suite
+signs it off.
+
+**Audit cuts (dead code / unused flexibility; git history keeps everything):**
+- tests: the unreachable `.npz` reference-fallback machinery deleted
+  (`generate_reference.py`, `reference_results/`, the `except ImportError` branch —
+  PythonicDISORT is a hard dep of the solver itself, so the fallback could never fire).
+  `get_reference` keeps its adapter role, minus the `test_name` first argument.
+- `optics_table`: the `qext` array (computed, stored, cached, never read — `table_lookup`
+  returns only (ω, leg); LWP uses Q_ext≈2) removed from build/save/load/`select_channel`.
+  Old caches still load (the key is simply not read).
+- `noise_model`: the wired-but-off shot-noise term (`snr_ref`/`rho_ref`) and the uncalled
+  `generic_relative()` removed; σ(ρ) is calibration-relative + floor (OUTSTANDING §K
+  updated — the re-add is one quadrature line once the OCI SNR table is sourced).
+- `retrieval_oe`: the uncalled `build_forward` alias (name-collided with
+  `osse_config.build_forward`) and the never-exercised `re_class="linear"` branch removed.
+- `osse_config.VIS_BANDS` (docstring-only), `vocals_io` dead payload (`bin_radii`,
+  `CloudProfile.ascending`), the dead `'poch'` entry in `_precompute_legendre` removed;
+  hand-rolled 1.4826·MAD → `scipy.stats.median_abs_deviation(scale='normal')`;
+  `_compute_bary_weights` O(N²) loop vectorized (bit-identical weights).
+- `hpc/sbatch`: retired one-off probes deleted (`_fr_coretest`, `_fr_gold49_gpu`,
+  `_fr_gpu_realloc`, `_fr_gate`); the referenced drivers (`_fr_all125_cpu`,
+  `_fr_l2_test*`, `_fr_resume_test`) remain.
+
+**RMSE → W1 everywhere (completes the 2026-07-08 directive):**
+- `wasserstein_tau`/`_mass_cdf` moved from `scripts/retrieval_analysis.py` into
+  `retrieval_oe` (one implementation; the script now imports it).
+- `best_fit_adiabatic` now optimizes **W1** (default `metric="w1"`; returns `w1`, not
+  `rmse`). W1 is scale-blind in the re5 family (mass-normalized CDFs ⇒ it sees only
+  r_base/r_top), so the fit is a 1-D bounded minimization over that ratio with the
+  overall scale pinned by mass-matching ∫rₑ dτ (∝ LWP) to the truth — the zero-LWP-bias
+  member of the W1-optimal family. The `metric="maha"` path is unchanged. Existing
+  cached results were NOT recomputed (user directive); future worker runs write
+  `w1_ours`/`w1_adia`/`d_w1` monitoring fields (formerly `rmse_*`/`d_rmse`).
+- `docs/user_guide.md` → **`docs/user_guide.ipynb`** (executed cells, same content).
+  The results notebook: RMSE prints → W1, one shared demo Mie table (3 identical
+  expensive builds deduped), dead `plot_uq_fixed` comment block dropped — sources
+  edited only; §6–13 cell outputs are stale until the next full re-run.
+
+---
+
 # CHANGELOG — 2026-07-02 repository refactor
 
 *Audience: primarily the HPC agent (this is your validation brief), secondarily

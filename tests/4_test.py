@@ -6,7 +6,6 @@ isotropic-scattering media with diffuse top / bottom illumination).
 All tests use single-layer atmospheres with constant optical properties.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/4{a-d}.npz
 """
 import numpy as np
 from math import pi
@@ -38,7 +37,7 @@ def test_4a():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "4a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
@@ -57,7 +56,7 @@ def test_4b():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "4b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
@@ -76,7 +75,7 @@ def test_4c():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "4c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, b_neg=b_neg,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -96,7 +95,7 @@ def test_4d():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "4d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_neg=b_neg,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,

@@ -1,15 +1,12 @@
 """
 Shared utilities for the pydisort_riccati test suite.
 
-Reference values are obtained by running pydisort (exact eigendecomposition
-solver) on-the-fly via :mod:`pydisort_riccati_jax.reference`, which also serves
-the results notebook.  If PythonicDISORT.pydisort is unavailable, the tests
-fall back to pre-computed .npz files stored in reference_results/
-(regenerate with generate_reference.py).
+Reference values come from running pydisort (exact eigendecomposition solver)
+on-the-fly via :mod:`pydisort_riccati_jax.reference`, which also serves the
+results notebook. PythonicDISORT is a hard dependency of the solver itself, so
+it is always importable when the tests run.
 """
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 
@@ -20,38 +17,16 @@ from pydisort_riccati_jax.reference import (  # noqa: F401  (re-exported to the 
     pydisort_toa_full_phi,
 )
 
-REFERENCE_DIR = Path(__file__).parent / "reference_results"
-
 
 def get_reference(
-    test_name, tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+    tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     b_pos=0, b_neg=0, BDRF_Fourier_modes=(),
 ):
-    """
-    Return u_func from the reference solver.
-
-    On-the-fly path: u_func = pydisort's u(tau, phi) -> (2N,).
-    Fallback path:   u_func wraps stored u_phi_ToA -> (N,),
-                     only valid at tau=0 and PHI_VALUES.
-    Both paths are compatible with assert_close_to_reference_phi (which
-    calls u_func(0, phi)[:N]).
-    """
-    try:
-        _, _, uf = pydisort_toa_full_phi(
-            tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
-            b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
-        )
-        return uf
-    except ImportError:
-        data = np.load(REFERENCE_DIR / f"{test_name}.npz")
-        u_phi_ToA = data["u_phi_ToA"]  # (N, n_phi)
-        phi_to_col = {phi: i for i, phi in enumerate(PHI_VALUES)}
-        def _u_func(tau, phi):
-            col = phi_to_col.get(phi)
-            if col is not None:
-                return u_phi_ToA[:, col]
-            raise ValueError(f"phi={phi} not in stored PHI_VALUES")
-        return _u_func
+    """u(tau, phi) from the pydisort reference solver."""
+    return pydisort_toa_full_phi(
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
+    )[2]
 
 
 # ---------------------------------------------------------------------------

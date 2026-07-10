@@ -63,7 +63,6 @@ def _precompute_legendre(m, NLeg, mu_arr_pos):
     Returns
     -------
     dict with JAX arrays:
-        poch              : (n_ells,) — (l-m)!/(l+m)! via Pochhammer
         weighted_poch     : (n_ells,) — (2l+1) * (l-m)!/(l+m)!
         asso_leg_term_pos : (n_ells, N) — P_l^m(+mu_i)
         asso_leg_term_neg : (n_ells, N) — P_l^m(-mu_i)
@@ -75,7 +74,6 @@ def _precompute_legendre(m, NLeg, mu_arr_pos):
 
     if n_ells == 0:
         return {
-            'poch': jnp.zeros(0),
             'weighted_poch': jnp.zeros(0),
             'asso_leg_term_pos': jnp.zeros((0, N)),
             'asso_leg_term_neg': jnp.zeros((0, N)),
@@ -91,7 +89,6 @@ def _precompute_legendre(m, NLeg, mu_arr_pos):
         asso_leg_term_neg[idx] = sp.lpmv(m, l_val, -mu_np)
 
     return {
-        'poch': jnp.array(poch),
         'weighted_poch': jnp.array(weighted_poch),
         'asso_leg_term_pos': jnp.array(asso_leg_term_pos),
         'asso_leg_term_neg': jnp.array(asso_leg_term_neg),

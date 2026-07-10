@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 
 ## Sources of truth (read these first)
 
-- **`docs/user_guide.md`** — how to run everything (executed examples);
+- **`docs/user_guide.ipynb`** — how to run everything (executed examples);
   **`docs/technical_documentation.md`** — the math + methodology (successor to the retired
   LaTeX report, which lives on in git history); **`docs/hyperparameter_audit_2026-07.md`**
   — per-knob evidence and flags.
@@ -29,7 +29,7 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 ```
 src/pydisort_riccati_jax/   the package (all importable code)
 scripts/                    the 6 worker/analysis entry points the AGENT specs run
-tests/                      pytest suite (float32 default / float64 / hpc partitions) + reference_results/
+tests/                      pytest suite (float32 default / float64 / hpc partitions)
 hpc/                        run specs, strategy, sbatch
 docs/                       results notebook + its 2 cached inputs, figures, report, design docs
 runs/                       (untracked) worker outputs: parts dirs, logs, checkpoints
@@ -47,7 +47,7 @@ workers can pin CPU affinity BEFORE JAX loads; solver API names re-export from `
 | `_riccati_solver_jax` | Kvaerno5 Riccati kernels: invariant-imbedding R, companion T, beam source s; delta-M/TMS (`_precompute_tms`/`_apply_tms`) |
 | `_solve_bc_riccati_jax` | N×N boundary-condition solve |
 | `retrieval_oe` | Gauss–Newton OE retrieval: `RetrievalForward`, priors, QRCP grid + mode selection, `gauss_newton_oe` (+L1 checkpoint), `retrieve_tau_bot`, `posterior_diagnostics` |
-| `optics_table` | miepython-grounded r_e → (ω, Q_ext, Legendre) table; differentiable `table_lookup`. (`miejax_lite` is **retired** — legacy validation only.) |
+| `optics_table` | miepython-grounded r_e → (ω, Legendre) table; differentiable `table_lookup`. (`miejax_lite` is **retired** — legacy validation only.) |
 | `info_content` | IC profiling on the full ODE grid (Jacobians → DOFS/SIC via `retrieval_oe`) |
 | `noise_model` | OCI-SWIR σ(ρ) measurement noise (2 % calibration-relative) |
 | `vocals_io` | VOCALS-REx netCDF profile loader + climatology |
@@ -70,9 +70,6 @@ cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
 
 # quick representative subset (~5 min)
 cd tests && python -m pytest 13_key_test.py 14_key_test.py -v
-
-# regenerate .npz reference fallbacks (only after changing reference tau values)
-cd tests && python generate_reference.py
 ```
 
 No suitable local env? Build one: `python3 -m venv /tmp/jaxve && /tmp/jaxve/bin/pip install

@@ -247,19 +247,21 @@ all affected float32 tests pass at the physically-correct albedos. The conventio
 
 ## K. Measurement-noise model — shot term (Option A) and HARP2/polarized noise deferred  [DECISION / DEFERRED]
 
-The infrastructure is **built and settled** (`src/noise_model.py`; the three-term σ(ρ); the
-OCI-SWIR calibration-relative default; `osse_observation(noise=)` + `make_Se`; default noiseless —
-see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **open**:
+The infrastructure is **built and settled** (`src/noise_model.py`; σ(ρ) = calibration-relative +
+floor in quadrature; the OCI-SWIR default; `osse_observation(noise=)` + `make_Se`; default
+noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **open**:
 
-- **Shot term (Option A) — wired but OFF, pending OCI SNR-at-L_typ.** The shot coefficients
-  (`snr_ref`, `rho_ref`) exist but default to "off" because OCI's SWIR SNR-at-L_typ table could not be
-  cleanly sourced: the PACE MRD (`PACE-SYS-REQ-0019L`) §3.7 tables are embedded **images** (no
-  extractable text), the SNR requirement lives in an external `.xlsx` (`oci_functional_requirements_table2`),
-  and converting a radiance-domain SNR to our reflectance units further needs per-band solar
-  irradiance F₀ + a reference geometry. **To resolve:** obtain the OCI SWIR SNR + L_typ per band,
-  convert L_typ→ρ_ref, and pass `snr_ref`/`rho_ref` to `oci_swir` (no code change). Low urgency:
-  clouds are bright ⇒ calibration-dominated ⇒ the shot term is a small correction in our regime
-  (`check_noise_model.test_bright_cloud_shot_subdominant`).
+- **Shot term (Option A) — REMOVED from the code (2026-07-10 ponytail audit), pending OCI
+  SNR-at-L_typ.** The `snr_ref`/`rho_ref` coefficients sat wired-but-off for weeks because OCI's
+  SWIR SNR-at-L_typ table could not be cleanly sourced: the PACE MRD (`PACE-SYS-REQ-0019L`) §3.7
+  tables are embedded **images** (no extractable text), the SNR requirement lives in an external
+  `.xlsx` (`oci_functional_requirements_table2`), and converting a radiance-domain SNR to our
+  reflectance units further needs per-band solar irradiance F₀ + a reference geometry.
+  **To resolve:** obtain the OCI SWIR SNR + L_typ per band, convert L_typ→ρ_ref, and re-add the
+  quadrature term ``ρ·ρ_ref/SNR_ref²`` inside ``NoiseModel.sigma`` (a one-line formula; git
+  commit cb8abea9933f074b2e8b0f4fd42fa9134ba94f8a and earlier has the old fields).
+  Low urgency: clouds are bright ⇒ calibration-dominated ⇒ the shot
+  term is a small correction in our regime.
 
 - **Calibration error is systematic, not random (diagonal-Se caveat).** `k_cal·ρ` is an absolute-gain
   uncertainty, correlated across a scene's pixels; a diagonal `Se` treats it as independent. Fine for
@@ -278,9 +280,9 @@ see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **ope
   §12 thick / §13 sub-adiabatic) now build `Se = roe.make_Se(fwd, y, nm.oci_swir())` — the PACE
   OCI-SWIR model (calibration-relative ~2 %) — replacing the hand-picked `0.03·max(|y|,0.02)` floor;
   `noise_model` is imported and the §8 markdown + §11b document the change. The OSSE stays **noiseless**
-  (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s mode-selection Se in the **IC workers** was fixed 2026-07-02 (flat
-  `0.005²·I` → the measured-radiance OCI Se; audit §2.1 — re-run decision pending, §L); the
-  notebook's small 2-band demo keeps its own local floor. (User re-runs the notebook.)
+  (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s mode-selection Se
+  in the **IC workers** was fixed 2026-07-02 (flat `0.005²·I` → the measured-radiance OCI Se;
+  audit §2.1 — the notebook's small 2-band demo keeps its own local floor.
 
 ---
 
@@ -301,9 +303,8 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   the primary; notebook §16 (supersession-aware loader + the full metric ladder, smoke-tested)
   auto-fills and its Findings get finalized on first execution with the bundle present.
 - **Optimizer vNext [deferred — post-campaign, for comparability].** From
-  `docs/optimizer_critique.txt` + the batch-3 backtrack observations, four accepted improvements,
-  deliberately NOT applied mid-campaign (the published 250 configs and any near-term re-run must
-  share one optimizer): (i) evaluate cost stagnation on the **monotone total cost J**, not the
+  `docs/optimizer_critique.txt` + the batch-3 backtrack observations, four accepted improvements:
+  (i) evaluate cost stagnation on the **monotone total cost J**, not the
   data-only φ (kills the trade-φ-for-prior false-positive class the `abs(rel)` sign fix only
   narrows); (ii) `xtol` on the **actual (clamped) step** `x_new − x`, not the proposed `dx` (a
   boundary-pinned solve currently exits via backtrack exhaustion instead of step-small); (iii)
@@ -328,4 +329,4 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   have no dedicated sweep at the 2 % noise model; cheap 2-case sweeps when the HPC is idle.
 - **Spectral surface albedo [low].** Constant Lambertian 0.06 across 0.55–4.05 µm is crude
   (SWIR sea albedo ≈ 0.02); secondary under bright cloud — revisit if dark-scene bands matter.
-- **Shot-noise term** — still OFF pending OCI SNR tables (§K, unchanged).
+- **Shot-noise term** — removed from the code pending OCI SNR tables (§K; re-add is one line).

@@ -259,9 +259,12 @@ def test_23j_best_fit_adiabatic():
     s = np.linspace(0.0, 1.0, 40)
     re_adia = (R_BASE ** 5 + (R_TOP ** 5 - R_BASE ** 5) * (1.0 - s)) ** 0.2
     fit = roe.best_fit_adiabatic(s, re_adia, TAU_BOT)
-    assert fit["success"] and fit["rmse"] < 1e-6       # exact class member -> 0
+    assert fit["success"] and fit["w1"] < 1e-5         # exact class member -> ~0 (W1)
     np.testing.assert_allclose([fit["r_top"], fit["r_base"]], [R_TOP, R_BASE],
                                rtol=1e-4)
+    # the reported optimum is the W1 of the returned (mass-matched) fit
+    w1_check = roe.wasserstein_tau(re_adia, s * TAU_BOT, fit["re_fit"], s * TAU_BOT)
+    assert abs(w1_check - fit["w1"]) < 1e-8
 
 
 # --- 23l: production numerics tier (float64, tol=1e-4) end-to-end -------------------

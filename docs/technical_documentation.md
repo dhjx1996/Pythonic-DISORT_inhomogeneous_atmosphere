@@ -9,7 +9,7 @@ history) — condensing its solver derivations and superseding its pre-retrieval
 state — in the spirit of PythonicDISORT's "Comprehensive Documentation" of
 DISORT. Markdown was chosen over LaTeX deliberately: it renders where the code
 lives, diffs with it, and keeps equations one edit away from the implementation
-they describe. For runnable examples see the [user guide](user_guide.md); for
+they describe. For runnable examples see the [user guide](user_guide.ipynb); for
 per-knob evidence see the [hyperparameter audit](hyperparameter_audit_2026-07.md);
 for the decision log see `DESIGN_DECISIONS.md`.*
 
