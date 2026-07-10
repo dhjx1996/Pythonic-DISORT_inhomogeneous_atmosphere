@@ -1095,30 +1095,36 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     (the misfit floors at the k-node *representation* error, χ²≪1); plain Gauss–Newton
     with fixed damping **overshoots** it — the cost oscillates and the last iterate is
     not the best. LM fixes this: the step ``δx = (KᵀSε⁻¹K + (1+λ)Sa⁻¹)⁻¹·rhs`` is
-    **accepted only if it lowers the full cost J**; on a reject the damping ``λ`` is
-    raised (×4, smaller/steeper-descent step) and retried, on an accept ``λ`` is eased
-    (×0.5, toward pure GN). This guarantees **monotonic descent**, so the returned
-    (last accepted) iterate is the best found and the stagnation test below is
-    meaningful. ``lm`` is the *initial* damping.
+    **accepted only if it lowers the full cost J**; on a reject the damping ``λ`` grows
+    geometrically (Nielsen ν-accelerator: ×2, ×4, ×8, …) and is retried, on an accept
+    ``λ`` is eased by the gain-ratio factor ``max(⅓, 1−(2ρ−1)³)`` toward pure GN. This
+    guarantees **monotonic descent**, so the returned (last accepted) iterate is the
+    best found and the stagnation test below is meaningful. ``lm`` is the *initial*
+    damping. (Optimizer vNext, OUTSTANDING §L: (iii) Nielsen gain-ratio λ, (iv) hoisted
+    ``H_gn`` + SPD-Cholesky solve.)
 
     **Convergence (BP2026 lines 205-213), on the monotone cost:**
 
     - *no further decrease* — if even maximal damping cannot lower J, we are at a
       (local) minimum → converged.
-    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step changed the
-      data-misfit norm ``φ = ‖y−F‖_{Sε⁻¹}`` (√χ²) by a fraction **< ``cost_rtol`` in
-      magnitude** (either direction — φ is data-only and can tick up slightly on an
-      accepted step even though J, data+prior, is monotone by construction).
+    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step lowered the
+      **total cost** ``J`` by a fraction ``rel = (J−J_new)/J < cost_rtol``. J is
+      monotone by construction (accept requires ``J_new<J``), so ``rel ≥ 0`` — this is
+      vNext (i): the earlier data-only ``φ = √χ²`` test could false-trigger on a step
+      that trades data misfit for prior penalty at ~flat φ while J still decreases.
       ``None`` (default) disables it.
     - *noise floor* (BP crit 2, ``chi2_floor`` set): reduced χ² ``= φ²/m ≤ chi2_floor``.
       **Default INACTIVE** (``None``): Sε magnitude not reliably profiled (DESIGN §10h).
-    - *step norm* ``‖δx‖ < xtol·(‖x‖+xtol)`` and the ``n_iter`` cap.
+    - *step norm* ``‖x_new−x‖ < xtol·(‖x_new‖+xtol)`` — the **actual clamped** step
+      (vNext (ii)), so a boundary-pinned solve exits step-small, not via backtrack
+      exhaustion — and the ``n_iter`` cap.
 
     ``history`` logs the full OE cost ``J = ½‖y−F‖²_{Sε⁻¹} + ½‖x−x_a‖²_{Sa⁻¹}`` at the
     initial guess and each accepted iterate (monotone non-increasing).
     """
     import os
     import time as _time
+    from scipy.linalg import solve as _sp_solve         # SPD Cholesky path (vNext iv)
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
     y = np.asarray(y, float)
@@ -1144,7 +1150,6 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         Fx, K = fwd.forward_and_jacobian(x, s_nodes)           # (E6) one augmented pass
         Fx, K = np.asarray(Fx, float), np.asarray(K, float)
         J, dchi2, r = _cost(x, Fx)
-        phi = np.sqrt(dchi2)
         converged = False
         _log(f"resumed from {os.path.basename(checkpoint_path)} at iter {it_start} "
              f"(J={J:.4g}, lm={lm_cur:.2g})")
@@ -1156,7 +1161,6 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         Fx, K = np.asarray(Fx, float), np.asarray(K, float)    # (m,), (m, p)
         _t_fj0 = _time.time() - _tj
         J, dchi2, r = _cost(x, Fx)
-        phi = np.sqrt(dchi2)
         history = [J]
         converged = False
         lm_cur = max(float(lm), LM_MIN)
@@ -1164,40 +1168,42 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
              f"(fused forward+jacobian {_t_fj0:.1f}s [compile-incl])")
     for _it in range(it_start, n_iter):
         lhs_base = K.T @ Se_inv @ K
-        rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
+        H_gn = lhs_base + Sa_inv                              # (vNext iv) pure-GN Hessian, hoisted out of backtrack
+        rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)          # = −∇J
         accepted = False
+        nu = 2.0                                             # (vNext iii) Nielsen consecutive-reject accelerator
         _tb = _time.time()
         for _bt in range(MAX_BACKTRACK):                      # damp until the step lowers J
-            dx = np.linalg.solve(lhs_base + (1.0 + lm_cur) * Sa_inv, rhs)
+            dx = _sp_solve(H_gn + lm_cur * Sa_inv, rhs, assume_a="pos")   # (vNext iv) SPD → Cholesky
             x_new = fwd._clamp_state(x + dx, s_nodes)          # projected step
             Fx_new = np.asarray(fwd.forward(x_new, s_nodes), float)
             J_new, dchi2_new, r_new = _cost(x_new, Fx_new)
+            pred = 0.5 * float(dx @ (lm_cur * (Sa_inv @ dx) + rhs))   # LM model reduction (≥0 for the solved dx)
+            rho = (J - J_new) / pred if pred > 0.0 else 1.0    # (vNext iii) Nielsen gain ratio
             if J_new < J:
                 accepted = True
                 break
-            lm_cur = min(lm_cur * 4.0, LM_MAX)                # reject → more damping
+            lm_cur = min(lm_cur * nu, LM_MAX)                # reject → grow damping (accelerating)
+            nu *= 2.0
         if not accepted:                                      # can't descend → at a min
             _log(f"iter {_it}: no-descent after {MAX_BACKTRACK} backtracks "
                  f"({_time.time()-_tb:.1f}s) → converged")
             converged = True
             break
-        phi_new = np.sqrt(dchi2_new)
-        # NOT ≥0: J (data + prior) is monotone by construction (accept requires J_new<J), but
-        # phi=sqrt(dchi2) is data-only, so an accepted step can still let dchi2 tick up slightly
-        # (the prior term absorbed the rest) -> rel can go negative. Compare |rel| below.
-        rel = (phi - phi_new) / max(phi, 1e-300)
-        step_small = np.linalg.norm(dx) < xtol * (np.linalg.norm(x_new) + xtol)
-        x, Fx, r, J, dchi2, phi = x_new, Fx_new, r_new, J_new, dchi2_new, phi_new
+        rel = (J - J_new) / max(J, 1e-300)                    # (vNext i) monotone TOTAL cost J (rel ≥ 0)
+        actual_dx = x_new - x                                 # (vNext ii) clamped step actually taken (dx is pre-clamp)
+        step_small = np.linalg.norm(actual_dx) < xtol * (np.linalg.norm(x_new) + xtol)
+        x, Fx, r, J, dchi2 = x_new, Fx_new, r_new, J_new, dchi2_new
         _tj = _time.time(); _t_bt = _tj - _tb       # backtrack (forward evals) wall time
         K = np.asarray(fwd.jacobian(x, s_nodes), float)
         _t_jac = _time.time() - _tj                 # jacobian wall time
         history.append(J)
-        lm_cur = max(lm_cur * 0.5, LM_MIN)                    # accept → ease toward pure GN
+        lm_cur = max(lm_cur * max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0) ** 3), LM_MIN)  # (vNext iii) Nielsen ease
         _log(f"iter {_it}: J={J:.4g} chi2_red={dchi2/m:.3g} rel={rel:.2e} "
-             f"({_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
+             f"(ρ={rho:.2f} {_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
         if checkpoint_path is not None:                       # Layer-1: persist POST-ease lm_cur
             _save_gn_checkpoint(checkpoint_path, x, lm_cur, history, _it + 1)
-        if cost_rtol is not None and abs(rel) < cost_rtol:
+        if cost_rtol is not None and rel < cost_rtol:
             converged = True
             break
         if chi2_floor is not None and dchi2 / m <= chi2_floor:

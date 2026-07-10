@@ -302,15 +302,17 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
   the primary; notebook §16 (supersession-aware loader + the full metric ladder, smoke-tested)
   auto-fills and its Findings get finalized on first execution with the bundle present.
-- **Optimizer vNext [deferred — post-campaign, for comparability].** From
-  `docs/optimizer_critique.txt` + the batch-3 backtrack observations, four accepted improvements:
-  (i) evaluate cost stagnation on the **monotone total cost J**, not the
-  data-only φ (kills the trade-φ-for-prior false-positive class the `abs(rel)` sign fix only
-  narrows); (ii) `xtol` on the **actual (clamped) step** `x_new − x`, not the proposed `dx` (a
-  boundary-pinned solve currently exits via backtrack exhaustion instead of step-small); (iii)
-  **gain-ratio (Nielsen) λ adaptation** to shorten the observed expensive reject/backtrack chains
-  (each reject = one full forward eval); (iv) Cholesky (`assume_a='pos'`) + hoisting
-  `H_gn = lhs_base + Sa_inv` out of the backtrack loop (pure micro-opts). On
+- **Optimizer vNext [IMPLEMENTED 2026-07-10 in `_gn_inner`].** From
+  `docs/optimizer_critique.txt` (git `191afed`) + the batch-3 backtrack observations, all four
+  accepted improvements landed: (i) cost stagnation now tests the **monotone total cost J**
+  (`rel = (J−J_new)/J`), not the data-only φ (kills the trade-φ-for-prior false-positive class the
+  old `abs(rel)` sign fix only narrowed); (ii) `xtol` tests the **actual clamped step** `x_new − x`,
+  not the proposed `dx`, so a boundary-pinned solve exits step-small instead of via backtrack
+  exhaustion; (iii) **gain-ratio (Nielsen) λ adaptation** — reject grows λ geometrically (ν: ×2,×4,…),
+  accept eases by `max(⅓, 1−(2ρ−1)³)` — to shorten the expensive reject/backtrack chains; (iv)
+  SciPy Cholesky (`assume_a='pos'`) + `H_gn = lhs_base + Sa_inv` hoisted out of the backtrack loop.
+  Behaviour verified by `tests/23_retrieval_test.py` (23g truth recovery, 23h L1-resume equivalence,
+  23i τ_bot); rigorous population-scale re-validation happens on the HPC campaign. On
   **trust-region-vs-clamping**: a formal box-constrained TR is *not* warranted here — the bounds
   bind rarely (essentially the `re_max`-edge class), projected-step LM is standard practice for
   that regime, and TR radius control is functionally equivalent to LM damping (it would not
