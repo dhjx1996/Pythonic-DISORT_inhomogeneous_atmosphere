@@ -25,7 +25,7 @@ further; **INERT** = never binding in practice.
 | `RE_GRID_N`/`N_RADII` | 32 / 600 | table-resolution choices; ripple-free per optics_table docstring | OK |
 | `V_EFF` | 0.10 fixed | Hansen–Travis typical marine-Sc width; v_e is unretrievable from scalar intensity (DOFS~1 plateau — polarized cloudbow needed, shelved) | OK with caveat: results are conditional on v_e=0.10; sensitivity unquantified at 2 % noise |
 | noise `k_cal` | 2 % + 1e-3 floor | PACE MRD §3.7 radiometric accuracy 1–3 %, calibration-dominated for bright clouds (DD §12) | OK |
-| shot term | OFF (`snr_ref=inf`) | OD-K open (needs OCI SNR tables) | **FLAG (open)** — inherited open item; matters most for the dark 3.7/4.05 µm bands |
+| shot term | removed from code 2026-07-10 (was OFF/never populated) | OD-K open (needs OCI SNR tables; re-add is one quadrature line) | **FLAG (open)** — inherited open item; matters most for the dark 3.7/4.05 µm bands |
 | mode-trim `frac` | 1/3 of min σ_ε | "≪ noise" rule | OK |
 | IC workers' mode-trim `Se` | ~~flat (0.005)²·I~~ → measured-radiance OCI Se | was inconsistent with the oci_swir Se the diagnostics assume | **FIXED 2026-07-02** — see §2.1; re-run decision pending |
 | `filter_threshold` | 0.5 | Rodgers SNR=1 data/prior crossover; 0.25→0.5 re-sweep at 2 % noise (DD §10f) | OK; OD §G still says 0.25 — doc drift to fix in the doc revision |

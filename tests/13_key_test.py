@@ -111,7 +111,7 @@ def test_13c():
 
     # Reference: pydisort (exact for constant omega).
     u_ref_func = get_reference(
-        "13c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     assert_close_to_reference_phi(u_ToA_func, u_ref_func, PHI_VALUES, N)
     assert n_steps < 50, f"constant-omega used {n_steps} steps, expected few"

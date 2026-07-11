@@ -14,7 +14,7 @@ Status tags: **[SETTLED]** decided and in effect · **[INVARIANT]** must never b
 > [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md) (the per-knob evidence
 > table). The LaTeX report is retired — the math now lives in
 > [`technical_documentation.md`](./technical_documentation.md); how-to in
-> [`user_guide.md`](./user_guide.md).
+> [`user_guide.ipynb`](./user_guide.ipynb).
 
 ---
 
@@ -816,9 +816,10 @@ budget is **calibration-dominated** — the shot term is a small correction and 
 `k_cal` from the documented OCI/HARP2 **radiometric accuracy 1–3 %** (PACE MRD §3.7 absolute-gain
 uncertainty; `oci_swir` default 0.02) and leave the shot term **off** (`snr_ref=∞`) because OCI's
 SNR-at-L_typ table could not be cleanly sourced (the MRD tables are embedded *images*; the SNR spec is
-in an external `.xlsx`; the conversion to reflectance further needs per-band F₀ + geometry). The
-function keeps the shot coefficients exposed, so dropping in verified `snr_ref`/`ρ_ref` switches A on
-with **no refactor** — tracked in [OUTSTANDING K](./OUTSTANDING.md).
+in an external `.xlsx`; the conversion to reflectance further needs per-band F₀ + geometry).
+*(2026-07-10 ponytail audit: the never-populated shot coefficients were removed from the code;
+re-adding verified `snr_ref`/`ρ_ref` is one quadrature line in `NoiseModel.sigma` — tracked in
+[OUTSTANDING K](./OUTSTANDING.md).)*
 
 **Honest caveat — calibration error is systematic, not random.** The `k_cal·ρ` term models absolute
 gain uncertainty, which is *correlated across pixels in a scene* (a bias), whereas a diagonal `Se`
@@ -831,8 +832,8 @@ nothing (the OSSE decision, §10b). A noise *realization* is opt-in: pass a `Noi
 `sample`, band-major over `fwd.n_bands`) or an explicit per-σ. Independently, the *assumed* covariance
 the retrieval inverts is `Se = diag(σ²)` built by `make_Se(fwd, y, model)` — needed for weighting and
 the χ²-gate **even with no perturbation**. The grounded `oci_swir()` model is the intended replacement
-for the historical hand-picked `Se = diag((0.03·max(|y|,0.02))²)` (kept reproducible as
-`generic_relative`).
+for the historical hand-picked `Se = diag((0.03·max(|y|,0.02))²)` (the `generic_relative`
+preset that reproduced it was removed 2026-07-10, uncalled — git history keeps it).
 
 **Scope (user-set 2026-06-19): OCI-SWIR intensity only.** HARP2 (VIS 0.44–0.87 µm multi-angle; its
 headline **0.5 % DoLP** spec) cannot measure the SWIR retrieval bands; HARP2 and **polarized / DoLP
@@ -859,11 +860,11 @@ capabilities, so they are recorded here for honesty, not tracked as open work):
   likewise out: the profile is the OSSE *truth* (exact by definition), and where it feeds the prior its
   instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §11b.
 
-*(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel` (three-term `sigma`/`Se`/`sample`), presets
-`oci_swir` / `generic_relative` — and wired in `src/pydisort_riccati_jax/retrieval_oe.py` (`osse_observation` NoiseModel
-dispatch, `make_Se`). Verified: `tests/supplementary/check_noise_model.py` (shot-off↔B, shot
-calibration, per-band band-major coeffs, Se=diag(σ²), sample statistics, bright-cloud shot
-subdominance, legacy match).)*
+*(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel`
+(`sigma`/`Se`/`sample`; calibration-relative + floor since 2026-07-10), preset `oci_swir` —
+and wired in `src/pydisort_riccati_jax/retrieval_oe.py` (`osse_observation` NoiseModel
+dispatch, `make_Se`). Originally verified by the retired `tests/supplementary/check_noise_model.py`
+(per-band band-major coeffs, Se=diag(σ²), sample statistics, legacy match; git history).)*
 
 ---
 

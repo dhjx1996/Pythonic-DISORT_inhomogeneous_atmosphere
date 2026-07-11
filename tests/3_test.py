@@ -6,7 +6,6 @@ which are deferred features for pydisort_riccati).
 Covers different asymmetry parameters and optical depths.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/3{a-d}.npz
 """
 import numpy as np
 from math import pi
@@ -39,7 +38,7 @@ def test_3a():
     tau_bot, omega, g = 1.0, 1 - 1e-6, 0.75
     mu0, I0, phi0 = 1.0, pi, pi
     g_l = _make(g)
-    u_func_ref = get_reference("3a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
+    u_func_ref = get_reference(tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
     u_ToA_func = _run(tau_bot, omega, g, mu0, I0, phi0)
     assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
@@ -50,7 +49,7 @@ def test_3b():
     tau_bot, omega, g = 1.0, 0.9, 0.75
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     g_l = _make(g)
-    u_func_ref = get_reference("3b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
+    u_func_ref = get_reference(tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
     u_ToA_func = _run(tau_bot, omega, g, mu0, I0, phi0)
     assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
@@ -61,7 +60,7 @@ def test_3c():
     tau_bot, omega, g = 5.0, 0.8, 0.5
     mu0, I0, phi0 = 0.6, pi / 0.6, 0.9 * pi
     g_l = _make(g)
-    u_func_ref = get_reference("3c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
+    u_func_ref = get_reference(tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
     u_ToA_func = _run(tau_bot, omega, g, mu0, I0, phi0)
     assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)
 
@@ -72,6 +71,6 @@ def test_3d():
     tau_bot, omega, g = 1.5, 0.95, 0.85
     mu0, I0, phi0 = 0.5, 1.0, 0.0
     g_l = _make(g)
-    u_func_ref = get_reference("3d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
+    u_func_ref = get_reference(tau_bot, omega, NQuad, g_l, mu0, I0, phi0)
     u_ToA_func = _run(tau_bot, omega, g, mu0, I0, phi0)
     assert_close_to_reference_phi(u_ToA_func, u_func_ref, PHI_VALUES, N)

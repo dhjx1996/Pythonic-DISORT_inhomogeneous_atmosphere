@@ -73,6 +73,8 @@ _SRC = str(Path(__file__).resolve().parents[1] / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 from pydisort_riccati_jax import retrieval_oe as roe  # noqa: E402  (best_fit_adiabatic — the maha adiabatic floor)
+from pydisort_riccati_jax.retrieval_oe import wasserstein_tau  # noqa: E402  (the W1 profile-shape metric)
+from pydisort_riccati_jax.vocals_io import width_factor_gamma  # noqa: E402  (gamma-DSD C=(1−v)(1−2v))
 
 RE_MAX_DEFAULT = 20.0        # production optics-table ceiling (RF13 edge check)
 THICK_TAU = 36.0             # §A3 thick-tail regime boundary (conditioning, not mis-fit)
@@ -130,42 +132,6 @@ def _re5_interp(s_eval, s_bp, re_bp):
     """Dense r_e(s) through breakpoints by the retrieval's own re⁵-linear interpolation."""
     return np.interp(np.asarray(s_eval, float), np.asarray(s_bp, float),
                      np.asarray(re_bp, float) ** 5) ** 0.2
-
-
-def _mass_cdf(re, tau):
-    """CDF of the r_e-MASS density p(τ) ∝ r_e(τ) over the profile's own support [0, max τ].
-    Total mass ∫r_e dτ ∝ LWP is normalized out (the companion LWP-bias carries magnitude).
-    Returns sorted (τ, F) with F(0)=0, F(τ_bot)=1 — the inputs to the 1-D W1 CDF form."""
-    re = np.asarray(re, float)
-    tau = np.asarray(tau, float)
-    o = np.argsort(tau)
-    tau, re = tau[o], re[o]
-    c = np.concatenate([[0.0], np.cumsum(0.5 * (re[1:] + re[:-1]) * np.diff(tau))])
-    tot = c[-1]
-    F = c / tot if tot > 0 else np.linspace(0.0, 1.0, len(tau))
-    return tau, F
-
-
-def wasserstein_tau(re1, tau1, re2, tau2, n_grid=512):
-    """1-Wasserstein distance [optical-depth units] between two r_e(τ) profiles viewed as
-    r_e-mass densities over ABSOLUTE optical depth, on the common support [0, max τ_bot] —
-    the LARGER τ_bot, so a τ_bot mismatch is a SUPPORT discrepancy penalized natively.
-    W1 = ∫|F₁−F₂| dτ (1-D optimal transport, CDF form): oscillation-insensitive (integrated
-    CDFs, not point-by-point differences) — the primary profile-shape metric (RMSE retired)."""
-    t1, F1 = _mass_cdf(re1, tau1)
-    t2, F2 = _mass_cdf(re2, tau2)
-    tb = max(t1[-1], t2[-1])
-    if tb <= 0:
-        return 0.0
-    g = np.linspace(0.0, tb, n_grid)
-    G1 = np.interp(g, t1, F1, left=0.0, right=1.0)   # past a profile's own τ_bot, CDF = 1
-    G2 = np.interp(g, t2, F2, left=0.0, right=1.0)
-    return float(np.trapezoid(np.abs(G1 - G2), g))
-
-
-def width_factor_gamma(v_e):
-    """C = (1−v_e)(1−2v_e): the gamma-DSD width factor (notebook §5b; vocals_io)."""
-    return (1.0 - v_e) * (1.0 - 2.0 * v_e)
 
 
 # ────────────────────────────── per-sidecar analysis ──────────────────────────────

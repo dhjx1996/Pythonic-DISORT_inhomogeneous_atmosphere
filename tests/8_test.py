@@ -5,7 +5,6 @@ Exercises the Redheffer star-product solver for optically thick atmospheres
 combined with surface BDRF and/or bottom sources (b_pos).
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/8{a-f}.npz
 """
 import numpy as np
 from math import pi
@@ -43,7 +42,7 @@ def test_8a():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -64,7 +63,7 @@ def test_8b():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -85,7 +84,7 @@ def test_8c():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -105,7 +104,7 @@ def test_8d():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8d", tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0, b_pos=b_pos,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
@@ -128,7 +127,7 @@ def test_8e():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8e", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         b_pos=b_pos, BDRF_Fourier_modes=[rho],
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
@@ -149,7 +148,7 @@ def test_8f():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "8f", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
         BDRF_Fourier_modes=BDRF,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(

@@ -6,7 +6,7 @@ multi-band, multi-angle ToA reflectance measurement into an effective-radius
 profile ``r_e(τ)`` by Gauss–Newton optimal estimation with a Bayesian-Tikhonov
 (correlated-Gaussian) prior, plus the posterior uncertainty quantification.
 
-**Nothing here is a new forward model.** ``build_forward`` composes
+**Nothing here is a new forward model.** ``RetrievalForward`` composes
 ``riccati_setup`` / ``riccati_solve`` / ``eval_radiance`` (the jit-able seam,
 DESIGN_DECISIONS §7) with the precomputed ``table_lookup`` optics; the only new
 code is the state→observation mapping and the OE/UQ linear algebra.
@@ -101,9 +101,9 @@ class RetrievalForward:
         self.I0 = float(I0)
         self.tau_bot = float(tau_bot)
         self.r_base = float(r_base)
-        if re_class not in ("re5-linear", "linear"):
+        if re_class != "re5-linear":
             raise ValueError(f"unknown re_class {re_class!r}; "
-                             "expected 're5-linear' or 'linear'")
+                             "expected 're5-linear'")
         self.re_class = re_class             # profile parameterisation lever (§B′)
         # GN state transform. 'linear' (default) keeps the legacy physical-µm state
         # bit-for-bit. 'log' retrieves x'=ln(state) (r_e nodes, r_base, τ_bot — the
@@ -333,12 +333,11 @@ class RetrievalForward:
         **Default: r_e⁵-linear (adiabatic).** r_e ∝ τ^(1/5) (r_e³∝LWC∝z, β∝r_e²∝z^(2/3)
         ⇒ τ∝z^(5/3) ⇒ r_e∝τ^(1/5)). Since ``s`` is just a linear rescale of τ,
         **r_e⁵-linear in s ≡ r_e⁵-linear in τ** — the adiabatic law is unchanged by the
-        normalization. C⁰; finite base slope. ``re_class`` switches the class here and
-        only here so it propagates to forward / modes / ODE-grid / Jacobian / display.
+        normalization. C⁰; finite base slope. A different function class (OUTSTANDING
+        §B′) would slot in here and only here, propagating to forward / modes /
+        ODE-grid / Jacobian / display.
         """
         s = tau / tau_bot                                  # absolute τ → normalized depth
-        if self.re_class == "linear":
-            return jnp.interp(s, s_knots, vals)
         return jnp.interp(s, s_knots, vals ** 5) ** (1.0 / 5.0)   # re5-linear (adiabatic)
 
     def profile(self, x, s_nodes, tau):
@@ -604,11 +603,6 @@ class RetrievalForward:
                                                   jnp.asarray(tau_bot, float),
                                                   self._omega_stack,
                                                   self._leg_stack))
-
-
-def build_forward(*args, **kw):
-    """Functional alias for :class:`RetrievalForward`."""
-    return RetrievalForward(*args, **kw)
 
 
 # ============================================================================
@@ -1101,30 +1095,36 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     (the misfit floors at the k-node *representation* error, χ²≪1); plain Gauss–Newton
     with fixed damping **overshoots** it — the cost oscillates and the last iterate is
     not the best. LM fixes this: the step ``δx = (KᵀSε⁻¹K + (1+λ)Sa⁻¹)⁻¹·rhs`` is
-    **accepted only if it lowers the full cost J**; on a reject the damping ``λ`` is
-    raised (×4, smaller/steeper-descent step) and retried, on an accept ``λ`` is eased
-    (×0.5, toward pure GN). This guarantees **monotonic descent**, so the returned
-    (last accepted) iterate is the best found and the stagnation test below is
-    meaningful. ``lm`` is the *initial* damping.
+    **accepted only if it lowers the full cost J**; on a reject the damping ``λ`` grows
+    geometrically (Nielsen ν-accelerator: ×2, ×4, ×8, …) and is retried, on an accept
+    ``λ`` is eased by the gain-ratio factor ``max(⅓, 1−(2ρ−1)³)`` toward pure GN. This
+    guarantees **monotonic descent**, so the returned (last accepted) iterate is the
+    best found and the stagnation test below is meaningful. ``lm`` is the *initial*
+    damping. (Optimizer vNext, OUTSTANDING §L: (iii) Nielsen gain-ratio λ, (iv) hoisted
+    ``H_gn`` + SPD-Cholesky solve.)
 
     **Convergence (BP2026 lines 205-213), on the monotone cost:**
 
     - *no further decrease* — if even maximal damping cannot lower J, we are at a
       (local) minimum → converged.
-    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step changed the
-      data-misfit norm ``φ = ‖y−F‖_{Sε⁻¹}`` (√χ²) by a fraction **< ``cost_rtol`` in
-      magnitude** (either direction — φ is data-only and can tick up slightly on an
-      accepted step even though J, data+prior, is monotone by construction).
+    - *cost stagnation* (BP crit 1, ``cost_rtol`` set): the accepted step lowered the
+      **total cost** ``J`` by a fraction ``rel = (J−J_new)/J < cost_rtol``. J is
+      monotone by construction (accept requires ``J_new<J``), so ``rel ≥ 0`` — this is
+      vNext (i): the earlier data-only ``φ = √χ²`` test could false-trigger on a step
+      that trades data misfit for prior penalty at ~flat φ while J still decreases.
       ``None`` (default) disables it.
     - *noise floor* (BP crit 2, ``chi2_floor`` set): reduced χ² ``= φ²/m ≤ chi2_floor``.
       **Default INACTIVE** (``None``): Sε magnitude not reliably profiled (DESIGN §10h).
-    - *step norm* ``‖δx‖ < xtol·(‖x‖+xtol)`` and the ``n_iter`` cap.
+    - *step norm* ``‖x_new−x‖ < xtol·(‖x_new‖+xtol)`` — the **actual clamped** step
+      (vNext (ii)), so a boundary-pinned solve exits step-small, not via backtrack
+      exhaustion — and the ``n_iter`` cap.
 
     ``history`` logs the full OE cost ``J = ½‖y−F‖²_{Sε⁻¹} + ½‖x−x_a‖²_{Sa⁻¹}`` at the
     initial guess and each accepted iterate (monotone non-increasing).
     """
     import os
     import time as _time
+    from scipy.linalg import solve as _sp_solve         # SPD Cholesky path (vNext iv)
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
     y = np.asarray(y, float)
@@ -1150,7 +1150,6 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         Fx, K = fwd.forward_and_jacobian(x, s_nodes)           # (E6) one augmented pass
         Fx, K = np.asarray(Fx, float), np.asarray(K, float)
         J, dchi2, r = _cost(x, Fx)
-        phi = np.sqrt(dchi2)
         converged = False
         _log(f"resumed from {os.path.basename(checkpoint_path)} at iter {it_start} "
              f"(J={J:.4g}, lm={lm_cur:.2g})")
@@ -1162,7 +1161,6 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         Fx, K = np.asarray(Fx, float), np.asarray(K, float)    # (m,), (m, p)
         _t_fj0 = _time.time() - _tj
         J, dchi2, r = _cost(x, Fx)
-        phi = np.sqrt(dchi2)
         history = [J]
         converged = False
         lm_cur = max(float(lm), LM_MIN)
@@ -1170,40 +1168,42 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
              f"(fused forward+jacobian {_t_fj0:.1f}s [compile-incl])")
     for _it in range(it_start, n_iter):
         lhs_base = K.T @ Se_inv @ K
-        rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)
+        H_gn = lhs_base + Sa_inv                              # (vNext iv) pure-GN Hessian, hoisted out of backtrack
+        rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)          # = −∇J
         accepted = False
+        nu = 2.0                                             # (vNext iii) Nielsen consecutive-reject accelerator
         _tb = _time.time()
         for _bt in range(MAX_BACKTRACK):                      # damp until the step lowers J
-            dx = np.linalg.solve(lhs_base + (1.0 + lm_cur) * Sa_inv, rhs)
+            dx = _sp_solve(H_gn + lm_cur * Sa_inv, rhs, assume_a="pos")   # (vNext iv) SPD → Cholesky
             x_new = fwd._clamp_state(x + dx, s_nodes)          # projected step
             Fx_new = np.asarray(fwd.forward(x_new, s_nodes), float)
             J_new, dchi2_new, r_new = _cost(x_new, Fx_new)
+            pred = 0.5 * float(dx @ (lm_cur * (Sa_inv @ dx) + rhs))   # LM model reduction (≥0 for the solved dx)
+            rho = (J - J_new) / pred if pred > 0.0 else 1.0    # (vNext iii) Nielsen gain ratio
             if J_new < J:
                 accepted = True
                 break
-            lm_cur = min(lm_cur * 4.0, LM_MAX)                # reject → more damping
+            lm_cur = min(lm_cur * nu, LM_MAX)                # reject → grow damping (accelerating)
+            nu *= 2.0
         if not accepted:                                      # can't descend → at a min
             _log(f"iter {_it}: no-descent after {MAX_BACKTRACK} backtracks "
                  f"({_time.time()-_tb:.1f}s) → converged")
             converged = True
             break
-        phi_new = np.sqrt(dchi2_new)
-        # NOT ≥0: J (data + prior) is monotone by construction (accept requires J_new<J), but
-        # phi=sqrt(dchi2) is data-only, so an accepted step can still let dchi2 tick up slightly
-        # (the prior term absorbed the rest) -> rel can go negative. Compare |rel| below.
-        rel = (phi - phi_new) / max(phi, 1e-300)
-        step_small = np.linalg.norm(dx) < xtol * (np.linalg.norm(x_new) + xtol)
-        x, Fx, r, J, dchi2, phi = x_new, Fx_new, r_new, J_new, dchi2_new, phi_new
+        rel = (J - J_new) / max(J, 1e-300)                    # (vNext i) monotone TOTAL cost J (rel ≥ 0)
+        actual_dx = x_new - x                                 # (vNext ii) clamped step actually taken (dx is pre-clamp)
+        step_small = np.linalg.norm(actual_dx) < xtol * (np.linalg.norm(x_new) + xtol)
+        x, Fx, r, J, dchi2 = x_new, Fx_new, r_new, J_new, dchi2_new
         _tj = _time.time(); _t_bt = _tj - _tb       # backtrack (forward evals) wall time
         K = np.asarray(fwd.jacobian(x, s_nodes), float)
         _t_jac = _time.time() - _tj                 # jacobian wall time
         history.append(J)
-        lm_cur = max(lm_cur * 0.5, LM_MIN)                    # accept → ease toward pure GN
+        lm_cur = max(lm_cur * max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0) ** 3), LM_MIN)  # (vNext iii) Nielsen ease
         _log(f"iter {_it}: J={J:.4g} chi2_red={dchi2/m:.3g} rel={rel:.2e} "
-             f"({_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
+             f"(ρ={rho:.2f} {_bt+1} bt {_t_bt:.1f}s, jac {_t_jac:.1f}s)")
         if checkpoint_path is not None:                       # Layer-1: persist POST-ease lm_cur
             _save_gn_checkpoint(checkpoint_path, x, lm_cur, history, _it + 1)
-        if cost_rtol is not None and abs(rel) < cost_rtol:
+        if cost_rtol is not None and rel < cost_rtol:
             converged = True
             break
         if chi2_floor is not None and dchi2 / m <= chi2_floor:
@@ -1535,50 +1535,80 @@ def retrieve_tau_bot(fwd, y, Se, clim, s_nodes, *,
 
 
 # ============================================================================
-# 7. Post-hoc oracle-adiabatic baseline (pure NumPy/SciPy — NO radiative transfer)
+# 7. Post-hoc profile-shape metric (W1) + oracle-adiabatic baseline
+#    (pure NumPy/SciPy — NO radiative transfer)
 # ============================================================================
-def best_fit_adiabatic(s_eval, re_truth, tau_bot, *, metric="rmse", Sinv=None,
+def _mass_cdf(re, tau):
+    """CDF of the r_e-MASS density p(τ) ∝ r_e(τ) over the profile's own support [0, max τ].
+    Total mass ∫r_e dτ ∝ LWP is normalized out (the companion LWP-bias carries magnitude).
+    Returns sorted (τ, F) with F(0)=0, F(τ_bot)=1 — the inputs to the 1-D W1 CDF form."""
+    re = np.asarray(re, float)
+    tau = np.asarray(tau, float)
+    o = np.argsort(tau)
+    tau, re = tau[o], re[o]
+    c = np.concatenate([[0.0], np.cumsum(0.5 * (re[1:] + re[:-1]) * np.diff(tau))])
+    tot = c[-1]
+    F = c / tot if tot > 0 else np.linspace(0.0, 1.0, len(tau))
+    return tau, F
+
+
+def wasserstein_tau(re1, tau1, re2, tau2, n_grid=512):
+    """1-Wasserstein distance [optical-depth units] between two r_e(τ) profiles viewed as
+    r_e-mass densities over ABSOLUTE optical depth, on the common support [0, max τ_bot] —
+    the LARGER τ_bot, so a τ_bot mismatch is a SUPPORT discrepancy penalized natively.
+    W1 = ∫|F₁−F₂| dτ (1-D optimal transport, CDF form): oscillation-insensitive (integrated
+    CDFs, not point-by-point differences) — the primary profile-shape metric (RMSE retired
+    2026-07-08; W1 is paired with the LWP-bias, which carries the magnitude W1 normalizes out)."""
+    t1, F1 = _mass_cdf(re1, tau1)
+    t2, F2 = _mass_cdf(re2, tau2)
+    tb = max(t1[-1], t2[-1])
+    if tb <= 0:
+        return 0.0
+    g = np.linspace(0.0, tb, n_grid)
+    G1 = np.interp(g, t1, F1, left=0.0, right=1.0)   # past a profile's own τ_bot, CDF = 1
+    G2 = np.interp(g, t2, F2, left=0.0, right=1.0)
+    return float(np.trapezoid(np.abs(G1 - G2), g))
+
+
+def best_fit_adiabatic(s_eval, re_truth, tau_bot, *, metric="w1", Sinv=None,
                        bounds=(2.0, 25.0)):
     """Best-fit r_e⁵-adiabatic profile to a truth curve — the **oracle** error floor.
 
-    Fits the two parameters ``(r_top, r_base)`` of the r_e⁵-linear curve
+    Fits the r_e⁵-linear curve
         ``r_e(s) = (r_base⁵ + (r_top⁵ − r_base⁵)·(1 − s))^{1/5}``
     (normalized depth ``s = τ/τ_bot ∈ [0,1]`` — the **same function class the forward
     integrates**, :meth:`RetrievalForward._re_of_tau`) to ``re_truth`` sampled at
-    ``s_eval``, by bounded least squares. This is the lowest error an adiabatic model
-    can reach **with oracle knowledge of the truth**: ``(r_top, r_base)`` are fit to
-    the truth itself (NOT pinned to its endpoints), and ``τ_bot`` is taken as known —
-    a *generous* floor (the oracle is also handed the true τ_bot, which our retrieval
-    must itself infer). The headline question is whether the free-node retrieval beats
-    it (ΔRMSE = RMSE_adia − RMSE_ours > 0 for non-adiabatic truths; ≈0 near-adiabatic).
+    ``s_eval``. This is the lowest error an adiabatic model can reach **with oracle
+    knowledge of the truth**, and ``τ_bot`` is taken as known — a *generous* floor
+    (the oracle is also handed the true τ_bot, which our retrieval must itself
+    infer). The headline question is whether the free-node retrieval beats it
+    (d_W1 = W1_adia − W1_ours > 0 for non-adiabatic truths; ≈0 near-adiabatic).
 
-    The fit is over the full 2-parameter family (each end free in ``bounds``); it is
-    **not** constrained to ``r_top ≥ r_base`` — i.e. it is the best fit within the
-    retrieval's *own* re5-linear class (which likewise does not impose monotonicity),
-    making this the like-for-like "collapse our k-node state to 2 adiabatic DOF and fit
-    perfectly" baseline. (A monotone-constrained variant is a one-line bounds change;
-    this function is post-hoc and re-runnable, so the choice is not baked into any run.)
+    The fit is **not** constrained to ``r_top ≥ r_base`` — it is the best fit within
+    the retrieval's *own* re5-linear class (which likewise does not impose
+    monotonicity), the like-for-like "collapse our k-node state to 2 adiabatic DOF
+    and fit perfectly" baseline.
 
     ``metric``:
 
-    - ``'rmse'`` — ordinary least squares (the headline; ``s_eval`` should be a **dense
-      uniform-in-s** grid so RMSE is thickness-neutral).
-    - ``'maha'`` — Mahalanobis (Ŝ⁻¹-whitened) least squares: pass the posterior
-      precision ``Sinv = Ŝ⁻¹`` of the r_e block (Cholesky ``Sinv = L Lᵀ``; residual
-      whitened by ``Lᵀ``). ``s_eval``/``re_truth`` are then the retrieval-grid nodes
-      (where Ŝ lives); the returned ``d2`` is the adiabatic lower bound
-      ``d²_adia,min`` of the posterior Mahalanobis diagnostic.
+    - ``'w1'`` (default) — minimize :func:`wasserstein_tau` between the adiabat and
+      the truth on the shared support ``τ = s_eval·τ_bot``. W1 compares
+      mass-NORMALIZED densities, so it sees only the ratio ``r_base/r_top`` (scaling
+      both ends scales the curve exactly); the fit is therefore a 1-D bounded
+      minimization over that ratio, and the overall scale is pinned by matching the
+      mass ``∫r_e dτ`` (∝ LWP) to the truth's — the zero-LWP-bias member of the
+      W1-optimal family (consistent with W1 = pure shape, LWP-bias = pure magnitude).
+      ``bounds`` sets the ratio search range ``(lo/hi, hi/lo)``.
+    - ``'maha'`` — Mahalanobis (Ŝ⁻¹-whitened) least squares over ``(r_top, r_base)``
+      in ``bounds``: pass the posterior precision ``Sinv = Ŝ⁻¹`` of the r_e block
+      (Cholesky ``Sinv = L Lᵀ``; residual whitened by ``Lᵀ``). ``s_eval``/``re_truth``
+      are then the retrieval-grid nodes (where Ŝ lives); the returned ``d2`` is the
+      adiabatic lower bound ``d²_adia,min`` of the posterior Mahalanobis diagnostic.
 
-    ``tau_bot`` is the oracle-known base optical depth; the curve is τ_bot-independent
-    in ``s`` (re5-linear is unchanged by the normalization), so it is carried for
-    provenance/validation only, not used in the fit.
-
-    Returns ``dict(r_top, r_base, re_fit, rmse, success, metric[, d2])``.
+    Returns ``dict(r_top, r_base, re_fit, success, metric[, w1][, d2])``.
     """
-    from scipy.optimize import least_squares
     s_eval = np.asarray(s_eval, float)
     re_truth = np.asarray(re_truth, float)
-    float(tau_bot)                                           # provenance/validate (unused in the s-fit)
     lo, hi = float(bounds[0]), float(bounds[1])
 
     def curve(p):
@@ -1586,27 +1616,37 @@ def best_fit_adiabatic(s_eval, re_truth, tau_bot, *, metric="rmse", Sinv=None,
         return (r_base ** 5 + (r_top ** 5 - r_base ** 5) * (1.0 - s_eval)) ** 0.2
 
     if metric == "maha":
+        from scipy.optimize import least_squares
         if Sinv is None:
             raise ValueError("metric='maha' requires the posterior precision Sinv=Ŝ⁻¹")
         L = np.linalg.cholesky(np.asarray(Sinv, float))     # Sinv = L Lᵀ
         def resid(p):
             return L.T @ (curve(p) - re_truth)
-    elif metric == "rmse":
-        def resid(p):
-            return curve(p) - re_truth
-    else:
-        raise ValueError(f"unknown metric {metric!r}; expected 'rmse' or 'maha'")
-
-    # first guess: top from the shallowest truth node, base from the deepest.
-    p0 = [float(np.clip(re_truth[np.argmin(s_eval)], lo, hi)),
-          float(np.clip(re_truth[np.argmax(s_eval)], lo, hi))]
-    sol = least_squares(resid, p0, bounds=([lo, lo], [hi, hi]))
-    r_top, r_base = float(sol.x[0]), float(sol.x[1])
-    re_fit = curve(sol.x)
-    out = dict(r_top=r_top, r_base=r_base, re_fit=np.asarray(re_fit),
-               rmse=float(np.sqrt(np.mean((re_fit - re_truth) ** 2))),
-               success=bool(sol.success), metric=metric)
-    if metric == "maha":
+        # first guess: top from the shallowest truth node, base from the deepest.
+        p0 = [float(np.clip(re_truth[np.argmin(s_eval)], lo, hi)),
+              float(np.clip(re_truth[np.argmax(s_eval)], lo, hi))]
+        sol = least_squares(resid, p0, bounds=([lo, lo], [hi, hi]))
+        r_top, r_base = float(sol.x[0]), float(sol.x[1])
+        re_fit = curve(sol.x)
         d = re_fit - re_truth
-        out["d2"] = float(d @ np.asarray(Sinv, float) @ d)  # d²_adia,min (Ŝ⁻¹-weighted)
-    return out
+        return dict(r_top=r_top, r_base=r_base, re_fit=np.asarray(re_fit),
+                    success=bool(sol.success), metric=metric,
+                    d2=float(d @ np.asarray(Sinv, float) @ d))  # d²_adia,min (Ŝ⁻¹-weighted)
+    if metric != "w1":
+        raise ValueError(f"unknown metric {metric!r}; expected 'w1' or 'maha'")
+
+    from scipy.optimize import minimize_scalar
+    tau_eval = s_eval * float(tau_bot)
+
+    def w1_of(ratio):                       # W1 sees only the shape ratio r_base/r_top
+        return wasserstein_tau(re_truth, tau_eval, curve((1.0, ratio)), tau_eval)
+
+    sol = minimize_scalar(w1_of, bounds=(lo / hi, hi / lo), method="bounded",
+                          options=dict(xatol=1e-6))
+    ratio = float(sol.x)
+    # scale is W1-invisible (mass-normalized CDFs): pin it by mass-matching
+    # ∫r_e dτ (∝ LWP) to the truth (curve((c, c·ratio)) = c·curve((1, ratio)) exactly).
+    shape = curve((1.0, ratio))
+    c = float(np.trapezoid(re_truth, tau_eval) / np.trapezoid(shape, tau_eval))
+    return dict(r_top=c, r_base=c * ratio, re_fit=np.asarray(c * shape),
+                w1=float(sol.fun), success=bool(sol.success), metric=metric)

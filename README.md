@@ -22,7 +22,7 @@ rₑ(τ)  ──optics_table──▶  (ω(τ), p(τ; μ, φ))  ──pydisort_r
 ```
 
 `optics_table` builds a [`miepython`](https://miepython.readthedocs.io/en/latest/)-grounded,
-gamma-averaged rₑ → (ω, Q_ext, Legendre) lookup table whose `table_lookup` is differentiable
+gamma-averaged rₑ → (ω, Legendre) lookup table whose `table_lookup` is differentiable
 (the earlier JAX-Mie front-end `miejax_lite` is retired; kept as a sibling package for legacy
 validation only).
 
@@ -59,7 +59,7 @@ See [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_re
 
 Two levels, mirroring PythonicDISORT's docs:
 
-- **[User guide](docs/user_guide.md)** — install and run: the forward solver,
+- **[User guide](docs/user_guide.ipynb)** — install and run: the forward solver,
   gradients/jit, Mie optics, an OE retrieval, information-content profiling, the
   HPC pipeline, troubleshooting. All code blocks executed.
 - **[Comprehensive technical documentation](docs/technical_documentation.md)** —
@@ -109,4 +109,4 @@ Contact: Dion Ho, dh3065@columbia.edu.
 
 License: MIT (see `LICENSE.md`).
 
-Claude Opus 4.6 & 4.8 and Fable 5 have been heavily used in this project.
+This project has been assisted by Claude Opus 4.6 & 4.8 and Fable 5.

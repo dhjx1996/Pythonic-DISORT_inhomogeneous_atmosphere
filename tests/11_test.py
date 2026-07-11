@@ -8,7 +8,6 @@ Test 11c: validates the u_ToA_func(phi) azimuthal reconstruction against
 the full pydisort u(0, phi) at several azimuthal angles.
 
 Reference: pydisort (single-layer, exact eigendecomposition).
-Fallback:  reference_results/11{a-c}.npz
 """
 import numpy as np
 from math import pi
@@ -29,7 +28,7 @@ def test_11a():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "11a", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,
@@ -50,7 +49,7 @@ def test_11b():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "11b", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     # NQuad=16 sums more Fourier modes, so per-mode error accumulates; tol=1e-3
     # is the float32 production setting (a tighter tol is clamped to the 1e-3
@@ -75,7 +74,7 @@ def test_11c():
     Leg_coeffs_func = lambda tau: g_l
 
     u_func_ref = get_reference(
-        "11c", tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
+        tau_bot, omega, NQuad, g_l, mu0, I0, phi0,
     )
     _, _, _, u_ToA_func, _ = pydisort_riccati_jax(
         tau_bot, lambda tau: omega, Leg_coeffs_func, NQuad, mu0, I0, phi0,

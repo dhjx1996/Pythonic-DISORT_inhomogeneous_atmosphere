@@ -44,7 +44,6 @@ class CloudProfile:
     altitude: np.ndarray   # altitude [m] (decreasing: top → base)
     total_Nc: np.ndarray   # number concentration [cm^-3]
     lwc: np.ndarray        # liquid water content [g/m^3]
-    ascending: bool        # was the aircraft ascending through the cloud?
     flight: str            # source flight id (e.g. 'RF01')
 
     @property
@@ -67,7 +66,7 @@ def read_flight(path: str | Path) -> dict:
     """Load a VOCALS-REx flight netCDF; return 1 Hz CDP-derived fields.
 
     Returns a dict with ``time`` (s), ``altitude`` (m), ``total_Nc`` (cm^-3),
-    ``r_e`` (µm, M₃/M₂), ``lwc`` (g/m^3), and ``bin_radii`` (µm, CDP centres).
+    ``r_e`` (µm, M₃/M₂), and ``lwc`` (g/m^3).
     """
     import netCDF4 as nc
 
@@ -113,8 +112,7 @@ def read_flight(path: str | Path) -> dict:
     lwc = 4.0 / 3.0 * np.pi * RHO_LW * (Nc_bins * r_cent_cm ** 3).sum(axis=1)
 
     return dict(flight=path.name.split(".")[0], time=time, altitude=altitude,
-                total_Nc=total_Nc, r_e=r_e, v_eff=v_eff, lwc=lwc,
-                bin_radii=r_cent)
+                total_Nc=total_Nc, r_e=r_e, v_eff=v_eff, lwc=lwc)
 
 
 # ----------------------------------------------------------------------------
@@ -152,17 +150,16 @@ def find_profiles(flight: dict, *, lwc_threshold: float = LWC_THRESHOLD,
         if dz.size == 0:
             continue
         frac_up = np.mean(dz > 0)
-        ascending = frac_up >= 0.5
         if max(frac_up, 1 - frac_up) < monotone_frac:   # not a clean traverse
             continue
         prof = _build_profile(a, re[sl], flight["v_eff"][sl], Nc[sl],
-                              lwc[sl], ascending, flight["flight"])
+                              lwc[sl], flight["flight"])
         if prof is not None:
             profiles.append(prof)
     return profiles
 
 
-def _build_profile(altitude, re, ve, Nc, lwc, ascending, flight) -> CloudProfile | None:
+def _build_profile(altitude, re, ve, Nc, lwc, flight) -> CloudProfile | None:
     """Order top→base and integrate τ(z) = π ∫ Q_ext r_e² N_c dz from the top."""
     # Order so index 0 is cloud TOP (max altitude), last is cloud BASE.
     order = np.argsort(-altitude)
@@ -178,8 +175,7 @@ def _build_profile(altitude, re, ve, Nc, lwc, ascending, flight) -> CloudProfile
     if not np.all(np.isfinite(tau)) or tau[-1] <= 0:
         return None
     return CloudProfile(tau=tau, r_e=re, v_eff=ve, altitude=altitude,
-                        total_Nc=Nc, lwc=lwc, ascending=bool(ascending),
-                        flight=flight)
+                        total_Nc=Nc, lwc=lwc, flight=flight)
 
 
 # ----------------------------------------------------------------------------
@@ -235,10 +231,11 @@ def vocals_climatology(profiles: list[CloudProfile], *,
     if not held:
         raise ValueError(f"no physical profiles after excluding {exclude_flight!r}")
 
+    from scipy.stats import median_abs_deviation
+
     def robust(vals):
         a = np.asarray(vals, float)
-        med = float(np.median(a))
-        return med, float(1.4826 * np.median(np.abs(a - med)))
+        return float(np.median(a)), float(median_abs_deviation(a, scale="normal"))
 
     r_top_m, r_top_s = robust([p.r_top for p in held])
     r_base_m, r_base_s = robust([p.r_base for p in held])
