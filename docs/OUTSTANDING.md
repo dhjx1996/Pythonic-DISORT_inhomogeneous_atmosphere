@@ -60,6 +60,22 @@ the demo swings (e.g. idealized §5) were an artifact of a deliberately **loose 
 climatologically-tight base prior (DESIGN §11; VOCALS r_base MAD≈1.4 µm) already removes them. (This
 supersedes DESIGN §3a's "smooth-basis route, left open.")
 
+**Update 2026-07-11 — the "not needed now" premise is partially refuted (idx-110, ve046).** On a *real*
+low-SIC shielded-base profile the tight, depth-decreasing σ_base does not suppress the swing — it *creates*
+a dr_e/ds **kink** at the data/prior seam: the data-pinned top holds truth (~18 µm) while the base is yanked
+to the climatology *mean* (~6 vs truth 10.2). Root cause: the prior kernel `exp(−|Δτ|/ℓ)` is Ornstein–Uhlenbeck
+(first-difference smoothness only, C⁰/non-differentiable paths) → it never penalises **curvature**. Two candidate
+fixes, both real, both risky: **(1) depth-increasing correlation** (tie the shielded base to the data-rich column
+above, not the prior mean) — attacks base *accuracy*, but fights the existing depth-decreasing σ (needs σ_base
+loosened too), imposes a vertical-coherence bias (biases genuinely-adiabatic bases high), and risks a near-singular
+deep `Sa` block; **(2) 2nd-difference (curvature) Tikhonov** (the lever above) — one-line GN insertion
+(`H_gn += λ·L₂ᵀL₂`, `rhs −= λ·L₂ᵀL₂·x`; no solver / positive-exp risk), removes the kink (C¹), but needs the
+**non-uniform** 3-pt stencil (QRCP nodes are irregular), a *small* λ (else it washes out real drizzle/entrainment
+structure — the minimally-constrained feature), and it smooths the *symptom* while base accuracy stays wrong.
+**Hard ceiling:** neither adds information — the shielded base (SIC≈13) stays prior-dominated, so its posterior σ
+stays wide/biased; this targets *plausibility*, not accuracy. Diagnostic before implementing: idx-110 deep-node
+averaging kernels / `data_fraction`. **Not yet implemented — user-flagged, awaiting go-ahead.**
+
 ---
 
 ## C. jit-ability of the solver — the retrieval-cost lever  [RESOLVED → DESIGN §7]

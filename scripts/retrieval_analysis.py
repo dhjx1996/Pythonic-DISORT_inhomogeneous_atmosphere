@@ -21,6 +21,9 @@ jagged in-situ truth and a smooth retrieval with the same size-mass distribution
 (the property RMSE lacked). The DOF-graded LADDER is unchanged in spirit — best CONSTANT r_e
 (1 DOF) ≥ best re⁵-adiabat fit to truth (2 DOF, the oracle floor) ≥ us — now scored in W1,
 plus the NO-RETRIEVAL prior-mean baseline. d_w1 ≡ W1_adia − W1_ours (> 0 ⇒ we beat the floor).
+The MAIN reported shape metric is **pct_w1 = 100·W1_ours/τ_bot_truth** — W1 as a % of the cloud's
+optical depth, thickness-normalized so it is comparable across profiles (the raw W1 CDF integral
+above stays un-normalized). W1_ours is no longer stored (= pct_w1·τ_bot_truth/100 = W1_adia − d_w1).
 LWP is reported under §5c's post-hoc constant-v_e width corrections (C(0.037), C(0.046)) and
 the per-profile oracle C*, for OUR retrieval AND for the oracle adiabatic best-fit — the
 latter is the LWP-bias BASELINE: even a perfect-shape adiabat carries the same width/Q_ext
@@ -245,8 +248,11 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         tau_bot_ret=tau_bot_ret, tau_bot_truth=float(d["truth_tau_bot"]),
         converged=bool(d["converged"]), n_gn=int(d["n_gn"]),
         chi2_red=float(d["chi2_red"]), structural_misfit=bool(d["structural_misfit"]),
-        # profile-shape fidelity: the Wasserstein ladder (W1 in optical-depth units; RMSE retired)
-        w1_ours=w1_ours, w1_adia=w1_adia, d_w1=d_w1,
+        # profile-shape fidelity (Wasserstein ladder). MAIN metric = pct_w1: W1_ours as % of
+        # τ_bot_truth (thickness-normalized, comparable across profiles). W1_ours itself is NOT
+        # stored — recover as pct_w1·τ_bot_truth/100 = w1_adia − d_w1 (user directive 2026-07-11).
+        pct_w1=(100.0 * w1_ours / tb_t) if tb_t else float("nan"),
+        w1_adia=w1_adia, d_w1=d_w1,
         w1_const=w1_const, w1_prior=w1_prior,
         # LWP
         lwp_ours=lwp_ours, lwp_truth_z=lwp_truth_z, lwp_truth_tau=lwp_truth_tau,
@@ -306,7 +312,7 @@ def summarize(rows):
             "n": len(R),
             "converged_frac": float(np.mean([r["converged"] for r in R])),
             # PRIMARY profile-shape metric: 1-Wasserstein (optical-depth units; RMSE retired)
-            "w1_ours": _stats([r["w1_ours"] for r in R]),
+            "pct_w1": _stats([r["pct_w1"] for r in R]),
             "w1_adia": _stats([r["w1_adia"] for r in R]),
             "d_w1": _stats([r["d_w1"] for r in R]),
             "d_w1_win_rate": float(np.mean([r["d_w1"] > 0 for r in R])),
@@ -359,13 +365,13 @@ def summarize(rows):
 
 
 def _print_table(rows):
-    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'W1':>7} "
+    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'%W1':>7} "
            f"{'dW1':>7} {'LWPbias':>8} {'rel%':>6} {'d²_re':>7} {'d²a→x̂':>7} {'sig':>4} {'DOFS':>5}")
     print(hdr)
     print("-" * len(hdr))
     for r in sorted(rows, key=lambda r: (r["index"], r["config"])):
         print(f"{r['index']:>4} {r['flight']:>5} {r['config']:>1} {r['tau_bot_truth']:>6.1f} "
-              f"{str(r['converged']):>4} {r['w1_ours']:>7.3f} {r['d_w1']:>+7.3f} "
+              f"{str(r['converged']):>4} {r['pct_w1']:>7.2f} {r['d_w1']:>+7.3f} "
               f"{r['lwp_bias_z']:>+8.1f} {r['lwp_relbias_z']:>+6.1f} {r['d2_re']:>7.2f} "
               f"{r['d2_adia_xhat']:>7.2f} {'Y' if r['sig_nonadia'] else '.':>4} {r['dofs']:>5.2f}")
 

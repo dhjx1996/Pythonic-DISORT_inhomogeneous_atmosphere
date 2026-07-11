@@ -1223,7 +1223,13 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     cost_rtol=None, chi2_floor=None,
                     max_n_outer=2, prior_builder=None, filter_threshold=0.5,
-                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True, verbose=False,
+                    margin=1,
+                    remesh_if_chi2_red_gt=2.0,   # kept at 2.0 per §10h (real-noise χ²_red≈1 floor;
+                    # re-meshing an already-well-fit profile measurably WORSENED RMSE there) — but for a
+                    # noiseless-OSSE campaign the population clusters far below 1 (ve_rerun/ve046 config-A:
+                    # chi2_red p99≈0.021, max 0.038, only 5/125 > 0.01), in which case 0.1 is the tighter,
+                    # still-safe threshold (2026-07-09 user-flagged; pushback on lowering the shared default stands).
+                    warn=True, verbose=False,
                     checkpoint_path=None):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 

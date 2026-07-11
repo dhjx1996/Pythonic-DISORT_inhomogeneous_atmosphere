@@ -86,6 +86,9 @@ SOLVER_TOL = oc.SOLVER_TOL                                         # operational
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
 REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton_oe remesh_if_chi2_red_gt
+#   default 2.0 kept (see retrieval_oe.gauss_newton_oe's inline note, §10h) — but for a noiseless-OSSE
+#   campaign (population clusters far below the real-noise χ²≈1 floor) 0.1 may be the tighter, still-safe
+#   threshold; set REMESH_CHI2_THR=0.1 to opt in (2026-07-09, user-flagged)
 MAX_N_OUTER = int(os.environ.get('MAX_N_OUTER', '1'))             # main-path re-mesh cap (default 1 =
 #   select-once, the published-campaign behavior; corrective re-runs pass 2 via retrieve_one() directly —
 #   this env lets a whole campaign (e.g. ve_rerun) opt every profile into placement re-meshing up front)
