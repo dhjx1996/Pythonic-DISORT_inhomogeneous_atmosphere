@@ -1160,9 +1160,16 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
                   if getattr(fwd, "retrieve_r_base", False) else np.asarray(s_nodes, float))
         L2 = _second_difference_operator(s_prof)
         if L2.shape[0] > 0:
+            # curvature-ENERGY penalty ≈ ∫(d²log r_e/ds²)² ds: weight each interior row by its
+            # interval wᵢ=(sᵢ₊₁−sᵢ₋₁)/2 so the penalty is grid-spacing-INDEPENDENT. A raw L₂ᵀL₂
+            # scales ~1/h⁴ and over-penalises closely-spaced QRCP nodes, making λ non-transferable
+            # across profiles (linearised calibration 2026-07-11: λ that relaxes the idx-110 kink
+            # then moved well-constrained thin-cloud nodes ~0.4σ; energy weighting cuts that to ~0.15σ).
+            wq = 0.5 * (s_prof[2:] - s_prof[:-2])
+            LW = np.sqrt(wq)[:, None] * L2
             p_dim, nprof = len(np.asarray(x_a, float)), L2.shape[1]
             P = np.zeros((p_dim, p_dim))
-            P[:nprof, :nprof] = float(curvature_lambda) * (L2.T @ L2)
+            P[:nprof, :nprof] = float(curvature_lambda) * (LW.T @ LW)
     y = np.asarray(y, float)
     m = max(len(y), 1)
     LM_MIN, LM_MAX, MAX_BACKTRACK = 1e-8, 1e8, 10

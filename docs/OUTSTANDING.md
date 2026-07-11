@@ -90,7 +90,11 @@ high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
 
 **Status: 2nd-difference Tikhonov IMPLEMENTED 2026-07-11** as `curvature_lambda` in `_gn_inner`/`gauss_newton_oe`
 (+ `CURVATURE_LAMBDA` env, `retrieval_worker`). Non-uniform 3-pt stencil (`_second_difference_operator`), penalty
-`P=λ·L₂ᵀL₂` over the log-r_e node+r_base block, τ_bot excluded; **λ=0 ⇒ bit-identical** to the un-penalised solve.
+`P=λ·L₂ᵀWL₂` (W = interval quadrature weights → grid-independent curvature energy ∫(f″)²ds; a raw L₂ᵀL₂ scales
+~1/h⁴ and makes λ non-transferable across profiles) over the log-r_e node+r_base block, τ_bot excluded;
+**λ=0 ⇒ bit-identical** to the un-penalised solve. Linearised calibration (2026-07-11, from stored posteriors):
+energy-weighted **λ≈0.3–1** relaxes the idx-110 kink 72–76 % (r_base +0.24→+0.73 µm toward truth) while moving
+well-constrained thin-cloud nodes only ~0.15–0.38σ — the accuracy-vs-over-smoothing knob to set per campaign.
 Depth-increasing correlation (fix 1) remains un-implemented.
 
 ---
