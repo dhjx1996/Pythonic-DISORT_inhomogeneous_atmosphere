@@ -1085,8 +1085,30 @@ def _load_gn_checkpoint(path):
             [float(v) for v in np.asarray(d["history"], float)], int(d["it_done"]))
 
 
+def _second_difference_operator(positions):
+    """Non-uniform second-difference (discrete curvature) operator ``L₂`` for values
+    sampled at arbitrary ascending 1-D ``positions``. Row ``i`` (one per interior point)
+    approximates ``f''(t_i)`` via the 3-point divided-difference weights
+    ``[2/(h₁(h₁+h₂)), −2/(h₁h₂), 2/(h₂(h₁+h₂))]`` (``h₁=t_i−t_{i-1}``, ``h₂=t_{i+1}−t_i``)
+    — the correct stencil for an **irregular** grid (a plain ``[1,−2,1]`` would mis-weight
+    the QRCP-placed nodes). Returns an ``(n−2, n)`` array (empty ``(0, n)`` if ``n<3``);
+    ``‖L₂ x‖²`` is then the discrete curvature (2nd-difference Tikhonov) penalty."""
+    t = np.asarray(positions, float)
+    n = t.shape[0]
+    if n < 3:
+        return np.zeros((0, n))
+    L = np.zeros((n - 2, n))
+    for i in range(1, n - 1):
+        h1, h2 = t[i] - t[i - 1], t[i + 1] - t[i]
+        L[i - 1, i - 1] = 2.0 / (h1 * (h1 + h2))
+        L[i - 1, i] = -2.0 / (h1 * h2)
+        L[i - 1, i + 1] = 2.0 / (h2 * (h1 + h2))
+    return L
+
+
 def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
-              cost_rtol=None, chi2_floor=None, verbose=False, checkpoint_path=None):
+              cost_rtol=None, chi2_floor=None, verbose=False, checkpoint_path=None,
+              curvature_lambda=0.0):
     """Inner **adaptive Levenberg–Marquardt** OE solve on a fixed (normalized-depth)
     retrieval grid (Rodgers n-form, damped). Each iterate is projected onto the
     physical/table bounds (:meth:`RetrievalForward._clamp_state`).
@@ -1127,6 +1149,20 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     from scipy.linalg import solve as _sp_solve         # SPD Cholesky path (vNext iv)
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
+    # 2nd-difference (curvature) Tikhonov penalty P = λ·L₂ᵀL₂ over the r_e-node profile block
+    # (nodes + r_base at s=1), embedded in the full state (τ_bot row/col stay 0). Penalises
+    # curvature of the log-r_e profile vs normalized depth. OPT-IN: λ=0 ⇒ P=None ⇒ the solve is
+    # bit-identical to the un-penalised path (the OU exp-kernel prior is C⁰-only and never
+    # suppresses the data/prior-seam kink — this does; OUTSTANDING §B′).
+    P = None
+    if curvature_lambda and float(curvature_lambda) > 0.0:
+        s_prof = (np.append(np.asarray(s_nodes, float), 1.0)
+                  if getattr(fwd, "retrieve_r_base", False) else np.asarray(s_nodes, float))
+        L2 = _second_difference_operator(s_prof)
+        if L2.shape[0] > 0:
+            p_dim, nprof = len(np.asarray(x_a, float)), L2.shape[1]
+            P = np.zeros((p_dim, p_dim))
+            P[:nprof, :nprof] = float(curvature_lambda) * (L2.T @ L2)
     y = np.asarray(y, float)
     m = max(len(y), 1)
     LM_MIN, LM_MAX, MAX_BACKTRACK = 1e-8, 1e8, 10
@@ -1140,6 +1176,8 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         r = y - np.asarray(Fxv, float)
         dchi2 = float(r @ Se_inv @ r)                         # ‖y−F‖²_{Sε⁻¹}
         J = 0.5 * dchi2 + 0.5 * float((xv - x_a) @ Sa_inv @ (xv - x_a))
+        if P is not None:
+            J += 0.5 * float(xv @ P @ xv)                     # + ½λ‖L₂ x‖² curvature penalty
         return J, dchi2, r
 
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
@@ -1170,6 +1208,9 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         lhs_base = K.T @ Se_inv @ K
         H_gn = lhs_base + Sa_inv                              # (vNext iv) pure-GN Hessian, hoisted out of backtrack
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)          # = −∇J
+        if P is not None:                                     # + curvature Tikhonov (∇ = P x, Hess = P)
+            H_gn = H_gn + P
+            rhs = rhs - P @ x
         accepted = False
         nu = 2.0                                             # (vNext iii) Nielsen consecutive-reject accelerator
         _tb = _time.time()
@@ -1230,7 +1271,7 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     # chi2_red p99≈0.021, max 0.038, only 5/125 > 0.01), in which case 0.1 is the tighter,
                     # still-safe threshold (2026-07-09 user-flagged; pushback on lowering the shared default stands).
                     warn=True, verbose=False,
-                    checkpoint_path=None):
+                    checkpoint_path=None, curvature_lambda=0.0):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
     The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
@@ -1273,7 +1314,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol,
                                      cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-                                     verbose=verbose, checkpoint_path=checkpoint_path)
+                                     verbose=verbose, checkpoint_path=checkpoint_path,
+                                     curvature_lambda=curvature_lambda)
     full_hist = list(hist)
 
     def _chi2_red():
@@ -1341,7 +1383,7 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
         x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                          n_iter=n_iter, lm=lm, xtol=xtol,
                                          cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-                                         verbose=verbose)
+                                         verbose=verbose, curvature_lambda=curvature_lambda)
         full_hist += hist
         n_outer += 1
 

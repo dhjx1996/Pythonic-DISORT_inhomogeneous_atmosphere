@@ -89,6 +89,10 @@ REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton
 #   default 2.0 kept (see retrieval_oe.gauss_newton_oe's inline note, §10h) — but for a noiseless-OSSE
 #   campaign (population clusters far below the real-noise χ²≈1 floor) 0.1 may be the tighter, still-safe
 #   threshold; set REMESH_CHI2_THR=0.1 to opt in (2026-07-09, user-flagged)
+CURVATURE_LAMBDA = float(os.environ.get('CURVATURE_LAMBDA', '0.0'))  # 2nd-difference (curvature) Tikhonov
+#   penalty strength on the log-r_e profile — OPT-IN, 0.0 = OFF = production default. Suppresses the
+#   data/prior-seam kink (OUTSTANDING §B′, idx-110); needs tuning, keep small (large λ over-smooths
+#   genuine drizzle/entrainment structure). Threaded to gauss_newton_oe via retrieve_one.
 MAX_N_OUTER = int(os.environ.get('MAX_N_OUTER', '1'))             # main-path re-mesh cap (default 1 =
 #   select-once, the published-campaign behavior; corrective re-runs pass 2 via retrieve_one() directly —
 #   this env lets a whole campaign (e.g. ve_rerun) opt every profile into placement re-meshing up front)
@@ -240,7 +244,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
                  cost_rtol=COST_RTOL, chi2_floor=None, config="A", checkpoint_path=None,
-                 max_n_outer=1, remesh_chi2_thr=REMESH_CHI2_THR):
+                 max_n_outer=1, remesh_chi2_thr=REMESH_CHI2_THR, curvature_lambda=CURVATURE_LAMBDA):
     """Run ONE Gauss–Newton OE retrieval (a given prior/first-guess) on the fixed
     grid and assemble the raw sidecar dict + slim monitoring scalars. All inputs that
     differ between configs are x_a / x0 / Sa; everything else (fwd, y, Se, s_grid) is
@@ -258,7 +262,7 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
         fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
         cost_rtol=cost_rtol, chi2_floor=chi2_floor,
         max_n_outer=max_n_outer, prior_builder=pb_log, remesh_if_chi2_red_gt=remesh_chi2_thr, warn=True,
-        verbose=VERBOSE, checkpoint_path=checkpoint_path)
+        verbose=VERBOSE, checkpoint_path=checkpoint_path, curvature_lambda=curvature_lambda)
     if VERBOSE:
         print(f"  [{index}] config {config}: GN done in {time.time()-_t:.0f}s "
               f"({len(res.cost_history)} accepted iters, converged={res.converged})", flush=True)

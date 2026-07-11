@@ -74,7 +74,24 @@ deep `Sa` block; **(2) 2nd-difference (curvature) Tikhonov** (the lever above) �
 structure — the minimally-constrained feature), and it smooths the *symptom* while base accuracy stays wrong.
 **Hard ceiling:** neither adds information — the shielded base (SIC≈13) stays prior-dominated, so its posterior σ
 stays wide/biased; this targets *plausibility*, not accuracy. Diagnostic before implementing: idx-110 deep-node
-averaging kernels / `data_fraction`. **Not yet implemented — user-flagged, awaiting go-ahead.**
+averaging kernels / `data_fraction`.
+
+**Why the over-smoothing worry is smaller than it looks (user, 2026-07-11):** the true cloud is *not* smooth, but
+the **retrieved** profile ought to be — **radiative smoothing** band-limits what the measurement can resolve, so
+sub-resolution structure is unretrievable *by construction*. A curvature penalty therefore enforces the estimator's
+**correct smoothness class**, it does not discard retrievable signal (there is none at that scale); the kink is a
+genuine artifact of the C⁰ OU prior, not real structure the penalty would erase. This reframes fix (2) from "risky
+cosmetic" to "well-posed regularisation," and motivates turning it **ON** (not merely opt-in-for-research) — with a
+*calibrated* λ (small; the penalty self-localises to the data-poor deep nodes because it only bites where
+`KᵀSε⁻¹K` is small). **Counter-caveat (user, same day): self-localisation only protects if λ stays small —
+too strong a penalty smooths *across* the radiative-resolution scale and genuinely papers over *retrievable*
+structure (e.g. the well-constrained top gradient). Calibrate λ to relax the data-poor deep kink while leaving
+high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
+
+**Status: 2nd-difference Tikhonov IMPLEMENTED 2026-07-11** as `curvature_lambda` in `_gn_inner`/`gauss_newton_oe`
+(+ `CURVATURE_LAMBDA` env, `retrieval_worker`). Non-uniform 3-pt stencil (`_second_difference_operator`), penalty
+`P=λ·L₂ᵀL₂` over the log-r_e node+r_base block, τ_bot excluded; **λ=0 ⇒ bit-identical** to the un-penalised solve.
+Depth-increasing correlation (fix 1) remains un-implemented.
 
 ---
 
