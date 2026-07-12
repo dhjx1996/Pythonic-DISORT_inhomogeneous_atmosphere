@@ -474,13 +474,18 @@ def main():
                 _persist("B", sc_B, mons["B"])
 
         rec.update(grid=np.round(s_grid, 4).tolist(), K_list=list(map(int, fwd.K_list)),
-                   runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,
+                   runtime_s=round(time.time() - t0, 1), A=mons.get("A"), B=mons.get("B"),
                    npz=[f"{Path(out_prefix).name}_A.npz", f"{Path(out_prefix).name}_B.npz"])
+        parts = []
+        if "A" in mons:
+            m = mons["A"]
+            parts.append(f"A: dW1={m['d_w1']:+.3f} (ours {m['w1_ours']:.3f} vs adia "
+                         f"{m['w1_adia']:.3f}) DOFS={m['dofs']:.2f} conv={m['converged']}")
+        if "B" in mons:
+            m = mons["B"]
+            parts.append(f"B: dW1={m['d_w1']:+.3f} DOFS={m['dofs']:.2f} conv={m['converged']}")
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f} DONE [{time.time()-t0:.0f}s] | "
-              f"A: dW1={mon_A['d_w1']:+.3f} (ours {mon_A['w1_ours']:.3f} vs adia "
-              f"{mon_A['w1_adia']:.3f}) DOFS={mon_A['dofs']:.2f} conv={mon_A['converged']} | "
-              f"B: dW1={mon_B['d_w1']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
-              flush=True)
+              + " | ".join(parts), flush=True)
     except Exception as e:                                          # noqa: BLE001
         import traceback
         tb = traceback.format_exc()
