@@ -30,6 +30,7 @@ jax.config.update(
 )
 
 import jax.numpy as jnp
+from jax import lax
 import numpy as np
 import scipy.special as sp
 import diffrax
@@ -512,9 +513,39 @@ def _floored_tolerances(tol):
 # Kvaerno5 integration (core)
 # ---------------------------------------------------------------------------
 
+class _GradFrozenPID(diffrax.PIDController):
+    """PIDController whose step-size decisions are INVISIBLE to AD (2026-07-14).
+
+    ``lax.stop_gradient`` on every time/state output of ``init`` /
+    ``adapt_step_size``: the accepted step sequence is a *constant* of the primal
+    solve, so ``jax.grad``/``jacfwd`` differentiate the fixed-step-sequence
+    discrete map evaluated on the primal's own accepted steps — i.e. the
+    "run adaptive once, replay the steps, differentiate" Jacobian in a single
+    pass at native adaptive cost. Removes the AD-through-controller channel of
+    the high-frequency Jacobian texture that inflates DOFS/SIC (the 2026-07-14
+    idx98 tolerance-ladder finding); the frozen-uniform ``fixed_n_steps`` mode
+    removes step *placement* entirely but at full-Newton fixed-step cost
+    (measured impractical at production scale — wigFS 2026-07-14).
+    The PRIMAL solution is bit-identical to the plain PIDController."""
+
+    def init(self, terms, t0, t1, y0, dt0, args, func, error_order):
+        next_dt, state = super().init(terms, t0, t1, y0, dt0, args, func,
+                                      error_order)
+        return lax.stop_gradient(next_dt), lax.stop_gradient(state)
+
+    def adapt_step_size(self, t0, t1, y0, y1_candidate, args, y_error,
+                        error_order, controller_state):
+        keep, next_t0, next_t1, made_jump, state, result = (
+            super().adapt_step_size(t0, t1, y0, y1_candidate, args, y_error,
+                                    error_order, controller_state))
+        return (keep, lax.stop_gradient(next_t0), lax.stop_gradient(next_t1),
+                made_jump, lax.stop_gradient(state), result)
+
+
 def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
                         q1_func=None, q2_func=None, max_steps=4096,
-                        save_grid=True, adjoint=None):
+                        save_grid=True, adjoint=None, fixed_n_steps=None,
+                        freeze_step_grads=False):
     """Adaptive Kvaerno5 (L-stable ESDIRK, order 5) integration.
 
     Integrates the coupled Riccati system from sigma=0 to sigma=sigma_end.
@@ -545,6 +576,18 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
         §5). For forward-mode AD (``jax.jacfwd``/``jvp``, preferred for
         small-DOF retrieval) pass ``diffrax.ForwardMode()``; the default's
         ``custom_vjp`` cannot be forward-differentiated.
+    fixed_n_steps : int or None
+        **Frozen-step mode** (2026-07-14, IC-profiling): if set, replace the
+        adaptive PIDController with ``diffrax.StepTo`` on a *uniform* σ-grid of
+        ``fixed_n_steps`` steps. This removes the step-placement dependence of
+        the discrete map — AD gradients no longer flow through the controller's
+        accepted-step decisions, which is the source of the high-frequency
+        Jacobian texture that inflates quadratic IC functionals (DOFS/SIC) at
+        any affordable adaptive tolerance (idx98 ladder, 2026-07-14). ``tol``
+        is then ignored for step control; accuracy is set by ``fixed_n_steps``
+        (calibrate against an adaptive reference). Kvaerno5 is L-stable, so
+        fixed steps remain stable on thick clouds; the no-positive-exponents
+        invariant is untouched (same equations, same O(1) Riccati state).
 
     Returns
     -------
@@ -584,9 +627,31 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
     }
 
     term = diffrax.ODETerm(vector_field)
-    solver = diffrax.Kvaerno5()
     _rtol, _atol = _floored_tolerances(tol)
-    controller = diffrax.PIDController(rtol=_rtol, atol=_atol)
+    if fixed_n_steps is not None:
+        # Frozen-step mode: uniform σ-grid, no adaptive controller (see docstring).
+        # sigma_end may be traced (linspace of a tracer is fine; shape is static).
+        # With a fixed-step controller diffrax requires the implicit root-finder
+        # tolerances explicitly (normally inherited from the PIDController), so
+        # `tol` keeps exactly one job here: the implicit-solve convergence. Full
+        # Newton (not the default chord/VeryChord): the chord's frozen-Jacobian
+        # iteration diverges at moderate λ·dt with no adaptive rejection to save
+        # it (measured: uniform n=1024 still fails; Newton converges at n=64).
+        import optimistix
+        # atol floor at ~100 eps of the active dtype: without adaptive rejection a
+        # Newton convergence target below the dtype's noise floor never terminates
+        # (float32: atol=1e-6 diverges, 1e-5 converges; float64 unaffected).
+        _eps = float(jnp.finfo(jnp.result_type(float)).eps)
+        solver = diffrax.Kvaerno5(root_finder=optimistix.Newton(
+            rtol=max(_rtol, 100.0 * _eps), atol=max(_atol, 100.0 * _eps),
+            norm=optimistix.max_norm))
+        controller = diffrax.StepTo(
+            ts=jnp.linspace(0.0, sigma_end, int(fixed_n_steps) + 1))
+        max_steps = max(int(max_steps), int(fixed_n_steps))
+    else:
+        solver = diffrax.Kvaerno5()
+        _pid_cls = _GradFrozenPID if freeze_step_grads else diffrax.PIDController
+        controller = _pid_cls(rtol=_rtol, atol=_atol)
     # Only pass `adjoint` when explicitly requested, so the default path is
     # exactly diffrax's default (RecursiveCheckpointAdjoint) — unchanged.
     adjoint_kw = {} if adjoint is None else {'adjoint': adjoint}
@@ -646,7 +711,8 @@ def _kvaerno5_integrate(alpha_func, beta_func, sigma_end, N, tol,
 
 def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
                           q_up_func=None, q_down_func=None, max_steps=4096,
-                          save_grid=True, adjoint=None):
+                          save_grid=True, adjoint=None, fixed_n_steps=None,
+                          freeze_step_grads=False):
     """Forward Riccati: build slab from bottom (tau_bot) upward to top (0).
 
     Integration variable sigma in [0, tau_bot].
@@ -676,6 +742,8 @@ def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
         max_steps=max_steps,
         save_grid=save_grid,
         adjoint=adjoint,
+        fixed_n_steps=fixed_n_steps,
+        freeze_step_grads=freeze_step_grads,
     )
     tau_grid = None if sigma_grid is None else tb - sigma_grid[::-1]
     return R, T, s, tau_grid
@@ -683,7 +751,8 @@ def _riccati_forward_jax(alpha_func, beta_func, tau_bot, N, tol,
 
 def _riccati_backward_jax(alpha_func, beta_func, tau_bot, N, tol,
                            q_up_func=None, q_down_func=None, max_steps=4096,
-                           save_grid=True, adjoint=None):
+                           save_grid=True, adjoint=None, fixed_n_steps=None,
+                           freeze_step_grads=False):
     """Backward Riccati: build slab from top (0) downward to bottom (tau_bot).
 
     Integration variable sigma in [0, tau_bot].
@@ -711,5 +780,7 @@ def _riccati_backward_jax(alpha_func, beta_func, tau_bot, N, tol,
         max_steps=max_steps,
         save_grid=save_grid,
         adjoint=adjoint,
+        fixed_n_steps=fixed_n_steps,
+        freeze_step_grads=freeze_step_grads,
     )
     return R, T, s, sigma_grid

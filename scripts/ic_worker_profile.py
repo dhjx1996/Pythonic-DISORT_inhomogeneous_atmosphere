@@ -18,7 +18,7 @@ What changed vs the pilot (DEFINITIVE run, 2026-06-24; DESIGN_DECISIONS §13):
   * IC STATE = ALL r_e(τ) nodes INCLUDING THE BASE (r_base / s=1); τ_bot held KNOWN (re-examined &
     retained — DESIGN §13). info_content.jacobian_on_ode_grid(..., include_base=True).
   * Sₑ = OCI 2 % calibration-relative (noise_model.oci_swir), radiance AND flux — matching the
-    pre-§15 retrievals (the pilot's legacy 3 % is the inconsistency being fixed).
+    pre-§16 retrievals (the pilot's legacy 3 % is the inconsistency being fixed).
   * OPTICS = miepython table (optics_table.build_or_load_table); JAX-Mie retired (autodiff does not
     flow through Mie — it enters only the differentiable table_lookup). Validated vs miejax_lite.
   * TRUTH-linearization RETIRED (the pilot's set ii); modes are {priormean, draw}.

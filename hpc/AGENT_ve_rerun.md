@@ -19,7 +19,7 @@ is **0.037 (median) / 0.046 (min-RMS)**, and the measured column is *narrower at
    **A full re-run is NOT needed for these numbers.**
 2. **Optics realism** (what this campaign tests): the residual, second-order effect of the
    table itself — different ω/phase function ⇒ slightly different radiances, Jacobians and
-   retrieval trajectories. The §15 penetration analysis (notebook Fig 0b) shows the
+   retrieval trajectories. The §16 penetration analysis (notebook Fig 0b) shows the
    near-conservative bands' *angular* information is anchored on v_e-sensitive single-scattering
    features (glory ×2.6 at 1.038 µm; cloudbow) — so running the OSSE at a defensible v_e both
    (a) validates the post-hoc first-order claim empirically and (b) hardens the multi-angle
@@ -72,7 +72,7 @@ Budget ≈ 55–70 % of batch-3's per-profile wall on the same card class; the p
 
 ## Analysis (primary, jovyan — no cluster analysis)
 
-`scripts/retrieval_analysis.py` on the new sidecars; notebook §16's loader accepts an alternate
+`scripts/retrieval_analysis.py` on the new sidecars; notebook §17's loader accepts an alternate
 parts dir. The headline comparisons: Wasserstein distribution shift vs the published A (expect
 ≈ nil), C-corrected LWP vs post-hoc prediction (expect agreement), and any change in the
 per-band/angle structure of K on the pilot profiles (the §15 Fig 0b features are the place a

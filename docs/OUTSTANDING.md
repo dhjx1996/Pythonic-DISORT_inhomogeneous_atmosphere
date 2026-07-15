@@ -335,9 +335,9 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
 - ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06):** the IC re-run on the reconciled refactor
   is the canonical bundle (`hpc/FINAL_RESULTS_MANIFEST.md`); the Se-fix erratum was *measured* on
   the fixed selection — |ΔDOFS| ≤ 0.7 %, |ΔSIC| ≤ 0.21 % (mechanism ≤ 1.4 %), negligible.
-- **FR bundle transfer + notebook §16 finalization [jovyan, immediate].** The FR raw sidecars
+- **FR bundle transfer + notebook §17 finalization [jovyan, immediate].** The FR raw sidecars
   (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
-  the primary; notebook §16 (supersession-aware loader + the full metric ladder, smoke-tested)
+  the primary; notebook §17 (supersession-aware loader + the full metric ladder, smoke-tested)
   auto-fills and its Findings get finalized on first execution with the bundle present.
 - **Optimizer vNext [IMPLEMENTED 2026-07-10 in `_gn_inner`].** From
   `docs/optimizer_critique.txt` (git `191afed`) + the batch-3 backtrack observations, all four
@@ -359,8 +359,8 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   (zero-median-bias 0.037 / min-RMS 0.046). The *bookkeeping* consequence is already handled
   post-hoc (`retrieval_analysis` C-corrected LWP columns — first-order equivalent of a re-run);
   a config-A re-run at `OSSE_VEFF≈0.046` tests the residual *optics* consequence (radiance
-  realism — the §15 angular findings ride on v_e-sensitive glory/cloudbow features, notebook
-  §15 Fig 0b). Pilot-first; spec in `hpc/AGENT_ve_rerun.md`.
+  realism — the §16 angular findings ride on v_e-sensitive glory/cloudbow features, notebook
+  §16 Fig 0b). Pilot-first; spec in `hpc/AGENT_ve_rerun.md`.
 - **μ0 = 0.9 conditionality [scope].** All published IC/FR numbers are single-geometry; quantify
   DOFS/band-ranking sensitivity to μ0 (cheap spot-check) and adopt μ0 binning for operational
   per-scene work (compile-per-bin; STRATEGY §4).

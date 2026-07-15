@@ -425,6 +425,37 @@ across all 128 Legendre moments; `tests/supplementary/validate_optics_table.py`)
 every per-profile worker. Motivation: miepython reaches the strong-absorption bands (3.7 µm) the
 band superset needs (§14), and is the field-reference Mie.
 
+### 8b. Band optics are MONOCHROMATIC — no spectral-response integration  [SETTLED 2026-07-13]
+
+Each band's optics are computed at its **single center wavelength** (`osse_config.BANDS`),
+with Segelstein *m(λ)* at that exact λ — there is **no integration over a sensor spectral
+response function** anywhere in the pipeline. This deliberately differs from the
+Buggee/MODIS lineage (`multispectral-retrieval-using-MODIS` convolves libRadtran spectra
+with the MODIS relative SRFs) and was audited when the BP2025/26 Fig-1 penetration plots
+(wiggle-free) were compared against ours.
+
+**Why it is safe (measured 2026-07-13).** The hazard would be monochromatic Mie
+interference structure vs r_e leaking spurious fine-scale (i.e. fake-information)
+structure into the Jacobians. It does not survive the size-distribution average we DO
+share with that lineage: after gamma-averaging (even at the narrow v_e=0.046), the
+residual ripple is Δω ≈ 2e-10 and Δg ≈ 3e-5, and a 3-point ±10 nm top-hat band average
+changes those by ≤2× (ω) and ~1.0× (g) — the distribution width (~2 µm at r_e=10 µm)
+spans ~20 interference periods (Δr ≈ λ/2π), out-smoothing any 2–4 % bandwidth. Both
+residues are orders below the 2 % OCI noise, so they contribute nothing to K/DOFS/SIC.
+Externally consistent: CPV2012's hyperspectral (~400-channel) Shannon-IC analysis shows
+the cloud-information landscape vs λ is a smooth envelope set by broad liquid-water
+absorption (+ vapor transmittance) — there is no intra-band cloud information for a
+center-λ sample to miss — and our §14 IC structure (r_e info in absorbing NIR/SWIR, τ
+info at conservative-scattering visible, few-channel saturation) matches that
+band-resolved literature.
+
+**Caveats / revisit triggers.** (i) The OSSE is gas-free: per-band IC at channels near
+gas features (1.038 µm vapor-edge; 3.7/4.05 µm CO₂/H₂O + thermal) is an upper bound —
+an idealization of the OSSE, not of the table. (ii) Revisit if bands are moved onto gas
+features, a hyperspectral configuration is studied, or sub-% radiometric fidelity
+becomes science-relevant; band integration is a contained change (a few quadrature λ's
+averaged in `build_re_table`, no solver changes).
+
 ---
 
 ## 9. Lower boundary: Lambertian sea surface, albedo 0.06; the BDRF input *is* the albedo (NOT albedo/π)  [SETTLED]
@@ -520,7 +551,7 @@ Per-component `DOFS = tr(A) = Σ diag(A)` (`dofs_by_component`):
   *Consequence:* base re-evaporation needs an active complement (cloud radar/lidar) or thin scenes;
   and the r_base *prior* should not be assumed adiabatic for scenes where evaporation is plausible —
   though for thick cloud that prior choice is, by construction, untestable by the measurement.
-  **Empirical confirmation** (`subadiabatic_thin_retrieval.py` → notebook §13): starting from an
+  **Empirical confirmation** (`subadiabatic_thin_retrieval.py` → notebook §14): starting from an
   adiabatic prior (r_base mean 12 > r_top), the joint retrieval **recovers a sub-adiabatic downturn
   only where the cloud is optically visible** — RF14 (τ≈2.5, decline through the upper cloud)
   captured 48 % of the true 3.4 µm drop (r_base 12→7.6, truth 6.0); RF05 (τ≈2.9, drop confined to the
@@ -858,7 +889,7 @@ capabilities, so they are recorded here for honesty, not tracked as open work):
   inverse crime** — the same forward generates and inverts the synthetic radiance — so they contribute
   **zero here** and switch on only against *real* OCI/HARP2 radiances. VOCALS-REx in-situ error is
   likewise out: the profile is the OSSE *truth* (exact by definition), and where it feeds the prior its
-  instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §11b.
+  instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §13b.
 
 *(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel`
 (`sigma`/`Se`/`sample`; calibration-relative + floor since 2026-07-10), preset `oci_swir` —
@@ -957,7 +988,7 @@ linearization at a LOO **realization** (`draw`, set v). The pilot's truth-linear
 `info_content_linearity_probe.py` / `info_content_robust_truth.json` are removed.
 
 **Noise = OCI 2 % calibration-relative** (`noise_model.oci_swir`), radiance *and* flux — matching the
-pre-§15 retrievals (the pilot's 3 % was an inconsistency). Optics = the miepython table (§8).
+pre-§16 retrievals (the pilot's 3 % was an inconsistency). Optics = the miepython table (§8).
 
 **Raw-Jacobian caching (the architecture).** Each worker caches **K_full (all 10 bands × all views),
 K_flux, s_int, the noise σ, the reflectance `y`, and the prior covariances** to a per-(mode,profile)
@@ -1005,7 +1036,7 @@ example.
 
 *Files: `scripts/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive}.py`
 (`ic_tau_bot_check` pruned), `src/pydisort_riccati_jax/{optics_table,info_content}.py`;
-handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §15.*
+handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §16.*
 
 ## 15. Full r_e(τ) retrievals — log-space state, BP2026 convergence, oracle-adiabatic floor  [SETTLED — 2026-06-26]
 
@@ -1029,7 +1060,7 @@ by the **delta method** `to_log_prior(x_a,Sa)`: `x_a'=ln(x_a)`, `Sa'=D Sa Dᵀ`,
 vs a Monte-Carlo log-normal) — exposed as `log=True` on `make_{joint,climatology,marine_sc}_prior`; the
 Bayesian-Tikhonov correlation now lives on *fractional* r_e. The whole-state choice (vs radii-only) is the
 natural reading of BP2026's "log-transform the state" and gives a clean lognormal τ_bot prior (τ_bot spans
-1–50, so log is natural). **No §15-notebook IC re-run is needed**: posterior IC is reportable in linear µm
+1–50, so log is natural). **No §16-notebook IC re-run is needed**: posterior IC is reportable in linear µm
 by un-chain-ruling `K_lin = K_log/r_e`, and DOFS/SIC are invariant under the reparam. *Grid selection
 stays in physical space* (the noise-aware QRCP filter whitening is dimensionally correct there, and is
 ≈ invariant to the log reparam since `diag(r)·diag(σ_log) ≈ diag(σ_phys)`).
@@ -1109,7 +1140,7 @@ flagged in the sidecar).
 
 *Files: `src/pydisort_riccati_jax/retrieval_oe.py` (`state_space`/`to_log_prior`, `cost_rtol`/`chi2_floor`,
 `best_fit_adiabatic`); `scripts/retrieval_worker.py` (`tune_cost_rtol` pruned); handoff
-`hpc/AGENT_all125_fr.md`; analysis `scripts/retrieval_analysis.py` + notebook §16 (post-results).*
+`hpc/AGENT_all125_fr.md`; analysis `scripts/retrieval_analysis.py` + notebook §17 (post-results).*
 
 ---
 
@@ -1126,7 +1157,7 @@ the §15 joint log-space retrieval in two leak-free prior configurations sharing
 shape metric, d_W1 = W1_adia − W1_ours; RMSE **retired 2026-07-08** (it penalized truth jaggedness
 and its verdict flipped under τ_bot bookkeeping); LWP-bias (the disjoint **magnitude** metric) incl.
 the §5c v_e-corrected bookkeeping AND the oracle-adiabat LWP baseline; Mahalanobis; consumed by
-notebook §16). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
+notebook §17). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
 setup cache (both production-verified; the would-be L3 compile cache was measured a no-op for FR
 and removed).
 

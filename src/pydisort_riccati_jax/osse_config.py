@@ -105,8 +105,17 @@ ALBEDO = 0.06                                        # Lambertian sea-surface (B
 # mode study saw K≈27 at r_e=25 vs 24 tuned at 20.)
 RE_BOUNDS = (2.0, float(os.environ.get("OSSE_RE_MAX", "20.0")))
 
-RE_GRID_N = 32                                       # optics-table r_e grid points
-N_RADII = 600                                        # optics-table gamma-quadrature radii
+# Optics-table construction knobs (2026-07-12 quadrature/staircase fix; env-overridable
+# with LEGACY DEFAULTS so in-flight campaigns and their caches/checkpoints are untouched).
+# The published/definitive products used the legacy 32-pt moving-quadrature table, whose
+# piecewise-linear lookup gives STAIRCASE d(optics)/dr_e and whose per-r_e re-gridded
+# radius quadrature adds r_e-correlated resonance noise (dg/dr_e ripple ~200-600x the
+# physical level at v_e=0.10). Derivative-grade tables: OSSE_QUADRATURE=fixed,
+# OSSE_RE_GRID_N=181, OSSE_N_RADII=4096 (the fixed grid also builds ~n_re x faster).
+# All three are in signature(), so mismatched caches are refused, never silently mixed.
+RE_GRID_N = int(os.environ.get("OSSE_RE_GRID_N", "32"))    # optics-table r_e grid points
+N_RADII = int(os.environ.get("OSSE_N_RADII", "600"))       # optics-table gamma-quadrature radii
+QUADRATURE = os.environ.get("OSSE_QUADRATURE", "moving")   # 'moving' (legacy) | 'fixed'
 RE_CLASS = "re5-linear"
 # Single-sided principal-plane fan (φ=π), but with IRREGULAR view-zenith spacing — a
 # golden-ratio low-discrepancy set over θ∈[arccos 0.95, arccos 0.25]≈[18°,76°], both
@@ -170,6 +179,10 @@ def signature():
         nfourier=[int(v) for v in NFOURIER],
         delta_M=True, NT_cor=True, x64=True,
     )
+    if QUADRATURE != "moving":
+        # conditional so every legacy hash (moving quadrature) is bit-identical to the
+        # pre-fix code — in-flight campaigns resume against their existing caches.
+        payload["quadrature"] = QUADRATURE
     # NB: tol / operational precision are deliberately NOT in this gate. The gate
     # fingerprints what y *means* (the observing system), which is identical across
     # accuracy tiers; tol/precision are how *accurately* y was computed and legitimately
@@ -182,7 +195,8 @@ def signature():
 
 def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space="log",
                   jac_mode="fwd", retrieve_tau_bot=True, retrieve_r_base=True,
-                  tol=SOLVER_TOL, mode_map="scan"):
+                  tol=SOLVER_TOL, mode_map="scan", fixed_n_steps=None,
+                  freeze_step_grads=False):
     """Construct the canonical ``RetrievalForward`` (per-band NFourier). ``views`` selects
     the angular fan: ``'full'`` = the 32-view superset (radiance GENERATION + IC sweep);
     ``'retrieval'`` = the 24 operational views (the retrieval). ``tau_bot`` / ``r_base``
@@ -199,7 +213,8 @@ def build_forward(opt_bands, *, tau_bot, r_base, views="retrieval", state_space=
         view_mu=vm, view_phi=vp, BDRF_bands=[[ALBEDO]] * NB,
         NLeg_all=NLEG_ALL, NFourier=NFOURIER, re_class=RE_CLASS, state_space=state_space,
         jac_mode=jac_mode, retrieve_tau_bot=retrieve_tau_bot,
-        retrieve_r_base=retrieve_r_base, re_bounds=RE_BOUNDS, tol=tol, mode_map=mode_map)
+        retrieve_r_base=retrieve_r_base, re_bounds=RE_BOUNDS, tol=tol, mode_map=mode_map,
+        fixed_n_steps=fixed_n_steps, freeze_step_grads=freeze_step_grads)
 
 
 def select_retrieval_views(y_full):
@@ -214,7 +229,7 @@ def load_optics(cache_path):
     from . import optics_table as ot
     re_table = ot.build_or_load_table(BANDS, RE_BOUNDS[0], RE_BOUNDS[1], RE_GRID_N,
                                       V_EFF, cache_path=cache_path, NLeg=NLEG_ALL,
-                                      n_radii=N_RADII, n_gl=N_GL)
+                                      n_radii=N_RADII, n_gl=N_GL, quadrature=QUADRATURE)
     return [ot.select_channel(re_table, i) for i in range(NB)]
 
 

@@ -23,7 +23,7 @@ calibration-relative) enters only as the assumed weighting / posterior covarianc
 Observing system = the §15 multi-angle × 10-band superset (principal-plane fan, 24
 views = NQuad//2, μ0=0.9, NQuad=48).
 
-Three §16 upgrades vs the pre-§15 retrievals (all in retrieval_oe):
+Three §17 upgrades vs the pre-§16 retrievals (all in retrieval_oe):
   * state_space='log' (BP2026 §2.4) + a log-space climatology prior (to_log_prior);
   * BP2026 cost-stagnation convergence (cost_rtol; chi2_floor coded but INACTIVE);
   * the oracle best-fit-adiabatic floor (best_fit_adiabatic) — the W1 lower bound
@@ -65,6 +65,7 @@ from pydisort_riccati_jax import vocals_io as vio                    # noqa: E40
 from pydisort_riccati_jax import retrieval_oe as roe                 # noqa: E402
 from pydisort_riccati_jax import noise_model as nm                   # noqa: E402
 from pydisort_riccati_jax import osse_config as oc                   # noqa: E402
+from pydisort_riccati_jax import optics_table as ot                  # noqa: E402
 import jax.numpy as _jnp                                            # noqa: E402
 
 # Accuracy tiers: the radiance CACHE (truth) is high-accuracy (float64, tol*); the
@@ -82,6 +83,14 @@ _PREC = "float64" if _jnp.result_type(float) == _jnp.float64 else "float32"
 DATA = oc.VOCALS_DATA
 OPTICS_CACHE = oc.OPTICS_CACHE
 RADIANCE_CACHE = oc.RADIANCE_CACHE          # batch-1 truth cache (sig d71a8559, tol=1e-4, 125 profiles)
+# MISMATCHED-v_eff experiment (2026-07-12, OPT-IN, default UNSET -> byte-identical to before):
+# the truth radiance (RADIANCE_CACHE, gated by oc.signature()) and the RETRIEVAL's own optics
+# table are normally the SAME file. Setting RETRIEVAL_OPTICS_CACHE decouples them: env stays at
+# the TRUTH's v_eff/re_bounds (so the signature gate on RADIANCE_CACHE still passes on genuinely-
+# matching truth radiances -- never bypassed), but build_forward_and_obs's own forward model is
+# built from this DIFFERENT table instead -- i.e. the retrieval assumes a v_eff that does not
+# match the truth. Tests operational realism (true v_eff is unknown in practice).
+RETRIEVAL_OPTICS_CACHE = os.environ.get('RETRIEVAL_OPTICS_CACHE')  # None -> self-consistent (default)
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
@@ -100,6 +109,12 @@ FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior 
 if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
     raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
 VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')
+SETUP_CACHE = os.environ.get('FR_SETUP_CACHE', '1') not in ('0', '', 'false')
+#   L2 setup cache — DEFAULT ON since 2026-07-13 (opt-out FR_SETUP_CACHE=0). It was opt-in only
+#   while the L2 equivalence gate (tests/hpc/test_l2_setup_cache.py) was pending; that gate passed
+#   2026-07-02 (+ post-refactor re-validation, CHANGELOG) and every production sbatch since sets
+#   it — the default just never flipped. One atomic .setup.npz per profile (no Lustre small-file
+#   issue — that concern was L3's 26k files), staleness-gated by the _cfg signature key.
 NQ, N_PHYS, NB = oc.NQUAD, oc.N_PHYS, oc.NB                        # 48, 24, 10
 BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
 NOISE = nm.oci_swir()                                             # OCI 2 % calibration-relative + 1e-3 floor
@@ -110,11 +125,27 @@ S_DENSE = np.linspace(0.0, 1.0, 50)                              # thickness-neu
 TAU_BOT_OK = (0.3, 100.0)                                         # degenerate-profile guard
 
 
-def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setup_cache_path=None):
+def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
+                          retrieval_optics_override=None, setup_cache_path=None):
     """Build the log-space OPERATIONAL forward (precision via env, tol=SOLVER_TOL,
     mode_map=MODE_MAP), LOAD the high-accuracy radiance observation from the cache (the
     truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
     QRCP retrieval grid.
+
+    ``retrieval_optics_override`` (mismatched-v_eff experiment, 2026-07-12/13): when set,
+    the retrieval's forward model is built from this table file via a **load-only** path
+    (:func:`optics_table.load_table` + :func:`optics_table.select_channel`) — it does NOT
+    go through :func:`osse_config.load_optics`/``build_or_load_table``. That matters:
+    ``build_or_load_table`` computes its expected signature from the *module-global* env
+    (V_EFF/RE_BOUNDS/...), not from anything about the requested path — if the override
+    file's real content doesn't match the env's TRUTH v_eff (which must stay put so the
+    RADIANCE_CACHE signature gate is never bypassed), the normal build-or-load path
+    silently REBUILDS and OVERWRITES the override file with TRUTH-v_eff content (this is
+    exactly what corrupted ``optics_table_10band_nleg1536_re20_fq.npz`` on 2026-07-12 —
+    every mismatch-pilot task quietly clobbered it back to v_eff=0.046). Load-only never
+    writes, so it cannot happen again. The actual v_eff of whichever table was used is
+    stamped onto ``fwd.opt_v_eff`` — the ONE place callers should read it from (never an
+    independent ``np.load`` of the path, which can silently desync from what was loaded).
 
     Setup sequence (E2+E3 diet): select the mode count, run the cheap τ_bot
     pre-retrieval (:func:`retrieval_oe.retrieve_tau_bot`) directly on the fixed
@@ -130,13 +161,21 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     — shared by both prior configs (one compiled forward). ``tau_bot_pre`` is the
     pre-retrieved τ_bot (physical float) logged in the monitoring record."""
     _t = time.time()
-    opt = oc.load_optics(optics_cache)                               # canonical NLeg_all=1536 table
+    if retrieval_optics_override:
+        _tbl = ot.load_table(retrieval_optics_override)              # load-only -- never rebuilds/writes
+        opt = [ot.select_channel(_tbl, i) for i in range(NB)]
+        _opt_v_eff = float(_tbl["v_eff"])
+    else:
+        opt = oc.load_optics(optics_cache)                           # canonical NLeg_all=1536 table
+        _opt_v_eff = oc.V_EFF
     fwd = oc.build_forward(
         opt, tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],
         views="retrieval", state_space="log", jac_mode="fwd",
         tol=SOLVER_TOL, mode_map=MODE_MAP)
+    fwd.opt_v_eff = _opt_v_eff              # provenance: the v_eff the forward ACTUALLY used
     if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] optics + RetrievalForward "
+        print(f"    [build +{time.time()-_t:.0f}s] optics (v_eff={_opt_v_eff}"
+              f"{' OVERRIDE' if retrieval_optics_override else ''}) + RetrievalForward "
               f"({_PREC}, tol={SOLVER_TOL:.0e}, mode_map={MODE_MAP}) ready", flush=True)
 
     # OBSERVATION — signature-gated, cross-checked against truth (rigor over results).
@@ -158,7 +197,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
               f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
               f"retrieval forward tol={SOLVER_TOL:.0e} ({_PREC})", flush=True)
 
-    # --- Layer-2 setup checkpoint (opt-in via FR_SETUP_CACHE; FR_CHECKPOINT_RESUME_PLAN.md) ---
+    # --- Layer-2 setup checkpoint (DEFAULT ON; opt-out FR_SETUP_CACHE=0; FR_CHECKPOINT_RESUME_PLAN.md) ---
     # The mode-count + grid selection + τ_bot pre-retrieval below are DETERMINISTIC and
     # platform-INDEPENDENT (~3 h CPU / ~106 min A100). Cache them so a resume — or a GPU run of a
     # profile whose setup idle-CPU already computed — SKIPS the whole expensive setup.
@@ -168,7 +207,12 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     # stale setup; the index guards against a misplaced/renamed cache file.
     # "v2" = the E1/E2/E3 setup semantics (uniform-K pad on vmap, pre-retrieval on
     # S_COARSE, single grid selection) — a pre-refactor cache must NOT be loaded.
-    _cfg = f"v2|{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+    _cfg = (f"v2|{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+            f"|opt{Path(retrieval_optics_override).name if retrieval_optics_override else 'self'}"
+            # CLIM_TAU_BOT feeds the pre-retrieval's prior anchor -> tau_bot_pre/grid in the
+            # cached setup depend on it; a different feed must never load this setup. Conditional
+            # (like osse_config.signature's quadrature tag) so every legacy cache stays valid.
+            + (f"|ctb{os.environ['CLIM_TAU_BOT']}" if os.environ.get('CLIM_TAU_BOT') else ''))
     if setup_cache_path is not None and os.path.exists(setup_cache_path):
         try:
             _sc = np.load(setup_cache_path, allow_pickle=True)
@@ -359,19 +403,47 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
 
 
 def main():
-    if os.environ.get("FR_SETUP_ONLY") and not os.environ.get("FR_SETUP_CACHE"):
-        raise SystemExit("FR_SETUP_ONLY requires FR_SETUP_CACHE=1 "
-                         "(there is no setup artifact to farm otherwise)")
+    if os.environ.get("FR_SETUP_ONLY") and not SETUP_CACHE:
+        raise SystemExit("FR_SETUP_ONLY requires the L2 setup cache "
+                         "(unset FR_SETUP_CACHE=0 — there is no setup artifact to farm otherwise)")
     index = int(sys.argv[1])
     out_prefix = sys.argv[2]
     profiles = vio.load_all_profiles(DATA)
     truth = profiles[index]
     flight = getattr(truth, 'flight', '?')
 
+    _ret_optics_path = RETRIEVAL_OPTICS_CACHE or str(OPTICS_CACHE)
     rec = dict(index=index, flight=flight, NQuad=NQ, cost_rtol=COST_RTOL,
                state_space='log', precision=_PREC, tol=SOLVER_TOL, mode_map=MODE_MAP,
-               radiance_cache=RADIANCE_CACHE.name)
+               radiance_cache=RADIANCE_CACHE.name,
+               # optics-table provenance (2026-07-12 quadrature/staircase fix): flags
+               # which table generation produced this result — legacy 32-pt moving vs
+               # the fixed-quadrature derivative-grade rebuild. osig/truth_v_eff describe
+               # the TRUTH world (the env oc.signature() the radiance cache is gated on);
+               # retrieval_optics_cache/retrieval_v_eff describe what the RETRIEVAL'S OWN
+               # forward model actually used — identical to the truth fields unless
+               # RETRIEVAL_OPTICS_CACHE deliberately decouples them (mismatched-v_eff
+               # experiment). mismatched_v_eff is the one-glance filter flag.
+               # retrieval_v_eff read via ot.load_table (2026-07-13 fix): LOAD-ONLY, same
+               # function build_forward_and_obs uses for the override path -- it never
+               # rebuilds/overwrites the file, so this read is guaranteed to reflect what
+               # the forward model actually used (see retrieval_optics_override docstring;
+               # a plain np.load of a build-or-load-gated path was the corruption vector).
+               osig=oc.signature()[1], optics_quadrature=oc.QUADRATURE,
+               optics_re_grid_n=oc.RE_GRID_N, optics_n_radii=oc.N_RADII,
+               truth_v_eff=oc.V_EFF, retrieval_optics_cache=Path(_ret_optics_path).name)
     try:
+        # inside the try (2026-07-13): a missing/unreadable table file must produce a
+        # "skipped" record with a traceback like every other failure — not an unlogged
+        # crash before any json is written. Override mode hard-requires the file (it
+        # must never be (re)built); the self-consistent path builds its table lazily in
+        # build_forward_and_obs, so on a fresh env the pre-build read is deferred and
+        # backfilled from fwd.opt_v_eff after the build instead.
+        if RETRIEVAL_OPTICS_CACHE or Path(_ret_optics_path).exists():
+            rec["retrieval_v_eff"] = float(ot.load_table(_ret_optics_path)["v_eff"])
+            rec["mismatched_v_eff"] = bool(abs(rec["retrieval_v_eff"] - rec["truth_v_eff"]) > 1e-9)
+        else:
+            rec["retrieval_v_eff"] = None                # backfilled post-build below
         if not (TAU_BOT_OK[0] <= float(truth.tau_bot) <= TAU_BOT_OK[1]) \
                 or len(np.asarray(truth.tau)) < 5:
             raise ValueError(f"degenerate (tau_bot={truth.tau_bot:.2f}, npts={len(truth.tau)})")
@@ -398,11 +470,22 @@ def main():
             return
 
         clim = vio.vocals_climatology(profiles, exclude_flight=flight)
+        if os.environ.get('CLIM_TAU_BOT'):        # manual τ_bot prior feed (e.g. the truth,
+            clim = dict(clim, tau_bot_mean=float(os.environ['CLIM_TAU_BOT']))  # per-index)
 
         t0 = time.time()
-        _setup_ckpt = f"{out_prefix}.setup.npz" if os.environ.get("FR_SETUP_CACHE") else None
-        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = \
-            build_forward_and_obs(truth, clim, index, setup_cache_path=_setup_ckpt)
+        _setup_ckpt = f"{out_prefix}.setup.npz" if SETUP_CACHE else None
+        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = build_forward_and_obs(
+            truth, clim, index, setup_cache_path=_setup_ckpt, optics_cache=OPTICS_CACHE,
+            retrieval_optics_override=RETRIEVAL_OPTICS_CACHE)
+        # cross-check the pre-build load-only read (rec["retrieval_v_eff"]) against what the
+        # forward model actually built from -- the whole point of fwd.opt_v_eff (see docstring).
+        # (None = fresh-env self-consistent build: no pre-build file existed, backfill instead.)
+        if rec["retrieval_v_eff"] is None:
+            rec["retrieval_v_eff"] = float(fwd.opt_v_eff)
+            rec["mismatched_v_eff"] = bool(abs(rec["retrieval_v_eff"] - rec["truth_v_eff"]) > 1e-9)
+        assert abs(fwd.opt_v_eff - rec["retrieval_v_eff"]) < 1e-9, \
+            f"retrieval_v_eff desync: rec={rec['retrieval_v_eff']} fwd.opt_v_eff={fwd.opt_v_eff}"
         rec["radiance_tol"] = truth_tol
         rec["tau_bot_pre"] = round(tau_bot_pre, 3)
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "

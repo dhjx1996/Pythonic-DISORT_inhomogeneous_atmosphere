@@ -142,6 +142,7 @@ class Cache:
     """One profile's cached Jacobian + convenient row/metric helpers."""
 
     def __init__(self, rec):
+        self.index = int(rec["index"]) if "index" in rec else -1
         self.tau_bot = float(rec["tau_bot"])
         self.K_full = np.asarray(rec["K_full"], float)
         self.K_flux = np.asarray(rec["K_flux"], float)
@@ -476,8 +477,12 @@ def penetration_weights(caches, out_path, n_s=201):
                              (the magnitude axis: does a band's r_e signal survive obliquity?)
       posfrac (nb, nv)       pop-mean fraction of nodes with K>0 (sign purity; |K| caveat for 3.7/4.05)
       view_mu (nv,), bands (nb,), tau_bot_rep, index_rep
+      sel_idx/sel_tau_bot (3,), w_sel (3, nb, nv, n_s)
+                             representative thin / medium / thick single profiles (nearest the
+                             τ_bot q10/q50/q90) for the per-cloud ABSOLUTE-τ Fig-0a panels
+                             (plot w_sel/τ_bot vs SG·τ_bot for a unit-∫dτ density).
 
-    The notebook's §15 penetration-depth cells read this cache (docs/cached_results)."""
+    The notebook's §16 penetration-depth cells read this cache (docs/cached_results)."""
     nb, nvm = caches[0].nb, caches[0].nvm
     SG = np.linspace(0.0, 1.0, n_s)
     w_acc = np.zeros((nb, nvm, n_s))
@@ -486,6 +491,9 @@ def penetration_weights(caches, out_path, n_s=201):
     tb = np.array([c.tau_bot for c in caches])
     i_rep = int(np.argmin(np.abs(tb - np.median(tb))))
     w_rep = None
+    # representative thin / medium / thick single profiles (τ_bot q10 / q50 / q90)
+    i_sel = [int(np.argmin(np.abs(tb - np.percentile(tb, q)))) for q in (10, 50, 90)]
+    w_sel = np.zeros((3, nb, nvm, n_s))
     for i, c in enumerate(caches):
         K = c.K_full.reshape(nb, nvm, -1)
         s = c.s
@@ -499,6 +507,9 @@ def penetration_weights(caches, out_path, n_s=201):
         w_acc += Wn
         if i == i_rep:
             w_rep = Wn.copy()
+        for j, isel in enumerate(i_sel):
+            if i == isel:
+                w_sel[j] = Wn
         cen += np.trapezoid(Wn * SG, SG, axis=2)
         tail += np.trapezoid(np.where(SG > 0.5, Wn, 0.0), SG, axis=2)
         A = np.trapezoid(np.abs(K) / c.sig.reshape(nb, nvm, 1), s, axis=2)
@@ -512,9 +523,12 @@ def penetration_weights(caches, out_path, n_s=201):
         amp_rel=amp / n, posfrac=pos / n,
         view_mu=(caches[0].view_mu if caches[0].view_mu is not None else np.arange(nvm)),
         bands=np.asarray(BANDS, float), n_profiles=n,
-        tau_bot_rep=caches[i_rep].tau_bot, index_rep=i_rep)
+        tau_bot_rep=caches[i_rep].tau_bot, index_rep=i_rep,
+        sel_idx=np.asarray([caches[j].index for j in i_sel]),
+        sel_tau_bot=tb[i_sel], w_sel=w_sel)
     print(f"wrote {out_path} (penetration weighting functions, {n} profiles, "
-          f"rep tau_bot={caches[i_rep].tau_bot:.2f})")
+          f"rep tau_bot={caches[i_rep].tau_bot:.2f}, sel thin/med/thick "
+          f"tau_bot={np.round(tb[i_sel], 1)})")
 
 
 def robustness(groups):
