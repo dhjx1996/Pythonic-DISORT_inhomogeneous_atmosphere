@@ -146,14 +146,28 @@ def _mie_radius_block(m, x, pc):
 
 
 def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
-                   n_radii=600, NLeg=128, n_gl=1024, max_nstop=None, m=None):
+                   n_radii=600, NLeg=128, n_gl=1024, max_nstop=None, m=None,
+                   quadrature="moving"):
     """Build the (r_e, λ) → (ω, Leg_coeffs) table with miepython.
 
     Drop-in for ``miejax_lite.build_re_table`` (same output dict keys), but the
     Mie is miepython (offline, numba). One r_e-table per entry of ``wavelengths``
     on a **uniform** r_e grid (``n_re`` points over ``[re_min, re_max]`` µm), each
-    gamma-averaged over the size distribution (``v_eff``) on a ``3·r_e`` radius grid
-    (``n_radii`` points) — identical construction to the JAX-Mie path.
+    gamma-averaged over the size distribution (``v_eff``).
+
+    ``quadrature`` — the size-distribution radius grid (2026-07-12 fix):
+      * ``'moving'`` (legacy default): ``n_radii`` points on ``[1e-3, 3·r_e]``,
+        re-gridded PER r_e. Because the Mie resonances are undersampled, the
+        shifting grid turns resonance hits/misses into **r_e-correlated noise**
+        (δg rms ≈ 4e-4, spikes to 3e-3 at v_eff=0.10) whose *derivative* is
+        ~200-600× the physical ripple — the deep-wiggle artifact in the Fig-0a
+        weighting functions. Kept as the default so existing caches/signatures
+        stay valid.
+      * ``'fixed'``: ``n_radii`` points on ``[1e-3, 3·re_max]``, SHARED by every
+        r_e. The quadrature error then varies smoothly with r_e (the resonance
+        sampling no longer shifts), restoring derivative-grade d(optics)/dr_e —
+        validated against a re_gridded control: dg/dr_e ripple falls to ~1e-5.
+        Also ~n_re× cheaper: one Mie sweep per band, reused by every r_e.
 
     ``max_nstop`` (Mie series length) defaults to the global Wiscombe order for the
     largest size parameter (2π·3·re_max/min λ), so the largest droplets at the
@@ -166,6 +180,8 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
         max_nstop = _wiscombe_nstop(x_max) + 4
     pc = _legendre_precompute(int(max_nstop), int(NLeg), int(n_gl))
 
+    if quadrature not in ("moving", "fixed"):
+        raise ValueError(f"quadrature must be 'moving' or 'fixed', got {quadrature!r}")
     omega = np.empty((wavelengths.size, n_re))
     leg = np.empty((wavelengths.size, n_re, NLeg))
     for wi, lam in enumerate(wavelengths):
@@ -174,6 +190,18 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
         else:
             m_real, m_imag = m[wi]
         mc = complex(m_real, m_imag if m_imag <= 0 else -m_imag)
+        if quadrature == "fixed":
+            # one Mie sweep per band on the shared grid; per-r_e work = quadratures only
+            r = np.linspace(1e-3, 3.0 * float(re_max), n_radii)
+            x = 2.0 * np.pi * r / float(lam)
+            qe, qs, chi = _mie_radius_block(mc, x, pc)
+            for ri, re in enumerate(re_grid):
+                w = _gamma_weights(float(re), v_eff, r) * r ** 2
+                sca_int = np.trapezoid(qs * w, r)
+                omega[wi, ri] = sca_int / np.trapezoid(qe * w, r)
+                wq = qs * w
+                leg[wi, ri] = np.trapezoid(wq[:, None] * chi, r, axis=0) / np.trapezoid(wq, r)
+            continue
         for ri, re in enumerate(re_grid):
             r = np.linspace(1e-3, 3.0 * float(re), n_radii)
             x = 2.0 * np.pi * r / float(lam)
@@ -190,6 +218,7 @@ def build_re_table(wavelengths, re_min, re_max, n_re, v_eff, *,
         "dr": float((re_max - re_min) / (n_re - 1)), "v_eff": float(v_eff),
         "NLeg": int(NLeg), "max_nstop": int(max_nstop),
         "omega": omega, "leg": leg,
+        "quadrature": str(quadrature), "n_radii": int(n_radii),
     }
 
 
@@ -234,9 +263,17 @@ def table_lookup(opt, r_e, n_leg=None):
 # ---------------------------------------------------------------------------
 # Disk cache (table is profile-independent: build once, load everywhere)
 # ---------------------------------------------------------------------------
-def _signature(wavelengths, re_min, re_max, n_re, v_eff, NLeg):
+def _signature(wavelengths, re_min, re_max, n_re, v_eff, NLeg,
+               quadrature="moving", n_radii=None):
     wl = ",".join(f"{w:.4f}" for w in np.atleast_1d(wavelengths))
-    return f"wl=[{wl}] re=[{re_min},{re_max}]/{n_re} veff={v_eff} NLeg={NLeg}"
+    sig = f"wl=[{wl}] re=[{re_min},{re_max}]/{n_re} veff={v_eff} NLeg={NLeg}"
+    # 2026-07-12 quadrature fix: the FIXED radius grid is tagged (with its density) so a
+    # fixed-quadrature table can never silently satisfy a moving-recipe check or vice
+    # versa. The legacy moving recipe keeps the exact historical signature string, so
+    # every existing cache remains valid.
+    if quadrature == "fixed":
+        sig += f" quad=fixed/{int(n_radii if n_radii is not None else 600)}"  # 600 = build default
+    return sig
 
 
 def save_table(table, path):
@@ -245,7 +282,9 @@ def save_table(table, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, signature=_signature(table["wavelengths"], table["re_min"],
                                         table["re_max"], table["n_re"],
-                                        table["v_eff"], table["NLeg"]),
+                                        table["v_eff"], table["NLeg"],
+                                        quadrature=table.get("quadrature", "moving"),
+                                        n_radii=table.get("n_radii")),
              wavelengths=np.asarray(table["wavelengths"]),
              re_min=table["re_min"], re_max=table["re_max"], n_re=table["n_re"],
              dr=table["dr"], v_eff=table["v_eff"], NLeg=table["NLeg"],
@@ -269,14 +308,30 @@ def build_or_load_table(wavelengths, re_min, re_max, n_re, v_eff, *,
     cloud profile — so per-profile workers / HPC array tasks share one cache instead
     of each rebuilding it (the build is the expensive Mie pass; the table is reused)."""
     cache_path = Path(cache_path)
-    want = _signature(wavelengths, re_min, re_max, n_re, v_eff, NLeg)
+    want = _signature(wavelengths, re_min, re_max, n_re, v_eff, NLeg,
+                      quadrature=kw.get("quadrature", "moving"),
+                      n_radii=kw.get("n_radii"))
     if cache_path.exists():
+        have = "<unreadable>"
         try:
             z = np.load(cache_path, allow_pickle=True)
             if str(z["signature"]) == want:
                 return load_table(cache_path)
+            have = str(z["signature"])
         except (OSError, KeyError, ValueError):
             pass
+        # LOUD on purpose (2026-07-13): the rebuild below OVERWRITES the existing file.
+        # If cache_path deliberately holds a different recipe than the current env
+        # (e.g. a mismatched-v_eff experiment table), this call is a corruption vector
+        # — that exact silent overwrite clobbered the fq mismatch table on 2026-07-12.
+        # Read-only consumers must use load_table() instead.
+        import warnings
+        warnings.warn(
+            f"optics-table cache {cache_path} exists but its signature does not match "
+            f"the requested recipe — REBUILDING AND OVERWRITING it.\n  have: {have}\n"
+            f"  want: {want}\nIf this file is meant to hold a different recipe than the "
+            f"current env implies, do not go through build_or_load_table: use "
+            f"load_table() (read-only).", UserWarning, stacklevel=2)
     table = build_re_table(wavelengths, re_min, re_max, n_re, v_eff, NLeg=NLeg, **kw)
     save_table(table, cache_path)
     return table

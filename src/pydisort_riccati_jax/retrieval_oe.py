@@ -69,7 +69,8 @@ class RetrievalForward:
                  tol=1e-3, re_class="re5-linear", state_space="linear",
                  jac_mode="rev", retrieve_tau_bot=False, retrieve_r_base=False,
                  re_bounds=(2.0, 25.0), tau_bounds=(0.1, 60.0),
-                 delta_M_scaling=True, NT_cor=True, mode_map="scan"):
+                 delta_M_scaling=True, NT_cor=True, mode_map="scan",
+                 fixed_n_steps=None, freeze_step_grads=False):
         # ``retrieve_tau_bot`` / ``retrieve_r_base`` promote the cloud-base anchor
         # ``(τ_bot, r_base)`` from *fixed known* values to **retrieved unknowns**
         # (the joint retrieval). When True the corresponding quantity is read
@@ -176,11 +177,18 @@ class RetrievalForward:
         if mode_map not in ("scan", "vmap"):
             raise ValueError(f"mode_map must be 'scan' or 'vmap', got {mode_map!r}")
         self.mode_map = mode_map
+        # Texture-free IC Jacobian modes (see SetupData): fixed_n_steps = frozen
+        # uniform StepTo grid; freeze_step_grads = adaptive controller with
+        # stop_gradient'ed step decisions (native cost). None/False = default.
+        self.fixed_n_steps = fixed_n_steps
+        self.freeze_step_grads = bool(freeze_step_grads)
         self.setups = [
             riccati_setup(NQuad, I0, phi0, mu0, NFourier=nf,
                           NLeg_all=NLeg_all, BDRF_Fourier_modes=bdrf,
                           delta_M_scaling=delta_M_scaling, NT_cor=NT_cor, tol=tol,
-                          adjoint=_adjoint, mode_map=mode_map)
+                          adjoint=_adjoint, mode_map=mode_map,
+                          fixed_n_steps=fixed_n_steps,
+                          freeze_step_grads=freeze_step_grads)
             for bdrf, nf in zip(BDRF_bands, NF_list)
         ]
         self.K_list = [s.NFourier for s in self.setups]
@@ -861,7 +869,7 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
     r_e distribution (125 profiles): mean ≈ **9.7 µm** (median 9.5, σ 2.3; range
     4.9–18.0), or ≈ **10.3 ± 2.2 µm** for the thick (τ_bot>8) subset — and that
     empirical σ≈2.2–2.3 µm is consistent with the ``sigma_top=3`` used here. (The OSSE
-    demo instead passes the true top, deliberately: see notebook §12 — a perfectly
+    demo instead passes the true top, deliberately: see notebook §13 — a perfectly
     anchored adiabatic prior makes the measurement's *departure* from adiabatic
     unambiguous.) This empirical mean+spread is the first rung of a fully learned prior.
     """
@@ -1021,7 +1029,7 @@ def make_marine_sc_prior(s_nodes, *, r_top_prior, tau_bot_prior, r_base_ratio=0.
       profiles and enforced as a hard bound in that literature), with a tight
       ``sigma_base`` ≈ the VOCALS robust core (MAD 1.4 µm). Sub-saturation /
       re-evaporation profiles are the rare heavy tail (std 2.0 ≫ MAD 1.4); we do not
-      try to capture them in the prior — recovering one is a bonus (notebook §13).
+      try to capture them in the prior — recovering one is a bonus (notebook §14).
     * **tau_bot** — fully data-determined from the bands (A≈1.00, prior irrelevant), and
       "average cloud thickness" is not a meaningful quantity (VOCALS MAD≈median), so the
       prior is deliberately **uninformative**: ``sigma_tau_bot`` defaults to
@@ -1085,8 +1093,30 @@ def _load_gn_checkpoint(path):
             [float(v) for v in np.asarray(d["history"], float)], int(d["it_done"]))
 
 
+def _second_difference_operator(positions):
+    """Non-uniform second-difference (discrete curvature) operator ``L₂`` for values
+    sampled at arbitrary ascending 1-D ``positions``. Row ``i`` (one per interior point)
+    approximates ``f''(t_i)`` via the 3-point divided-difference weights
+    ``[2/(h₁(h₁+h₂)), −2/(h₁h₂), 2/(h₂(h₁+h₂))]`` (``h₁=t_i−t_{i-1}``, ``h₂=t_{i+1}−t_i``)
+    — the correct stencil for an **irregular** grid (a plain ``[1,−2,1]`` would mis-weight
+    the QRCP-placed nodes). Returns an ``(n−2, n)`` array (empty ``(0, n)`` if ``n<3``);
+    ``‖L₂ x‖²`` is then the discrete curvature (2nd-difference Tikhonov) penalty."""
+    t = np.asarray(positions, float)
+    n = t.shape[0]
+    if n < 3:
+        return np.zeros((0, n))
+    L = np.zeros((n - 2, n))
+    for i in range(1, n - 1):
+        h1, h2 = t[i] - t[i - 1], t[i + 1] - t[i]
+        L[i - 1, i - 1] = 2.0 / (h1 * (h1 + h2))
+        L[i - 1, i] = -2.0 / (h1 * h2)
+        L[i - 1, i + 1] = 2.0 / (h2 * (h1 + h2))
+    return L
+
+
 def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
-              cost_rtol=None, chi2_floor=None, verbose=False, checkpoint_path=None):
+              cost_rtol=None, chi2_floor=None, verbose=False, checkpoint_path=None,
+              curvature_lambda=0.0):
     """Inner **adaptive Levenberg–Marquardt** OE solve on a fixed (normalized-depth)
     retrieval grid (Rodgers n-form, damped). Each iterate is projected onto the
     physical/table bounds (:meth:`RetrievalForward._clamp_state`).
@@ -1127,6 +1157,27 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     from scipy.linalg import solve as _sp_solve         # SPD Cholesky path (vNext iv)
     Se_inv = np.linalg.inv(Se)
     Sa_inv = np.linalg.inv(Sa)
+    # 2nd-difference (curvature) Tikhonov penalty P = λ·L₂ᵀL₂ over the r_e-node profile block
+    # (nodes + r_base at s=1), embedded in the full state (τ_bot row/col stay 0). Penalises
+    # curvature of the log-r_e profile vs normalized depth. OPT-IN: λ=0 ⇒ P=None ⇒ the solve is
+    # bit-identical to the un-penalised path (the OU exp-kernel prior is C⁰-only and never
+    # suppresses the data/prior-seam kink — this does; OUTSTANDING §B′).
+    P = None
+    if curvature_lambda and float(curvature_lambda) > 0.0:
+        s_prof = (np.append(np.asarray(s_nodes, float), 1.0)
+                  if getattr(fwd, "retrieve_r_base", False) else np.asarray(s_nodes, float))
+        L2 = _second_difference_operator(s_prof)
+        if L2.shape[0] > 0:
+            # curvature-ENERGY penalty ≈ ∫(d²log r_e/ds²)² ds: weight each interior row by its
+            # interval wᵢ=(sᵢ₊₁−sᵢ₋₁)/2 so the penalty is grid-spacing-INDEPENDENT. A raw L₂ᵀL₂
+            # scales ~1/h⁴ and over-penalises closely-spaced QRCP nodes, making λ non-transferable
+            # across profiles (linearised calibration 2026-07-11: λ that relaxes the idx-110 kink
+            # then moved well-constrained thin-cloud nodes ~0.4σ; energy weighting cuts that to ~0.15σ).
+            wq = 0.5 * (s_prof[2:] - s_prof[:-2])
+            LW = np.sqrt(wq)[:, None] * L2
+            p_dim, nprof = len(np.asarray(x_a, float)), L2.shape[1]
+            P = np.zeros((p_dim, p_dim))
+            P[:nprof, :nprof] = float(curvature_lambda) * (LW.T @ LW)
     y = np.asarray(y, float)
     m = max(len(y), 1)
     LM_MIN, LM_MAX, MAX_BACKTRACK = 1e-8, 1e8, 10
@@ -1140,6 +1191,8 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         r = y - np.asarray(Fxv, float)
         dchi2 = float(r @ Se_inv @ r)                         # ‖y−F‖²_{Sε⁻¹}
         J = 0.5 * dchi2 + 0.5 * float((xv - x_a) @ Sa_inv @ (xv - x_a))
+        if P is not None:
+            J += 0.5 * float(xv @ P @ xv)                     # + ½λ‖L₂ x‖² curvature penalty
         return J, dchi2, r
 
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
@@ -1170,6 +1223,9 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
         lhs_base = K.T @ Se_inv @ K
         H_gn = lhs_base + Sa_inv                              # (vNext iv) pure-GN Hessian, hoisted out of backtrack
         rhs = K.T @ Se_inv @ r - Sa_inv @ (x - x_a)          # = −∇J
+        if P is not None:                                     # + curvature Tikhonov (∇ = P x, Hess = P)
+            H_gn = H_gn + P
+            rhs = rhs - P @ x
         accepted = False
         nu = 2.0                                             # (vNext iii) Nielsen consecutive-reject accelerator
         _tb = _time.time()
@@ -1223,8 +1279,24 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                     x0=None, n_iter=12, lm=0.0, xtol=1e-4,
                     cost_rtol=None, chi2_floor=None,
                     max_n_outer=2, prior_builder=None, filter_threshold=0.5,
-                    margin=1, remesh_if_chi2_red_gt=2.0, warn=True, verbose=False,
-                    checkpoint_path=None):
+                    margin=1,
+                    remesh_if_chi2_red_gt=2.0,   # kept at 2.0 per §10h (real-noise χ²_red≈1 floor;
+                    # re-meshing an already-well-fit profile measurably WORSENED RMSE there) — but for a
+                    # noiseless-OSSE campaign the population clusters far below 1 (ve_rerun/ve046 config-A:
+                    # chi2_red p99≈0.021, max 0.038, only 5/125 > 0.01), in which case 0.1 is the tighter,
+                    # still-safe threshold (2026-07-09 user-flagged; pushback on lowering the shared default stands).
+                    remesh_accept_rtol=0.5,      # INVERTED acceptance (2026-07-13 v2, user-directed;
+                    # allowance widened 0.2 -> 0.5 on 2026-07-14 user direction): a
+                    # re-meshed fit is ADOPTED unless it is worse than the BEST tier so far by more than
+                    # this allowance — adopt iff chi2_new < (1+rtol)*chi2_best. Rationale: the escalation
+                    # only runs when chi2 is stuck above threshold, i.e. the incumbent mesh has already
+                    # FAILED — at comparable chi2 the escalated mesh is preferred (idx49: the tier-3 k=2
+                    # quasi-adiabat beat every structured fit in truth-space at a modest chi2 cost).
+                    # Anchoring on the best (not the previous tier) bounds total degradation at (1+rtol)
+                    # x best; rejections restore the pre-attempt state and the ladder continues. The
+                    # catastrophe guard survives inversion (idx57's 0.28->32.7 fails any sane allowance).
+                    warn=True, verbose=False,
+                    checkpoint_path=None, curvature_lambda=0.0):
     """Optimal estimation with **progressive lagged re-meshing** (Rodgers n-form).
 
     The retrieval grid ``s_nodes`` is in **normalized depth** s=τ/τ_bot∈[0,1) (so
@@ -1243,6 +1315,20 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     actually move. The (recompiling) re-selection runs only at an *enabled* tier — at
     a tier *beyond* ``max_n_outer`` the warning fires on χ² **alone** (so a select-once
     user still learns the fit wanted more, without paying a recompile to find out).
+
+    **Inverted (challenger-friendly) acceptance (2026-07-13 v2).** Movement gates the
+    *attempt*; a bounded-degradation test gates *adoption*: after the re-meshed inner
+    solve, the new fit is adopted **unless** it is worse than the best tier so far by
+    more than the allowance — adopt iff ``chi2_new < (1+remesh_accept_rtol)*chi2_best``
+    (data term only — J is not commensurable across grids since the prior is rebuilt).
+    The escalation only runs when χ² is stuck above threshold, i.e. the incumbent mesh
+    has already failed — so at comparable χ² the escalated (often simpler) mesh wins the
+    tie. Anchoring the bound on the *best* tier (not the previous one) means adopted
+    challengers cannot compound: the returned fit is never worse than
+    ``(1+rtol) × best``. A rejection restores the pre-attempt state/grid/prior and the
+    escalation *continues* from it (a rejected fixed-count re-mesh does not forfeit the
+    count-changing tier); catastrophic re-meshes (e.g. idx57's 0.28→32.7) fail any sane
+    allowance and are always reverted.
 
     ``prior_builder(s_nodes) -> (x_a, Sa)`` is required for any re-meshing (rebuilds
     the prior on each re-selected grid and supplies σ_prior for the filter); a
@@ -1267,7 +1353,8 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol,
                                      cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-                                     verbose=verbose, checkpoint_path=checkpoint_path)
+                                     verbose=verbose, checkpoint_path=checkpoint_path,
+                                     curvature_lambda=curvature_lambda)
     full_hist = list(hist)
 
     def _chi2_red():
@@ -1280,8 +1367,10 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     thr = remesh_if_chi2_red_gt
     # Progressive escalation: n_outer=2 → fixed-count re-mesh, n_outer=3 → changed-count.
     n_outer = 2
+    chi2_best = None                       # best (lowest) χ²_red over all tiers — the acceptance anchor
     while prior_builder is not None and thr is not None and n_outer <= 3:
         chi2 = _chi2_red()
+        chi2_best = chi2 if chi2_best is None else min(chi2_best, chi2)
         if chi2 <= thr:
             break                                              # fit adequate → stop
         if n_outer > max_n_outer:                              # warranted but disabled/capped
@@ -1325,6 +1414,9 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
                 f"a larger recompile.", RemeshWarning, stacklevel=2)
         # apply the re-mesh: re-map the r_e-node block onto the new normalized grid,
         # carrying the current base/τ_bot estimates into the trailing joint entries.
+        # BANK the pre-attempt state first — the re-fit is adopted UNLESS it exceeds the
+        # (1+rtol)×best degradation bound (inverted acceptance; see docstring).
+        prev = (x, s_nodes, x_a, Sa, K, Fx, conv)
         x = np.asarray(fwd.profile(cur_x, cur_nodes, new_s * cur_taubot), float)
         if fwd.retrieve_r_base:
             x = np.append(x, float(cur_rbase))
@@ -1335,8 +1427,25 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
         x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                          n_iter=n_iter, lm=lm, xtol=xtol,
                                          cost_rtol=cost_rtol, chi2_floor=chi2_floor,
-                                         verbose=verbose)
+                                         verbose=verbose, curvature_lambda=curvature_lambda)
         full_hist += hist
+        chi2_new = _chi2_red()                                 # of the re-meshed fit (Fx rebound)
+        if not (chi2_new < (1.0 + remesh_accept_rtol) * chi2_best):
+            if warn:
+                warnings.warn(
+                    f"Re-mesh (n_outer={n_outer}) REJECTED: reduced χ² {chi2:.3g} → "
+                    f"{chi2_new:.3g} exceeds the degradation bound "
+                    f"(1+{remesh_accept_rtol:g})×best = {(1.0 + remesh_accept_rtol) * chi2_best:.3g}; "
+                    f"reverting to the pre-attempt result and continuing the escalation.",
+                    RemeshWarning, stacklevel=2)
+            x, s_nodes, x_a, Sa, K, Fx, conv = prev            # revert -> ladder continues
+        elif warn and chi2_new >= chi2_best:
+            warnings.warn(
+                f"Re-mesh (n_outer={n_outer}) adopted WITHOUT χ² improvement (challenger "
+                f"rule): {chi2:.3g} → {chi2_new:.3g} is within the (1+{remesh_accept_rtol:g})×best "
+                f"= {(1.0 + remesh_accept_rtol) * chi2_best:.3g} allowance — the incumbent mesh had "
+                f"already failed the threshold, so the escalated mesh wins the tie.",
+                RemeshWarning, stacklevel=2)
         n_outer += 1
 
     return OEResult(x=x, tau_nodes=s_nodes, x_a=x_a, Sa=Sa, Se=Se, K=K,

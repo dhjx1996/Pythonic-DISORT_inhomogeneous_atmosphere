@@ -189,6 +189,21 @@ class SetupData(NamedTuple):
       makes it a win differs. Used only for ``return_grid=False`` (the jit-able
       retrieval forward); the offline ``return_grid=True`` grid-pool path always scans.
     """
+    fixed_n_steps: Any = None
+    """Frozen-step mode (IC profiling): if an int, every mode integrates on a
+    uniform ``StepTo`` σ-grid of this many steps instead of the adaptive
+    PIDController; ``tol`` is then ignored for step control. Removes the
+    controller-placement Jacobian texture that inflates DOFS/SIC (2026-07-14).
+    Appended LAST with a default so pickled setup caches from before the field
+    still load. See ``_riccati_solver_jax._kvaerno5_integrate``."""
+    freeze_step_grads: Any = False
+    """Gradient-frozen adaptive mode (IC profiling): keep the adaptive
+    PIDController (native cost, bit-identical primal) but ``stop_gradient`` its
+    step-size decisions, so AD differentiates the fixed-step-sequence map on the
+    primal's own accepted steps. The cheap alternative to ``fixed_n_steps``
+    (whose full-Newton fixed steps proved impractical at production scale —
+    wigFS, 2026-07-14). New-last field with a default: old pickles still load.
+    See ``_riccati_solver_jax._GradFrozenPID``."""
 
 
 class SolveResult(NamedTuple):
@@ -330,6 +345,8 @@ def riccati_setup(
     tol=1e-3,
     adjoint=None,
     mode_map="scan",
+    fixed_n_steps=None,
+    freeze_step_grads=False,
 ):
     """Build the host-side :class:`SetupData` for a Riccati solve (run once).
 
@@ -520,6 +537,8 @@ def riccati_setup(
         delta_M_scaling=delta_M_scaling, NT_cor=NT_cor,
         NT_quad_order=NT_quad_order, adjoint=adjoint,
         mode_map=mode_map,
+        fixed_n_steps=None if fixed_n_steps is None else int(fixed_n_steps),
+        freeze_step_grads=bool(freeze_step_grads),
     )
 
 
@@ -587,11 +606,15 @@ def _fourier_solve(setup, omega_func, Leg_coeffs_func, tau_bot,
             alpha_func, beta_func, tau_bot, N, setup.tol,
             q_up_func=q_up, q_down_func=q_down, save_grid=save_grid,
             adjoint=setup.adjoint,
+            fixed_n_steps=getattr(setup, 'fixed_n_steps', None),
+            freeze_step_grads=getattr(setup, 'freeze_step_grads', False),
         )
         R_down, T_down, s_down, _ = _riccati_backward_jax(
             alpha_func, beta_func, tau_bot, N, setup.tol,
             q_up_func=q_up, q_down_func=q_down, save_grid=False,
             adjoint=setup.adjoint,
+            fixed_n_steps=getattr(setup, 'fixed_n_steps', None),
+            freeze_step_grads=getattr(setup, 'freeze_step_grads', False),
         )
         u_m = _solve_bc_riccati_jax(
             R_up, T_up, T_down, R_down, s_up, s_down, N,
@@ -763,6 +786,7 @@ def pydisort_riccati_jax(
     NLeg_all=None,
     NT_cor=False,
     NT_quad_order=128,
+    fixed_n_steps=None,
 ):
     """
     Riccati forward solver for a single atmospheric column with
@@ -823,6 +847,10 @@ def pydisort_riccati_jax(
     NT_quad_order : int, optional
         Gauss-Legendre order for the 1-D tau-quadrature of the TMS integral
         (default 128); the integrand is smooth so this is generous.
+    fixed_n_steps : int or None, optional
+        Frozen-step mode: integrate every Fourier mode on a uniform ``StepTo``
+        σ-grid of this many steps instead of the adaptive controller (``tol``
+        then no longer controls the steps). See :class:`SetupData.fixed_n_steps`.
 
     Returns
     -------
@@ -844,6 +872,7 @@ def pydisort_riccati_jax(
         b_pos=b_pos, b_neg=b_neg, BDRF_Fourier_modes=BDRF_Fourier_modes,
         delta_M_scaling=delta_M_scaling, NT_cor=NT_cor,
         NT_quad_order=NT_quad_order, tol=tol,
+        fixed_n_steps=fixed_n_steps,
     )
 
     # Full solve with the offline m=0 ODE grid retained.

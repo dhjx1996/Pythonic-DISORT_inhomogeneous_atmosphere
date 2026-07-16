@@ -11,7 +11,7 @@ averaging kernel) — there is exactly one implementation of it.
 The DOFS here is a *different number* from the per-retrieval ``posterior_diagnostics``
 DOFS on the selected ``k_active`` nodes: this answers "how much can the measurement
 resolve" (full grid), that answers "how much did this retrieval resolve" (its grid).
-Label them distinctly when reporting (notebook §11/§12).
+Label them distinctly when reporting (notebook §12/§13).
 
 Note the information scale is set entirely by ``Se`` (the measurement-noise model):
 a "noiseless" OSSE still assumes an ``Se``; see DESIGN. DOFS/SIC depend only on

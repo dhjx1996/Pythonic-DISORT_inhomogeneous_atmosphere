@@ -21,6 +21,9 @@ jagged in-situ truth and a smooth retrieval with the same size-mass distribution
 (the property RMSE lacked). The DOF-graded LADDER is unchanged in spirit — best CONSTANT r_e
 (1 DOF) ≥ best re⁵-adiabat fit to truth (2 DOF, the oracle floor) ≥ us — now scored in W1,
 plus the NO-RETRIEVAL prior-mean baseline. d_w1 ≡ W1_adia − W1_ours (> 0 ⇒ we beat the floor).
+The MAIN reported shape metric is **pct_w1 = 100·W1_ours/τ_bot_truth** — W1 as a % of the cloud's
+optical depth, thickness-normalized so it is comparable across profiles (the raw W1 CDF integral
+above stays un-normalized). W1_ours is no longer stored (= pct_w1·τ_bot_truth/100 = W1_adia − d_w1).
 LWP is reported under §5c's post-hoc constant-v_e width corrections (C(0.037), C(0.046)) and
 the per-profile oracle C*, for OUR retrieval AND for the oracle adiabatic best-fit — the
 latter is the LWP-bias BASELINE: even a perfect-shape adiabat carries the same width/Q_ext
@@ -134,6 +137,31 @@ def _re5_interp(s_eval, s_bp, re_bp):
                      np.asarray(re_bp, float) ** 5) ** 0.2
 
 
+def _fit_adiabat_rbase_pinned_uw1(re_truth_d, tau_truth, s_dense, rb_pin, bounds=(2.0, 25.0)):
+    """The COMPROMISE adiabat (2026-07-16): r_base PINNED to our retrieved base, r_top fit by
+    minimizing the UNNORMALIZED mass-CDF distance uW1 = ∫|ΔM|dτ (M = cumulative r_e mass) —
+    the one knob must serve shape AND mass simultaneously. (A normalized-W1 pinned fit is a
+    no-op: the mass-normalized CDF is amplitude-invariant, so pinning the base just slides the
+    fit along a W1-flat direction.) Truth-fed; PLACEHOLDER for the k=1 radiance-driven
+    adiabat-class competitor — validate against it when that campaign lands, then retire."""
+    from scipy.optimize import minimize_scalar
+    g = np.linspace(0.0, tau_truth[-1], 512)
+
+    def cum(re):
+        c = np.concatenate([[0.0], np.cumsum(0.5 * (re[1:] + re[:-1]) * np.diff(tau_truth))])
+        return np.interp(g, tau_truth, c)
+
+    M_t = cum(re_truth_d)
+
+    def uw1_of(rt):
+        curve = (rb_pin ** 5 + (rt ** 5 - rb_pin ** 5) * (1.0 - s_dense)) ** 0.2
+        return float(np.trapezoid(np.abs(cum(curve) - M_t), g))
+
+    rt = float(minimize_scalar(uw1_of, bounds=bounds, method="bounded",
+                               options=dict(xatol=1e-6)).x)
+    return (rb_pin ** 5 + (rt ** 5 - rb_pin ** 5) * (1.0 - s_dense)) ** 0.2, rt
+
+
 # ────────────────────────────── per-sidecar analysis ──────────────────────────────
 def _coerce_str(v):
     try:
@@ -202,6 +230,11 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         xa = np.exp(np.asarray(d["x_a_log"], float))        # [r_e(nodes), r_base, τ_bot] physical
         re_pr = _re5_interp(s_dense, np.r_[s_grid, 1.0], np.r_[xa[:k], xa[k]])
         w1_prior = wasserstein_tau(re_truth_d, tau_truth_abs, re_pr, s_dense * float(xa[k + 1]))
+    # ---- the rb-pinned COMPROMISE adiabat (placeholder rung for the k=1 competitor) ----
+    re_pin_d, adia_pin_r_top = _fit_adiabat_rbase_pinned_uw1(
+        re_truth_d, tau_truth_abs, s_dense, r_base_ret)
+    w1_adia_pin = wasserstein_tau(re_truth_d, tau_truth_abs, re_pin_d, tau_truth_abs)
+    lwp_pin = lwp_trapz_tau(re_pin_d, tau_truth_abs)
     # ---- LWP of the oracle adiabatic best-fit = the LWP-bias BASELINE: a perfect-SHAPE adiabat
     #      carries the SAME width/Q_ext artifact as us → the LWP bias is bookkeeping, not shape error.
     lwp_adia = lwp_trapz_tau(re_adia_d, tau_truth_abs)
@@ -245,9 +278,15 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         tau_bot_ret=tau_bot_ret, tau_bot_truth=float(d["truth_tau_bot"]),
         converged=bool(d["converged"]), n_gn=int(d["n_gn"]),
         chi2_red=float(d["chi2_red"]), structural_misfit=bool(d["structural_misfit"]),
-        # profile-shape fidelity: the Wasserstein ladder (W1 in optical-depth units; RMSE retired)
-        w1_ours=w1_ours, w1_adia=w1_adia, d_w1=d_w1,
+        # profile-shape fidelity (Wasserstein ladder). MAIN metric = pct_w1: W1_ours as % of
+        # τ_bot_truth (thickness-normalized, comparable across profiles). W1_ours itself is NOT
+        # stored — recover as pct_w1·τ_bot_truth/100 = w1_adia − d_w1 (user directive 2026-07-11).
+        pct_w1=(100.0 * w1_ours / tb_t) if tb_t else float("nan"),
+        w1_adia=w1_adia, d_w1=d_w1,
         w1_const=w1_const, w1_prior=w1_prior,
+        # rb-pinned COMPROMISE adiabat (uW1 fit; placeholder for the k=1 competitor):
+        # normalized-W1 score + its LWP, both evaluated like every other ladder member
+        w1_adia_pin=w1_adia_pin, lwp_pin=lwp_pin, adia_pin_r_top=adia_pin_r_top,
         # LWP
         lwp_ours=lwp_ours, lwp_truth_z=lwp_truth_z, lwp_truth_tau=lwp_truth_tau,
         lwp_bias_z=lwp_bias_z, lwp_bias_tau=lwp_bias_tau,
@@ -286,15 +325,17 @@ def _stats(xs):
                 p90=float(np.percentile(a, 90)), min=float(a.min()), max=float(a.max()))
 
 
-def _low_confidence(rows, q=10.0):
-    """The worst-decile of d_w1: good data-fit (χ² at floor) but the profile trails the oracle
-    adiabat in W1 — inherent deep-cloud OE ill-posedness (flag, don't drop). Self-scaling
-    threshold (no magic constant): the q-th percentile of pooled d_w1."""
-    dw = np.array([r["d_w1"] for r in rows], float)
-    thr = float(np.percentile(dw, q))
-    members = sorted([[r["index"], r["config"], round(r["d_w1"], 3)]
-                      for r in rows if r["d_w1"] <= thr], key=lambda t: t[2])
-    return {"thr_dw1": thr, "q_pct": q, "members": members}
+def _low_confidence(rows, q=90.0):
+    """The worst-decile of pct_w1 — the CANONICAL τ-normalized shape error — i.e. the fits not
+    to be trusted (flag, don't drop). REBASED from the un-normalized d_w1 (2026-07-16, user):
+    the absolute-τ criterion was support-scaled, so thin clouds could never trip it regardless
+    of fit quality (idx92, the 4th-worst %W1 at τ_bot≈2.2, escaped the old flag). Self-scaling
+    threshold (no magic constant): the q-th percentile of pooled pct_w1, worst-first members."""
+    pw = np.array([r["pct_w1"] for r in rows], float)
+    thr = float(np.percentile(pw, q))
+    members = sorted([[r["index"], r["config"], round(r["pct_w1"], 3)]
+                      for r in rows if r["pct_w1"] >= thr], key=lambda t: -t[2])
+    return {"thr_pct_w1": thr, "q_pct": q, "members": members}
 
 
 def summarize(rows):
@@ -306,7 +347,7 @@ def summarize(rows):
             "n": len(R),
             "converged_frac": float(np.mean([r["converged"] for r in R])),
             # PRIMARY profile-shape metric: 1-Wasserstein (optical-depth units; RMSE retired)
-            "w1_ours": _stats([r["w1_ours"] for r in R]),
+            "pct_w1": _stats([r["pct_w1"] for r in R]),
             "w1_adia": _stats([r["w1_adia"] for r in R]),
             "d_w1": _stats([r["d_w1"] for r in R]),
             "d_w1_win_rate": float(np.mean([r["d_w1"] > 0 for r in R])),
@@ -347,8 +388,8 @@ def summarize(rows):
     out["flags"] = {
         "non_converged": [(r["index"], r["config"]) for r in rows if not r["converged"]],
         "structural_misfit": [(r["index"], r["config"]) for r in rows if r["structural_misfit"]],
-        # good data-fit but worst-decile d_w1 (trails the oracle adiabat in W1): inherent OE
-        # ill-posedness deep in optically-thick cloud (manifest 2026-07-06) — flag, don't drop
+        # worst-decile pct_w1 (the canonical τ-normalized shape error): the fits not to be
+        # trusted — flag, don't drop (rebased 2026-07-16 from the support-scaled d_w1)
         "low_confidence": _low_confidence(rows),
         "re_max_edge (E: RF13 etc.)": [(r["index"], r["flight"], round(r["top_node_re"], 1))
                                        for r in rows if r["re_max_edge"]],
@@ -359,13 +400,13 @@ def summarize(rows):
 
 
 def _print_table(rows):
-    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'W1':>7} "
+    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'%W1':>7} "
            f"{'dW1':>7} {'LWPbias':>8} {'rel%':>6} {'d²_re':>7} {'d²a→x̂':>7} {'sig':>4} {'DOFS':>5}")
     print(hdr)
     print("-" * len(hdr))
     for r in sorted(rows, key=lambda r: (r["index"], r["config"])):
         print(f"{r['index']:>4} {r['flight']:>5} {r['config']:>1} {r['tau_bot_truth']:>6.1f} "
-              f"{str(r['converged']):>4} {r['w1_ours']:>7.3f} {r['d_w1']:>+7.3f} "
+              f"{str(r['converged']):>4} {r['pct_w1']:>7.2f} {r['d_w1']:>+7.3f} "
               f"{r['lwp_bias_z']:>+8.1f} {r['lwp_relbias_z']:>+6.1f} {r['d2_re']:>7.2f} "
               f"{r['d2_adia_xhat']:>7.2f} {'Y' if r['sig_nonadia'] else '.':>4} {r['dofs']:>5.2f}")
 
