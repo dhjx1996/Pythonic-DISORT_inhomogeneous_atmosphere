@@ -337,11 +337,11 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   texture inflates dense-grid DOFS/SIC ~2.7× at production tolerance. The canonical IC product is
   now the **retrieval-grid IC** (`docs/cached_results/ic_retrieval_grid.json`, computed on the
   ve046 canonical sidecars' QRCP grids), gate-verified by the forced-k / dual-linearization /
-  dual-tolerance demo and the signed-kernel tol6-vs-tol7 gate — DESIGN §17; notebook §16 rebuilt
-  on it (2026-07-15).
-- **FR bundle transfer + notebook §17 finalization [jovyan, immediate].** The FR raw sidecars
+  dual-tolerance demo and the signed-kernel tol6-vs-tol7 gate — DESIGN §17; notebook §15 rebuilt
+  on it (2026-07-15/16; overflow in `docs/IC_extra.ipynb`).
+- **FR bundle transfer + capstone finalization [jovyan, immediate].** The FR raw sidecars
   (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
-  the primary; notebook §17 (supersession-aware loader + the full metric ladder, smoke-tested)
+  the primary; the capstone section (now notebook §16; supersession-aware loader + the full metric ladder, smoke-tested)
   auto-fills and its Findings get finalized on first execution with the bundle present.
 - **Optimizer vNext [IMPLEMENTED 2026-07-10 in `_gn_inner`].** From
   `docs/optimizer_critique.txt` (git `191afed`) + the batch-3 backtrack observations, all four
@@ -361,7 +361,7 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   projected/reflective TR à la TRF is the right form).
 - ~~**v_e-corrected OSSE [branch `ve_rerun`].**~~ **RESOLVED (2026-07-15):** the config-A re-run
   at `OSSE_VEFF=0.046` ran to 125/125 canonical (consolidation record in
-  `hpc/FINAL_RESULTS_MANIFEST.md` §ve046) and notebook §16 was rebuilt on it. The glory question
+  `hpc/FINAL_RESULTS_MANIFEST.md` §ve046) and the notebook IC section (§15) was rebuilt on it. The glory question
   is answered — more sharply than anticipated: the v_e=0.10 world's 1.038 µm exact-backscatter
   anchor (×2.6) does not exist at v_e=0.046; sharp VIS glory-*ring* spikes (0.55 µm ≤×3.1,
   0.67 µm ≤×2.6, ~2.5° off backscatter) replace it. Feature-anchored angular information is

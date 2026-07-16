@@ -1233,7 +1233,7 @@ canonical.
   plotted; a purity mask (|∫K ds|/∫|K| ds > 0.5) excludes lobe-cancelling rows (cloudbow
   crossings; 4.05 µm on the thin profile).
 
-**Findings recorded in notebook §16 (aggressive rewrite 2026-07-15, framed as the CPV2012 ¶49
+**Findings recorded in the notebook's IC section (aggressive rewrite 2026-07-15; restructured by the user 2026-07-16 into notebook §15 — framing, Fig-3 trade-off contours, depth-reach corollary — with the kernel/Shapley/budget/gate material archived in `docs/IC_extra.ipynb`; framed as the CPV2012 ¶49
 extension to (i) the nonadiabatic r_e(τ) profile state — τ_bot now retrieved, no known-τ_bot upper
 bound — and (ii) the angular axis).** (A) IC is low and the spectral axis saturates: DOFS median
 4.42 (IQR 4.32–4.57) on p ∈ [6, 9], SIC median 20.7 bits; greedy 1 band = 69 %, 4 bands = 95 % of
@@ -1255,5 +1255,5 @@ recorded in §16's caveats; no IC claims are built on the mismatch runs.
 
 *Files: `scripts/{ic_retrieval_grid,ic_kforce_demo,ic_worker_wiggle,ic_kernel_figs,ic_stat_figs}.py`;
 caches `docs/cached_results/{ic_retrieval_grid.json,ic_kforce_demo.json,ic_pump_mechanism_ve046.npz,
-kernel_probe_ve046_tol{6,7}_{98,55,39}.npz}`; notebook §16 (cells 43–56); manifest "IC resolution
-(2026-07-15)".*
+kernel_probe_ve046_tol{6,7}_{98,55,39}.npz,
+ic_sidecar_K_ve046.npz}`; notebook §15 + `docs/IC_extra.ipynb`; manifest "IC resolution (2026-07-15)".*

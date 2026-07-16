@@ -22,9 +22,10 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   lives in `scripts/retrieval_worker.py` + `CHANGELOG.md`. The production-scale rigor gates
   are the standardized `tests/hpc/` suite (opt-in: `PYDISORT_HPC_GATES=1 pytest -m hpc`).
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
-  its cached inputs live in `docs/cached_results/` — §16's are the retrieval-grid IC set:
-  `ic_retrieval_grid.json`, `ic_kforce_demo.json`, `kernel_probe_ve046_*.npz`,
-  `ic_pump_mechanism_ve046.npz`).
+  its cached inputs live in `docs/cached_results/` — §15's are the retrieval-grid IC set:
+  `ic_retrieval_grid.json`, `ic_kforce_demo.json`, `ic_sidecar_K_ve046.npz`,
+  `kernel_probe_ve046_*.npz`, `ic_pump_mechanism_ve046.npz`; overflow analyses in
+  `docs/IC_extra.ipynb`).
 
 ## Layout
 

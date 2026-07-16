@@ -143,6 +143,8 @@ cached `docs/cached_results/kernel_probe_ve046_tol{6,7}_{98,55,39}.npz`): near-n
 centroid/tail tol6-vs-tol7 ≤ 0.004 (threshold 0.01). Headlines (n=123; the idx49/57 k=2 give-up
 grids excluded): DOFS median 4.42 (IQR 4.32–4.57) on p=k+2∈[6,9]; greedy 1 band = 69 % / 4 bands
 = 95 %; matched-budget bands>angles (10b×1v 2.94 vs 2b×5v 2.37, paired win 100 %); the 24-view fan
-adds +1.48 DOFS (paired median); pump 0.83 corr vs 0.52 diag. Notebook §16 rebuilt on this product
-(2026-07-15). The superseded dense-bundle files (`info_content_{definitive,mechanism}.json`,
+adds +1.48 DOFS (paired median); pump 0.83 corr vs 0.52 diag. Notebook IC section rebuilt on this product (2026-07-15; restructured 2026-07-16 into notebook
+§15 + the `docs/IC_extra.ipynb` archive; the all-sidecar K bundle `ic_sidecar_K_ve046.npz` added
+for in-notebook sub-system sweeps). kforce tol6 completed 2026-07-16: all six
+(profile × linearization) tol4-vs-tol6 k=16 agreements are 0.9–2.9 %. The superseded dense-bundle files (`info_content_{definitive,mechanism}.json`,
 `penetration_depth.npz`) stay on disk for forensics only — quote nothing from them.
