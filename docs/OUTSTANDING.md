@@ -5,7 +5,9 @@ Open items, kept deliberately prominent. Settled rationale is in
 one-line pointer** — the `## letter` headers are retained because both docs cross-reference them by
 letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **K**
 and **L**. *(Revised 2026-07-02 with the repository refactor — `CHANGELOG.md`; per-knob evidence
-in [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md).)*
+in [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md). Re-synced 2026-07-16
+after the ve_rerun→main merge: ve046 canonicalization, retrieval-grid IC, results-manifest
+retirement.)*
 
 Tags: **[BLOCKER]** must fix before retrieval works · **[DECISION]** a choice to make ·
 **[BUG]** known-wrong behaviour · **[DEFERRED]** wanted, not yet started ·
@@ -95,7 +97,10 @@ high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
 **λ=0 ⇒ bit-identical** to the un-penalised solve. Linearised calibration (2026-07-11, from stored posteriors):
 energy-weighted **λ≈0.3–1** relaxes the idx-110 kink 72–76 % (r_base +0.24→+0.73 µm toward truth) while moving
 well-constrained thin-cloud nodes only ~0.15–0.38σ — the accuracy-vs-over-smoothing knob to set per campaign.
-Depth-increasing correlation (fix 1) remains un-implemented.
+Depth-increasing correlation (fix 1) remains un-implemented. **Adopted in production (2026-07-15/16):
+the canonical ve046 campaign (`runs/_ve046_tik_fr_parts`, summary
+`docs/cached_results/retrieval_summary_ve046.json`) ran with λ=1.0; §15's retrieval-grid IC uses those
+sidecars (with the curvature term excluded from the IC prior — DESIGN §17).**
 
 ---
 
@@ -269,7 +274,9 @@ A second observable orthogonal to the scalar ToA radiance: the polarized cloudbo
 lever for droplet effective *variance* v_e, and a sharpener for cloud-top r_e. Prototyped and validated
 on the **`ve_retrieval`** branch (`src/polarized_mie.py`, `src/cloudbow_retrieval.py`). **Set aside
 until further notice** (user, 2026-06-19); full assessment + merge plan:
-`ve_retrieval:docs/ve_retrieval/ASSESSMENT.md`. Its instrument-noise counterpart (HARP2 / DoLP) is
+`ve_retrieval:docs/ve_retrieval/ASSESSMENT.md`. **Stale pointer (2026-07-16 audit): the `ve_retrieval`
+branch no longer exists locally or on origin — the prototype survives only in external clones/backups;
+locate or re-derive before reviving this item.** Its instrument-noise counterpart (HARP2 / DoLP) is
 parked in §K.
 
 ---
@@ -323,7 +330,7 @@ noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pi
 
 ---
 
-## L. Post-refactor validation + audit flags  [updated 2026-07-07]
+## L. Post-refactor validation + audit flags  [updated 2026-07-16]
 
 The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evidence in
 [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md)):
@@ -339,10 +346,10 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   ve046 canonical sidecars' QRCP grids), gate-verified by the forced-k / dual-linearization /
   dual-tolerance demo and the signed-kernel tol6-vs-tol7 gate — DESIGN §17; notebook §15 rebuilt
   on it (2026-07-15/16; overflow in `docs/IC_extra.ipynb`).
-- **FR bundle transfer + capstone finalization [jovyan, immediate].** The FR raw sidecars
-  (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
-  the primary; the capstone section (now notebook §16; supersession-aware loader + the full metric ladder, smoke-tested)
-  auto-fills and its Findings get finalized on first execution with the bundle present.
+- ~~**FR bundle transfer + capstone finalization.**~~ **RESOLVED (2026-07-16):** the capstone
+  runs on the canonical ve046 sidecars (`runs/_ve046_tik_fr_parts`); metrics analyzed and
+  cached (`docs/cached_results/retrieval_summary_ve046.json`, notebook §16 + `docs/FR_extra.ipynb`).
+  The original v_e=0.10 `_fr_parts` bundle is superseded (DESIGN §16 header).
 - **Optimizer vNext [IMPLEMENTED 2026-07-10 in `_gn_inner`].** From
   `docs/optimizer_critique.txt` (git `191afed`) + the batch-3 backtrack observations, all four
   accepted improvements landed: (i) cost stagnation now tests the **monotone total cost J**
@@ -353,15 +360,15 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   accept eases by `max(⅓, 1−(2ρ−1)³)` — to shorten the expensive reject/backtrack chains; (iv)
   SciPy Cholesky (`assume_a='pos'`) + `H_gn = lhs_base + Sa_inv` hoisted out of the backtrack loop.
   Behaviour verified by `tests/23_retrieval_test.py` (23g truth recovery, 23h L1-resume equivalence,
-  23i τ_bot); rigorous population-scale re-validation happens on the HPC campaign. On
+  23i τ_bot); population-scale validation delivered by the ve046 campaigns (125/125 canonical). On
   **trust-region-vs-clamping**: a formal box-constrained TR is *not* warranted here — the bounds
   bind rarely (essentially the `re_max`-edge class), projected-step LM is standard practice for
   that regime, and TR radius control is functionally equivalent to LM damping (it would not
   remove the reject evals); revisit only if boundary-active retrievals become common (then a
   projected/reflective TR à la TRF is the right form).
-- ~~**v_e-corrected OSSE [branch `ve_rerun`].**~~ **RESOLVED (2026-07-15):** the config-A re-run
-  at `OSSE_VEFF=0.046` ran to 125/125 canonical (consolidation record in
-  `hpc/FINAL_RESULTS_MANIFEST.md` §ve046) and the notebook IC section (§15) was rebuilt on it. The glory question
+- ~~**v_e-corrected OSSE [branch `ve_rerun`].**~~ **RESOLVED (2026-07-15; branch merged to main
+  and deleted 2026-07-16):** the config-A re-run at `OSSE_VEFF=0.046` ran to 125/125 canonical
+  and the notebook IC section (§15) was rebuilt on it. The glory question
   is answered — more sharply than anticipated: the v_e=0.10 world's 1.038 µm exact-backscatter
   anchor (×2.6) does not exist at v_e=0.046; sharp VIS glory-*ring* spikes (0.55 µm ≤×3.1,
   0.67 µm ≤×2.6, ~2.5° off backscatter) replace it. Feature-anchored angular information is

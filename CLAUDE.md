@@ -10,11 +10,13 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   LaTeX report, which lives on in git history); **`docs/hyperparameter_audit_2026-07.md`**
   — per-knob evidence and flags.
 - **`docs/DESIGN_DECISIONS.md`** — settled decisions and *why* (solver lineage, the
-  no-positive-exponents invariant, delta-M/TMS, precision policy, priors, IC findings,
-  full-retrieval design; §16 = the FR capstone + 2026-07 refactor record).
+  no-positive-exponents invariant, delta-M/TMS, precision policy, priors, full-retrieval design;
+  §16 = the FR capstone + 2026-07 refactor record — superseded as canonical by the ve046
+  campaign per its header; §17 = retrieval-grid IC, the canonical IC methodology).
   **`docs/OUTSTANDING.md`** — open problems (currently §K noise items and §L post-refactor
-  actions). Check OUTSTANDING before assuming a feature exists or is missing. Both revised
-  2026-07-02; `CHANGELOG.md` is the refactor record + HPC validation brief.
+  actions). Check OUTSTANDING before assuming a feature exists or is missing. Both re-synced
+  2026-07-16 (post-merge); `CHANGELOG.md` is the refactor record + HPC validation brief. The
+  old results manifest is retired (stale batch-3 results; git history).
 - **`hpc/`** — everything about the HPC production runs: the re-runnable AGENT task specs
   (`AGENT_all125_{rad,fr}.md`; the dense-grid `ic` spec is retired — retrieval-grid IC is
   pure post-processing), `STRATEGY_hpc_retrieval_runs.md` (compute-minimization
@@ -25,8 +27,9 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
   its cached inputs live in `docs/cached_results/` — §15's are the retrieval-grid IC set:
   `ic_retrieval_grid.json`, `ic_kforce_demo.json`, `ic_sidecar_K_ve046.npz`,
-  `kernel_probe_ve046_*.npz`, `ic_pump_mechanism_ve046.npz`; overflow analyses in
-  `docs/IC_extra.ipynb`).
+  `kernel_probe_ve046_*.npz`, `ic_pump_mechanism_ve046.npz`; §16's canonical FR metrics are
+  `retrieval_summary_ve046.json` from the ve046 tik campaign, `runs/_ve046_tik_fr_parts`).
+  Overflow analyses: `docs/IC_extra.ipynb` (IC) and `docs/FR_extra.ipynb` (retrievals).
 
 ## Layout
 

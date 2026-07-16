@@ -81,7 +81,7 @@ preserve it.
 
 ---
 
-## 3. Retrieval grid = sensitivity-selected subset of the ODE grid; information is ToA-weighted; retrievable DOF is small  [SETTLED — open sub-questions in OUTSTANDING G]
+## 3. Retrieval grid = sensitivity-selected subset of the ODE grid; information is ToA-weighted; retrievable DOF is small  [SETTLED — sub-questions resolved, record in OUTSTANDING G]
 
 Three robust statements below. Two earlier claims — an exact **"rank-4 ceiling"** and full
 **profile-independence** — are *deliberately not asserted* (no rigorous basis; measured under
@@ -1150,7 +1150,7 @@ flagged in the sidecar).
 
 ---
 
-## 16. The all-125 FR capstone + the 2026-07 refactor  [SETTLED — run complete 2026-07-06; canonical set in `hpc/FINAL_RESULTS_MANIFEST.md`]
+## 16. The all-125 FR capstone + the 2026-07 refactor  [SETTLED — run complete 2026-07-06; superseded as canonical by the ve046 campaign (v_e=0.046, curvature λ=1) — metrics in `docs/cached_results/retrieval_summary_ve046.json`, presented in notebook §16 + `docs/FR_extra.ipynb`]
 
 The **capstone full-retrieval campaign** (`hpc/AGENT_all125_fr.md`): for every valid VOCALS profile,
 the §15 joint log-space retrieval in two leak-free prior configurations sharing one compiled forward —
@@ -1163,7 +1163,7 @@ the §15 joint log-space retrieval in two leak-free prior configurations sharing
 shape metric, d_W1 = W1_adia − W1_ours; RMSE **retired 2026-07-08** (it penalized truth jaggedness
 and its verdict flipped under τ_bot bookkeeping); LWP-bias (the disjoint **magnitude** metric) incl.
 the §5c v_e-corrected bookkeeping AND the oracle-adiabat LWP baseline; Mahalanobis; consumed by
-notebook §17). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
+the notebook's capstone section — §16 after the 2026-07-16 restructure). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
 setup cache (both production-verified; the would-be L3 compile cache was measured a no-op for FR
 and removed).
 
@@ -1173,8 +1173,8 @@ r_e(τ) deep in optically-thick cloud — inherent OE ill-posedness, flagged not
 median τ_bot ≈ 26). Two solver findings from the run, both
 folded into the code and the strategy doc: (i) the **cost-stagnation sign bug** — the stop compared
 signed `rel` (not `abs(rel)`) on the data-only misfit, which an accepted LM step can push negative;
-fixed 2026-07-04, all 29 technically-affected configs continued/re-run and superseded per the
-manifest; (ii) **`max_n_outer` semantics** — the worker's `max_n_outer=1` (select-once, NO re-mesh
+fixed 2026-07-04, all 29 technically-affected configs continued/re-run and superseded;
+(ii) **`max_n_outer` semantics** — the worker's `max_n_outer=1` (select-once, NO re-mesh
 of any tier; the escalation counter starts at 2 by design) is deliberate for the A-vs-B paired
 comparison; the placement re-mesh tier is the library default `max_n_outer=2` and was used for the
 7 genuinely grid-inadequate configs via `retrieve_one(..., max_n_outer=2)` +
@@ -1207,7 +1207,7 @@ dense/ODE-grid Jacobians at production tol=1e-4. A tolerance ladder on idx98 gav
 phantom rank grows with row × column count (the "row-count law") — dense grids inflate essentially
 without bound, while *linear* functionals (retrievals, kernel-weighted means — the Platnick
 Table-3a validations) are immune. The bundle is ruled ERRONEOUS; nothing from it is quoted
-(manifest, 2026-07-14).
+(ruling 2026-07-14).
 
 **The fix is a reframing, not a recompute.** Operational information content lives on the
 retrieval grid: DOFS/SIC/per-band+per-view-group exact Shapley/matched-row budgets are computed
@@ -1260,4 +1260,4 @@ recorded in §16's caveats; no IC claims are built on the mismatch runs.
 2026-07-16 merger of the former `ic_kernel_figs` + `ic_stat_figs`);
 caches `docs/cached_results/{ic_retrieval_grid.json,ic_kforce_demo.json,ic_pump_mechanism_ve046.npz,
 kernel_probe_ve046_tol{6,7}_{98,55,39}.npz,
-ic_sidecar_K_ve046.npz}`; notebook §15 + `docs/IC_extra.ipynb`; manifest "IC resolution (2026-07-15)".*
+ic_sidecar_K_ve046.npz}`; notebook §15 + `docs/IC_extra.ipynb`.*

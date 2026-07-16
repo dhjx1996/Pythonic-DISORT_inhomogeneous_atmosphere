@@ -13,8 +13,10 @@
 > no-op for FR (execution-bound) + a Lustre small-file liability; keep `_jax_cache` for IC's
 > ptxas mitigation (now at `runs/_jax_cache`). See `STRATEGY_hpc_retrieval_runs.md` §2.4.
 
-> **✅ BATCH-3 COMPLETE (2026-07-06)** — all 125×{A,B} done, 0 unresolved failures; canonical
-> set + supersessions in `FINAL_RESULTS_MANIFEST.md`. **This spec stays as the template for the
+> **✅ BATCH-3 COMPLETE (2026-07-06)** — all 125×{A,B} done, 0 unresolved failures. **Since
+> superseded as canonical by the ve046 (v_e=0.046, curvature λ=1) campaign** — see DESIGN §16's
+> header; the results manifest that tracked batch-3 supersessions was retired 2026-07-16 (git
+> history). **This spec stays as the template for the
 > next FR-class run** (e.g. a corrected-v_e OSSE). Lessons already baked into the code or this
 > spec — honor them on a re-run:
 >
@@ -38,7 +40,7 @@
 >    `REMESH_CHI2_THR`, default 2.0) can be re-run with `retrieve_one(..., max_n_outer=2)`
 >    (placement re-mesh); a pathological config-B draw can be re-drawn with a truth-free
 >    climatology filter (seed base `3000+index`). Corrected results go to flagged supersession
->    dirs (`_fr_parts_remesh/` etc.) recorded in the manifest — never overwrite `_fr_parts/`.
+>    dirs (`_fr_parts_remesh/` etc.) recorded in the run report — never overwrite `_fr_parts/`.
 >    `conv=False` at the iteration cap *at* the χ² floor is a technicality, not a failure.
 > 6. **Changing the observing system (bands, views, μ0, NQuad, `V_EFF`, r_e grid, NLeg) re-keys
 >    everything automatically** — `osse_config.signature()` covers all of it, so the radiance
@@ -338,5 +340,5 @@ min / median / max, and which indices walled / needed resume** — so the primar
 (5) venue + whether the `XLA_FLAGS` single-thread fix held (no hung tasks) + whether checkpoint/resume
 was exercised; (6) any errors / timed-out task indices; (7) the **post-run stopping-criterion audit**
 (banner item 4): population-wide final-iteration `rel` sweep + which configs were continuation-tested,
-and any supersessions recorded manifest-style. The primary downloads
+and any supersessions recorded in the run report. The primary downloads
 `cloud_profile_retrieval/fr_bundle.zip` and runs all analysis (`retrieval_analysis.py`) on jovyan.

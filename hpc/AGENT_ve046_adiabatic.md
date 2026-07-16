@@ -19,7 +19,7 @@ profile-by-profile.
 
 **The canonical run is `runs/_ve046_tik_fr_parts`** (config A, 125 profiles), driven by
 `hpc/sbatch/_ve046_tik_gpu_wide_fq.sbatch` and its CPU/GPU siblings. It is **not** batch-3
-(`runs/_fr_parts`, v_eff=0.10, `FINAL_RESULTS_MANIFEST.md`) and **not** the earlier ve046 pass
+(`runs/_fr_parts`, v_eff=0.10) and **not** the earlier ve046 pass
 (`runs/_ve_rerun_fr_parts`) — both are superseded. Canonical config:
 
 | knob | value |
