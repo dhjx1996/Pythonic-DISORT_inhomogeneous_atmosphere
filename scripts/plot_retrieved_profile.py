@@ -6,8 +6,14 @@ this script rather than one-off inline plotting code.
 
 All curves in absolute optical depth tau (0 = cloud top, tau_bot = cloud base):
   * truth (in situ)       -- raw VOCALS-REx r_e(tau) samples, grey
-  * prior                 -- climatological prior mean, dense (fwd.profile on x_a_log),
-                              displayed against the RETRIEVED tau_bot axis, orange dashed
+  * prior                 -- climatological prior mean SHAPE, dense (fwd.profile on x_a_log
+                              with its tau_bot entry swapped to the pre-retrieved tau_bot_pre),
+                              displayed against the PRE-RETRIEVED tau_bot axis, orange dashed
+                              (profile() reads tau_bot from x itself, not the tau query points --
+                              x_a_log's own tau_bot entry is the unconditioned climatological
+                              population mean, which silently mis-scales the s=tau/tau_bot
+                              mapping if left in place; swap it to tau_bot_pre, the per-profile
+                              pre-retrieval estimate, so the full [0,1] shape displays correctly)
   * best-fit adiabat (oracle, W1) -- re_adia_dense from the sidecar (fit against truth,
                               so on the TRUTH tau_bot axis), green dash-dot, with
                               top/base circle markers
@@ -35,6 +41,7 @@ Env: OSSE_VEFF/OSSE_RE_MAX/OPTICS_CACHE/RADIANCE_CACHE default to the ve046 fq
 """
 import sys
 import os
+import json
 from pathlib import Path
 
 import numpy as np
@@ -76,13 +83,20 @@ def main():
     S_hat_diag = np.diag(np.asarray(z["S_hat_log"], float))
     re_nodes_ret = np.asarray(z["re_nodes_ret"], float)
     r_base_ret = float(z["r_base_ret"])
+    tau_bot_pre = json.loads((parts_dir / f"{idx}.json").read_text())["tau_bot_pre"]
 
     opt = oc.load_optics(oc.OPTICS_CACHE)
     fwd = oc.build_forward(opt, tau_bot=tau_bot_ret, r_base=r_base_ret,
                            views="retrieval", jac_mode="fwd")
     tau_dense_ret = S_DENSE * tau_bot_ret
     tau_dense_adia = S_DENSE * truth_tau_bot
-    re_prior_dense = fwd.profile(x_a_log, s_grid, tau_dense_ret)     # prior shape, displayed on the retrieved tau_bot axis
+    # profile() reads tau_bot from x itself (not the tau query points) -- x_a_log's own
+    # tau_bot entry (last) is the unconditioned climatological population mean; swap it
+    # to the pre-retrieved tau_bot_pre so the prior's full [0,1] shape displays correctly.
+    x_a_prior_log = x_a_log.copy()
+    x_a_prior_log[-1] = np.log(tau_bot_pre)
+    tau_dense_prior = S_DENSE * tau_bot_pre
+    re_prior_dense = fwd.profile(x_a_prior_log, s_grid, tau_dense_prior)
 
     sigma_nodes = re_nodes_ret * np.sqrt(S_hat_diag[:len(s_grid)])
     sigma_rbase = r_base_ret * np.sqrt(S_hat_diag[len(s_grid)])
@@ -90,7 +104,7 @@ def main():
 
     fig, ax = plt.subplots(figsize=(7, 8))
     ax.plot(z["truth_re"], z["truth_tau"], color="grey", lw=1.3, label="truth (in situ)")
-    ax.plot(re_prior_dense, tau_dense_ret, color="tab:orange", ls="--", lw=1.8, label="prior")
+    ax.plot(re_prior_dense, tau_dense_prior, color="tab:orange", ls="--", lw=1.8, label="prior")
     ax.plot(z["re_adia_dense"], tau_dense_adia, color="tab:green", ls="-.", lw=1.6,
             label="best-fit adiabat (oracle, W1)")
     ax.plot([z["re_adia_dense"][0], z["re_adia_dense"][-1]],

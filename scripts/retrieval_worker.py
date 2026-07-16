@@ -105,6 +105,15 @@ CURVATURE_LAMBDA = float(os.environ.get('CURVATURE_LAMBDA', '0.0'))  # 2nd-diffe
 MAX_N_OUTER = int(os.environ.get('MAX_N_OUTER', '1'))             # main-path re-mesh cap (default 1 =
 #   select-once, the published-campaign behavior; corrective re-runs pass 2 via retrieve_one() directly —
 #   this env lets a whole campaign (e.g. ve_rerun) opt every profile into placement re-meshing up front)
+_FKA = os.environ.get('FORCE_K_ACTIVE')                           # ablation knob (2026-07-16, OPT-IN):
+FORCE_K_ACTIVE = int(_FKA) if _FKA else None                      # pin select_retrieval_grid's k_active
+#   instead of letting the noise-aware filter (auto_k_active) pick it. FORCE_K_ACTIVE=1 forces exactly
+#   ONE free interior node — cloud-top s≈0, always retained first — so together with the r_base anchor
+#   (s=1) the retrieved profile has exactly 2 shape knots and interpolates re5-linear between them: the
+#   SAME functional form as make_adiabatic_prior. This makes the RETRIEVAL itself adiabatic-constrained
+#   (not just the first guess/prior mean), the "collapse to 2 adiabatic DOF" ablation (cf.
+#   best_fit_adiabatic's oracle floor, which does this post-hoc/non-causally). Default None = filter-
+#   selected k (unchanged production path).
 FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior configs to run
 if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
     raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
@@ -212,7 +221,11 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
             # CLIM_TAU_BOT feeds the pre-retrieval's prior anchor -> tau_bot_pre/grid in the
             # cached setup depend on it; a different feed must never load this setup. Conditional
             # (like osse_config.signature's quadrature tag) so every legacy cache stays valid.
-            + (f"|ctb{os.environ['CLIM_TAU_BOT']}" if os.environ.get('CLIM_TAU_BOT') else ''))
+            + (f"|ctb{os.environ['CLIM_TAU_BOT']}" if os.environ.get('CLIM_TAU_BOT') else '')
+            # FORCE_K_ACTIVE changes the SELECTED s_grid itself (not just execution) -> a
+            # canonical (filter-selected) setup cache must never be mistaken for a forced-k one
+            # or vice versa (rigor over results — see FORCE_K_ACTIVE docstring above).
+            + (f"|k{FORCE_K_ACTIVE}" if FORCE_K_ACTIVE is not None else ''))
     if setup_cache_path is not None and os.path.exists(setup_cache_path):
         try:
             _sc = np.load(setup_cache_path, allow_pickle=True)
@@ -264,7 +277,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
     _t = time.time()
     x_fg2 = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
     s_grid, _, _ = roe.select_retrieval_grid(
-        fwd, x_fg2, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys)
+        fwd, x_fg2, S_COARSE, k_active=FORCE_K_ACTIVE, Se=Se, prior_builder=pb_phys)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] final select_retrieval_grid "
               f"(at tau_bot_pre={tau_bot_pre:.2f}) -> k={len(s_grid)}", flush=True)
@@ -415,7 +428,7 @@ def main():
     _ret_optics_path = RETRIEVAL_OPTICS_CACHE or str(OPTICS_CACHE)
     rec = dict(index=index, flight=flight, NQuad=NQ, cost_rtol=COST_RTOL,
                state_space='log', precision=_PREC, tol=SOLVER_TOL, mode_map=MODE_MAP,
-               radiance_cache=RADIANCE_CACHE.name,
+               radiance_cache=RADIANCE_CACHE.name, force_k_active=FORCE_K_ACTIVE,
                # optics-table provenance (2026-07-12 quadrature/staircase fix): flags
                # which table generation produced this result — legacy 32-pt moving vs
                # the fixed-quadrature derivative-grade rebuild. osig/truth_v_eff describe
