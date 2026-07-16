@@ -22,7 +22,9 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   lives in `scripts/retrieval_worker.py` + `CHANGELOG.md`. The production-scale rigor gates
   are the standardized `tests/hpc/` suite (opt-in: `PYDISORT_HPC_GATES=1 pytest -m hpc`).
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
-  its two inputs live in `docs/cached_results/`).
+  its cached inputs live in `docs/cached_results/` — §16's are the retrieval-grid IC set:
+  `ic_retrieval_grid.json`, `ic_kforce_demo.json`, `kernel_probe_ve046_*.npz`,
+  `ic_pump_mechanism_ve046.npz`).
 
 ## Layout
 
@@ -31,7 +33,7 @@ src/pydisort_riccati_jax/   the package (all importable code)
 scripts/                    the 6 worker/analysis entry points the AGENT specs run
 tests/                      pytest suite (float32 default / float64 / hpc partitions)
 hpc/                        run specs, strategy, sbatch
-docs/                       results notebook + its 2 cached inputs, figures, report, design docs
+docs/                       results notebook + its cached inputs, figures, report, design docs
 runs/                       (untracked) worker outputs: parts dirs, logs, checkpoints
 ../data/                    (untracked, workspace-level) large caches: optics table,
                             osse_radiances.npz; VOCALS netCDFs are in

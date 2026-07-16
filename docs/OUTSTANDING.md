@@ -332,9 +332,13 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   cluster; float32 suite 68/68 (CPU) + float64 26/26 (GPU) vs PythonicDISORT. The 3-profile
   golden cross-check is **retired** (stale different-grid reference — the retrieval is
   grid-sensitive across code versions, so it was never a valid cross-version gate; DESIGN §16).
-- ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06):** the IC re-run on the reconciled refactor
-  is the canonical bundle (`hpc/FINAL_RESULTS_MANIFEST.md`); the Se-fix erratum was *measured* on
-  the fixed selection — |ΔDOFS| ≤ 0.7 %, |ΔSIC| ≤ 0.21 % (mechanism ≤ 1.4 %), negligible.
+- ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06), then SUPERSEDED (2026-07-14/15):** the
+  refactor-re-run IC bundle was subsequently ruled **erroneous** — adaptive-integrator Jacobian
+  texture inflates dense-grid DOFS/SIC ~2.7× at production tolerance. The canonical IC product is
+  now the **retrieval-grid IC** (`docs/cached_results/ic_retrieval_grid.json`, computed on the
+  ve046 canonical sidecars' QRCP grids), gate-verified by the forced-k / dual-linearization /
+  dual-tolerance demo and the signed-kernel tol6-vs-tol7 gate — DESIGN §17; notebook §16 rebuilt
+  on it (2026-07-15).
 - **FR bundle transfer + notebook §17 finalization [jovyan, immediate].** The FR raw sidecars
   (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
   the primary; notebook §17 (supersession-aware loader + the full metric ladder, smoke-tested)
@@ -355,12 +359,13 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   that regime, and TR radius control is functionally equivalent to LM damping (it would not
   remove the reject evals); revisit only if boundary-active retrievals become common (then a
   projected/reflective TR à la TRF is the right form).
-- **v_e-corrected OSSE [branch `ve_rerun`].** §5c shows v_e=0.10 is a poor VOCALS constant
-  (zero-median-bias 0.037 / min-RMS 0.046). The *bookkeeping* consequence is already handled
-  post-hoc (`retrieval_analysis` C-corrected LWP columns — first-order equivalent of a re-run);
-  a config-A re-run at `OSSE_VEFF≈0.046` tests the residual *optics* consequence (radiance
-  realism — the §16 angular findings ride on v_e-sensitive glory/cloudbow features, notebook
-  §16 Fig 0b). Pilot-first; spec in `hpc/AGENT_ve_rerun.md`.
+- ~~**v_e-corrected OSSE [branch `ve_rerun`].**~~ **RESOLVED (2026-07-15):** the config-A re-run
+  at `OSSE_VEFF=0.046` ran to 125/125 canonical (consolidation record in
+  `hpc/FINAL_RESULTS_MANIFEST.md` §ve046) and notebook §16 was rebuilt on it. The glory question
+  is answered — more sharply than anticipated: the v_e=0.10 world's 1.038 µm exact-backscatter
+  anchor (×2.6) does not exist at v_e=0.046; sharp VIS glory-*ring* spikes (0.55 µm ≤×3.1,
+  0.67 µm ≤×2.6, ~2.5° off backscatter) replace it. Feature-anchored angular information is
+  v_e-conditional; Finding B is re-established on the v_e-robust angular envelope (DESIGN §17).
 - **μ0 = 0.9 conditionality [scope].** All published IC/FR numbers are single-geometry; quantify
   DOFS/band-ranking sensitivity to μ0 (cheap spot-check) and adopt μ0 binning for operational
   per-scene work (compile-per-bin; STRATEGY §4).

@@ -127,3 +127,22 @@ tolerance. Linear functionals (retrievals, kernel-weighted averages) are immune 
 validations). Recompute in flight under **frozen-step Jacobians** (`fixed_n_steps`, uniform StepTo;
 `tests/22_fixed_steps_test.py`) at the fq/ve046 config — until it lands, no DOFS/SIC number from
 the old bundle may be quoted.
+
+**IC resolution (2026-07-15): retrieval-grid IC is the canonical IC product.** The replacement is
+a reframing, not a dense-grid recompute: quadratic IC functionals are computed on the operational
+QRCP retrieval grids of the 125 canonical ve046 sidecars (`K_log`/`Sa_log`/σ at the retrieved
+state, pure OE prior) — `scripts/ic_retrieval_grid.py` → `docs/cached_results/ic_retrieval_grid.json`
+(125/125, 0 errors; recompute matches the stored DOFS/SIC to 1e-14). Rationale: the retrieval grid
+is the identifiable subspace where the functionals are texture-converged at production tolerance
+(QRCP-grid IC = ODE-grid IC projected onto its identifiable subspace; DESIGN §17). Gates, all PASS:
+(i) forced-k saturation (`scripts/ic_kforce_demo.py`, k=4..16, both linearization points,
+tol 1e-4 vs 1e-6): DOFS plateaus, linearization agreement ≲3 %, tolerance agreement 2.4/1.8/1.2 %
+at k=16 (idx98/55/39) — `runs/_ic_kforce_tol{4,6}/`, cached `docs/cached_results/ic_kforce_demo.json`;
+(ii) signed-kernel convergence on the ve046 probes (`runs/_wiggle_mie_ve046_tol{6,7}_parts/`,
+cached `docs/cached_results/kernel_probe_ve046_tol{6,7}_{98,55,39}.npz`): near-nadir signed
+centroid/tail tol6-vs-tol7 ≤ 0.004 (threshold 0.01). Headlines (n=123; the idx49/57 k=2 give-up
+grids excluded): DOFS median 4.42 (IQR 4.32–4.57) on p=k+2∈[6,9]; greedy 1 band = 69 % / 4 bands
+= 95 %; matched-budget bands>angles (10b×1v 2.94 vs 2b×5v 2.37, paired win 100 %); the 24-view fan
+adds +1.48 DOFS (paired median); pump 0.83 corr vs 0.52 diag. Notebook §16 rebuilt on this product
+(2026-07-15). The superseded dense-bundle files (`info_content_{definitive,mechanism}.json`,
+`penetration_depth.npz`) stay on disk for forensics only — quote nothing from them.

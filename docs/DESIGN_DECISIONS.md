@@ -776,7 +776,10 @@ while the *correlated* prior extends the reach to the base (≈ **1.00 / 0.99 / 
 ~0.6 in normalized depth uniformly, and the flux-albedo's vertical localization is *entirely*
 prior-mediated (direct reach ≈ 0). So the "tight where the measurement is blind" design (d) is
 vindicated population-wide: the deep r_base is reconstructed by the prior's smoothness from the
-observable upper cloud, not measured. (The prior-viability *ladder* of (e) — uninformative ≫ marine_sc
+observable upper cloud, not measured. (Re-measured on the operational retrieval grid at population
+scale, 2026-07-15, after the dense-grid IC supersession: deepest-node posterior-variance reduction
+median **0.83 correlated vs 0.52 diagonal** over the 123 canonical ve046 records — §17.) (The
+prior-viability *ladder* of (e) — uninformative ≫ marine_sc
 ≈ climatology — was **not** re-run at NQuad=48; it remains the NQuad=32 Stage-1 pilot result.)
 
 **(g) Hyperparameter scoping — prior correlation length ℓ (deferred, 2026-06-23).** The smoothness
@@ -946,7 +949,7 @@ exploit embarrassing parallelism *across* columns, never single-column core-scal
 
 ---
 
-## 14. Information-content profiling (DEFINITIVE) — spectral verification + angular novelty  [SETTLED — 2026-06-24]
+## 14. Information-content profiling (DEFINITIVE) — spectral verification + angular novelty  [SUPERSEDED 2026-07-15 → §17 — dense-grid quadratic IC ruled texture-inflated; retrieval-grid IC is canonical]
 
 The definitive Stage-1 IC run (supersedes the pilot §15 / `info_content_stage1.py`). Reports Rodgers
 **DOFS = tr(A) = Σ sᵢ²/(1+sᵢ²)** and Shannon **SIC = ½ Σ log₂(1+sᵢ²)** of the minimally-constrained
@@ -1190,3 +1193,67 @@ old golden-probe gate is **retired** (stale different-grid reference — the ret
 grid-sensitive across code versions, so it was never a valid cross-version check; validation is
 the pytest suites + the L1/L2 gates + per-retrieval sanity checks). L2 setup caches are keyed
 `v2|…` (pre-refactor caches recompute by design).
+
+## 17. Retrieval-grid information content — the dense-grid IC supersession  [SETTLED — 2026-07-15]
+
+**The failure (2026-07-14 forensics).** The §14 "definitive" IC bundle computed DOFS/SIC from
+dense/ODE-grid Jacobians at production tol=1e-4. A tolerance ladder on idx98 gave DOFS
+9.12/7.06/5.71/4.86 at tol 1e-4…1e-7 — geometric decay (×0.63/decade), Richardson limit ≈3.4, i.e.
+~2.7× inflation at production tolerance. Mechanism: adaptive-integrator Jacobian *texture*
+(tolerance-scale structure, incoherent row-to-row) is rectified by quadratic functionals, and the
+phantom rank grows with row × column count (the "row-count law") — dense grids inflate essentially
+without bound, while *linear* functionals (retrievals, kernel-weighted means — the Platnick
+Table-3a validations) are immune. The bundle is ruled ERRONEOUS; nothing from it is quoted
+(manifest, 2026-07-14).
+
+**The fix is a reframing, not a recompute.** Operational information content lives on the
+retrieval grid: DOFS/SIC/per-band+per-view-group exact Shapley/matched-row budgets are computed
+per canonical ve046 record from the sidecar `K_log`/`Sa_log`/σ at the retrieved state (pure OE
+prior — the curvature-Tikhonov term is an optimizer device, not prior information, and is
+excluded). **The QRCP-grid IC is the ODE-grid IC projected onto its identifiable subspace** —
+p = k+2 ∈ [6, 9] is small enough that the functionals are texture-converged at production
+tolerance. `scripts/ic_retrieval_grid.py` → `docs/cached_results/ic_retrieval_grid.json` (125/125,
+0 errors; the recompute matches the sidecars' stored DOFS/SIC to 1e-14). The frozen-step Jacobian
+seam (`fixed_n_steps`/`freeze_step_grads`; `tests/22_fixed_steps_test.py`) was built as the
+dense-grid alternative and remains validated infrastructure, but the retrieval-grid product is
+canonical.
+
+**Gates (all PASS, 2026-07-15).**
+- *Grid echo* (the sharpest attack: DOFS ≤ p by construction, and QRCP chose k with the same
+  noise/prior): `scripts/ic_kforce_demo.py` forces k = 4→16 past QRCP's k≈5, with fresh QRCP
+  selection + LOO prior rebuild at each forced k, at both linearization points ('prior' =
+  climatological prior-mean r_e at the retrieved τ_bot; 'retrieved' = canonical x̂ interpolated)
+  × both tolerances (1e-4, 1e-6). DOFS plateaus — no k-tracking; linearizations agree ≲ 3 %;
+  tolerance agreement at k=16 is 2.4/1.8/1.2 % (idx98/55/39). Residual tolerance sensitivity of
+  the population numbers ≈ 2 % (vs the dense grid's ~2.7× inflation).
+- *Kernel convergence:* ve046 kernel probes (32-view fan, 51-pt s-grid, `ic_worker_wiggle`) at
+  tol 1e-6 vs 1e-7: signed near-nadir centroid/tail agree ≤ 0.004 (gate 0.01) for idx98/55/39.
+  The **signed Eq-3 kernel** is the primary depth object — |K| rectifies sign-flip texture into
+  fake deep-tail mass in the thin-cloud absorbing regime (median Eq-3 error ×2) and is not
+  plotted; a purity mask (|∫K ds|/∫|K| ds > 0.5) excludes lobe-cancelling rows (cloudbow
+  crossings; 4.05 µm on the thin profile).
+
+**Findings recorded in notebook §16 (aggressive rewrite 2026-07-15, framed as the CPV2012 ¶49
+extension to (i) the nonadiabatic r_e(τ) profile state — τ_bot now retrieved, no known-τ_bot upper
+bound — and (ii) the angular axis).** (A) IC is low and the spectral axis saturates: DOFS median
+4.42 (IQR 4.32–4.57) on p ∈ [6, 9], SIC median 20.7 bits; greedy 1 band = 69 %, 4 bands = 95 % of
+full DOFS (SIC: 54 %/90 % — the two currencies kept distinct per CPV2012 ¶31); per-band Shapley
+0.29–0.31 (window VNIR) → 0.71/0.73 (3.7/4.05 µm), first greedy pick 3.7 or 4.05 µm in 113/123.
+(B) Bands and angles not interchangeable in either direction: matched-row budgets 10b×1v 2.94 vs
+2b×5v 2.37 (paired win 100 %; 20/40-row budgets 99 %), yet the 24-view fan adds +1.48 DOFS (paired
+median, IQR 1.34–1.67) on top of the saturated spectrum, and the 6-group angular Shapley never →0
+(0.87 → 0.64–0.68). Mechanism: the correlation pump — deepest-node variance reduction median 0.83
+correlated vs 0.52 diagonal (§11(f) re-measured on the retrieval grid). **v_e-correction result:**
+the v_e=0.10 glory anchor (1.038 µm ×2.6 at exact backscatter, unique) does not exist at
+v_e=0.046; sharp VIS glory-*ring* spikes appear ~2.5° off backscatter instead (0.55 µm ≤ ×3.1 at
+µ=0.918, 0.67 µm ≤ ×2.6 at µ=0.879; tol-converged) — feature-anchored angular information is real
+but v_e-conditional, and Finding B rests on the v_e-robust envelope (absorber oblique gain ×1.6–3.7
++ depth diversity; the oblique µ ≤ 0.78 Shapley groups are ring-free). Population medians exclude
+idx49/57 (k=2 give-up grids, true-τ_bot-fed pathology provenance; their pre-treatment k=6 grids
+gave 4.86/4.06 DOFS — exclusion is conservative). The one-sentence mismatch-campaign caution is
+recorded in §16's caveats; no IC claims are built on the mismatch runs.
+
+*Files: `scripts/{ic_retrieval_grid,ic_kforce_demo,ic_worker_wiggle,ic_kernel_figs,ic_stat_figs}.py`;
+caches `docs/cached_results/{ic_retrieval_grid.json,ic_kforce_demo.json,ic_pump_mechanism_ve046.npz,
+kernel_probe_ve046_tol{6,7}_{98,55,39}.npz}`; notebook §16 (cells 43–56); manifest "IC resolution
+(2026-07-15)".*
