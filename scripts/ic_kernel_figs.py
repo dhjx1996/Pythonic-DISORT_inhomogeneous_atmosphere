@@ -84,6 +84,24 @@ def fig0a():
     print("saved", f"{PREFIX}_fig0a_signed_kernels.png")
 
 
+def _smooth_nan(y, k=5):
+    """NaN-aware running mean for DISPLAY (per-view signed centroids jitter — real,
+    tol6/tol7-converged texture, per the 2026-07-15 full-fan gate check — not noise;
+    smoothing is cosmetic, matching the original §16 Fig 0b convention)."""
+    y = np.asarray(y, float)
+    valid = np.isfinite(y)
+    yz = np.where(valid, y, 0.0)
+    pad = k // 2
+    yz_p = np.r_[np.repeat(yz[0], pad), yz, np.repeat(yz[-1], pad)]
+    v_p = np.r_[np.repeat(float(valid[0]), pad), valid.astype(float), np.repeat(float(valid[-1]), pad)]
+    num = np.convolve(yz_p, np.ones(k), mode="valid")
+    den = np.convolve(v_p, np.ones(k), mode="valid")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = num / den
+    out[den == 0] = np.nan
+    return out
+
+
 def fig0b():
     fig, axes = plt.subplots(2, 3, figsize=(11.5, 7.2), sharex=True)
     for col, idx in enumerate(IDXS):
@@ -99,6 +117,7 @@ def fig0b():
             purity = np.array([abs(np.trapezoid(K[b, v], s))
                                / np.trapezoid(np.abs(K[b, v]), s) for v in order])
             cen = np.where(purity > 0.5, cen, np.nan)
+            cen = _smooth_nan(cen, k=5)
             # noise-relative signal: ∫|K/σ| ds (ic_analysis_definitive amp_rel convention)
             amp = np.trapezoid(np.abs(K[b, order]), s, axis=1) / sig[b, order]
             c = BAND_C[round(float(lam), 3)]
@@ -114,9 +133,9 @@ def fig0b():
     axes[0, 0].set_ylabel("kernel depth centroid ⟨s⟩ (signed)")
     axes[1, 0].set_ylabel("noise-relative signal (× near-nadir)")
     axes[0, 2].legend(fontsize=7, ncol=2, frameon=False, title="µm", title_fontsize=7)
-    fig.suptitle("Fig 0b — the angular axis: depth coverage (top) and usable signal "
-                 "(bottom) across the view fan", fontsize=11)
-    fig.tight_layout()
+    fig.suptitle("Fig 0b — the angular axis: depth coverage (top, 5-view running mean)\n"
+                 "and usable signal (bottom) across the view fan", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
     fig.savefig(f"{PREFIX}_fig0b_angular.png", dpi=150)
     print("saved", f"{PREFIX}_fig0b_angular.png")
 

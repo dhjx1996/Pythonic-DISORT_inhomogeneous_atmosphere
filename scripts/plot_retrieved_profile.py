@@ -23,6 +23,15 @@ Usage: plot_retrieved_profile.py <idx> [config=A] [parts_dir=runs/_ve046_tik_fr_
 Env: OSSE_VEFF/OSSE_RE_MAX/OPTICS_CACHE/RADIANCE_CACHE default to the ve046 fq
      campaign (override for a different campaign's parts_dir); CURVATURE_LAMBDA
      defaults to 1.0 (the ve046 campaign's value) for the title only.
+     PLOT_CAMPAIGN_TAG (default "ve046") titles the campaign — set it when plotting a
+     parts_dir whose retrieval was not the self-consistent ve046 one (e.g. the mismatched-v_e
+     run), so the figure cannot be mistaken for a self-consistent result.
+
+     NB the optics env must keep describing the TRUTH world even for a mismatch parts_dir:
+     load_optics derives its expected signature from the env, so pointing OPTICS_CACHE at a
+     table the env does not describe SILENTLY REBUILDS AND OVERWRITES that file. The table
+     loaded here only feeds fwd.profile (prior-shape interpolation, optics-independent), so
+     the truth-world default is both correct and the safe choice.
 """
 import sys
 import os
@@ -57,6 +66,7 @@ def main():
     parts_dir = Path(sys.argv[3] if len(sys.argv) > 3 else "runs/_ve046_tik_fr_parts")
     out = sys.argv[4] if len(sys.argv) > 4 else f"docs/figures/ve046_idx{idx}_profile.png"
     curvature_lambda = float(os.environ.get("CURVATURE_LAMBDA", "1.0"))
+    campaign_tag = os.environ.get("PLOT_CAMPAIGN_TAG", "ve046")
 
     z = dict(np.load(parts_dir / f"{idx}_{config}.npz", allow_pickle=True))
     s_grid = np.asarray(z["s_grid"], float)
@@ -100,7 +110,7 @@ def main():
     ax.grid(alpha=0.3)
     ax.legend(fontsize=9, loc="upper left")
     ax.set_title(
-        f"idx-{idx} ({str(z['flight'])})  ve046, curvature Tikhonov lambda={curvature_lambda:g}\n"
+        f"idx-{idx} ({str(z['flight'])})  {campaign_tag}, curvature Tikhonov lambda={curvature_lambda:g}\n"
         f"$\\chi^2_\\mathrm{{red}}$={float(z['chi2_red']):.4f},  "
         f"$\\tau_\\mathrm{{bot}}$={tau_bot_ret:.2f} (truth {truth_tau_bot:.2f}),  "
         f"DOFS={float(z['dofs']):.2f}", fontsize=11)
