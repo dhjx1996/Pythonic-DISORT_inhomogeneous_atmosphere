@@ -425,6 +425,37 @@ across all 128 Legendre moments; `tests/supplementary/validate_optics_table.py`)
 every per-profile worker. Motivation: miepython reaches the strong-absorption bands (3.7 µm) the
 band superset needs (§14), and is the field-reference Mie.
 
+### 8b. Band optics are MONOCHROMATIC — no spectral-response integration  [SETTLED 2026-07-13]
+
+Each band's optics are computed at its **single center wavelength** (`osse_config.BANDS`),
+with Segelstein *m(λ)* at that exact λ — there is **no integration over a sensor spectral
+response function** anywhere in the pipeline. This deliberately differs from the
+Buggee/MODIS lineage (`multispectral-retrieval-using-MODIS` convolves libRadtran spectra
+with the MODIS relative SRFs) and was audited when the BP2025/26 Fig-1 penetration plots
+(wiggle-free) were compared against ours.
+
+**Why it is safe (measured 2026-07-13).** The hazard would be monochromatic Mie
+interference structure vs r_e leaking spurious fine-scale (i.e. fake-information)
+structure into the Jacobians. It does not survive the size-distribution average we DO
+share with that lineage: after gamma-averaging (even at the narrow v_e=0.046), the
+residual ripple is Δω ≈ 2e-10 and Δg ≈ 3e-5, and a 3-point ±10 nm top-hat band average
+changes those by ≤2× (ω) and ~1.0× (g) — the distribution width (~2 µm at r_e=10 µm)
+spans ~20 interference periods (Δr ≈ λ/2π), out-smoothing any 2–4 % bandwidth. Both
+residues are orders below the 2 % OCI noise, so they contribute nothing to K/DOFS/SIC.
+Externally consistent: CPV2012's hyperspectral (~400-channel) Shannon-IC analysis shows
+the cloud-information landscape vs λ is a smooth envelope set by broad liquid-water
+absorption (+ vapor transmittance) — there is no intra-band cloud information for a
+center-λ sample to miss — and our §14 IC structure (r_e info in absorbing NIR/SWIR, τ
+info at conservative-scattering visible, few-channel saturation) matches that
+band-resolved literature.
+
+**Caveats / revisit triggers.** (i) The OSSE is gas-free: per-band IC at channels near
+gas features (1.038 µm vapor-edge; 3.7/4.05 µm CO₂/H₂O + thermal) is an upper bound —
+an idealization of the OSSE, not of the table. (ii) Revisit if bands are moved onto gas
+features, a hyperspectral configuration is studied, or sub-% radiometric fidelity
+becomes science-relevant; band integration is a contained change (a few quadrature λ's
+averaged in `build_re_table`, no solver changes).
+
 ---
 
 ## 9. Lower boundary: Lambertian sea surface, albedo 0.06; the BDRF input *is* the albedo (NOT albedo/π)  [SETTLED]
@@ -520,7 +551,7 @@ Per-component `DOFS = tr(A) = Σ diag(A)` (`dofs_by_component`):
   *Consequence:* base re-evaporation needs an active complement (cloud radar/lidar) or thin scenes;
   and the r_base *prior* should not be assumed adiabatic for scenes where evaporation is plausible —
   though for thick cloud that prior choice is, by construction, untestable by the measurement.
-  **Empirical confirmation** (`subadiabatic_thin_retrieval.py` → notebook §13): starting from an
+  **Empirical confirmation** (`subadiabatic_thin_retrieval.py` → notebook §14): starting from an
   adiabatic prior (r_base mean 12 > r_top), the joint retrieval **recovers a sub-adiabatic downturn
   only where the cloud is optically visible** — RF14 (τ≈2.5, decline through the upper cloud)
   captured 48 % of the true 3.4 µm drop (r_base 12→7.6, truth 6.0); RF05 (τ≈2.9, drop confined to the
@@ -745,7 +776,10 @@ while the *correlated* prior extends the reach to the base (≈ **1.00 / 0.99 / 
 ~0.6 in normalized depth uniformly, and the flux-albedo's vertical localization is *entirely*
 prior-mediated (direct reach ≈ 0). So the "tight where the measurement is blind" design (d) is
 vindicated population-wide: the deep r_base is reconstructed by the prior's smoothness from the
-observable upper cloud, not measured. (The prior-viability *ladder* of (e) — uninformative ≫ marine_sc
+observable upper cloud, not measured. (Re-measured on the operational retrieval grid at population
+scale, 2026-07-15, after the dense-grid IC supersession: deepest-node posterior-variance reduction
+median **0.83 correlated vs 0.52 diagonal** over the 123 canonical ve046 records — §17.) (The
+prior-viability *ladder* of (e) — uninformative ≫ marine_sc
 ≈ climatology — was **not** re-run at NQuad=48; it remains the NQuad=32 Stage-1 pilot result.)
 
 **(g) Hyperparameter scoping — prior correlation length ℓ (deferred, 2026-06-23).** The smoothness
@@ -830,7 +864,7 @@ scene retrieval should revisit it (off-diagonal `Se`) — see OUTSTANDING K.
 **Default NOISELESS; the model is still used for `Se`.** `osse_observation(..., noise=None)` adds
 nothing (the OSSE decision, §10b). A noise *realization* is opt-in: pass a `NoiseModel` (drawn via
 `sample`, band-major over `fwd.n_bands`) or an explicit per-σ. Independently, the *assumed* covariance
-the retrieval inverts is `Se = diag(σ²)` built by `make_Se(fwd, y, model)` — needed for weighting and
+the retrieval inverts is `Se = diag(σ²)` built by `model.Se(y)` (`make_Se` wrapper removed 2026-07-16, ponytail) — needed for weighting and
 the χ²-gate **even with no perturbation**. The grounded `oci_swir()` model is the intended replacement
 for the historical hand-picked `Se = diag((0.03·max(|y|,0.02))²)` (the `generic_relative`
 preset that reproduced it was removed 2026-07-10, uncalled — git history keeps it).
@@ -858,12 +892,12 @@ capabilities, so they are recorded here for honesty, not tracked as open work):
   inverse crime** — the same forward generates and inverts the synthetic radiance — so they contribute
   **zero here** and switch on only against *real* OCI/HARP2 radiances. VOCALS-REx in-situ error is
   likewise out: the profile is the OSSE *truth* (exact by definition), and where it feeds the prior its
-  instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §11b.
+  instrument error is swamped by geophysical spread (§11c). The notebook mirrors this in §13b.
 
 *(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel`
 (`sigma`/`Se`/`sample`; calibration-relative + floor since 2026-07-10), preset `oci_swir` —
 and wired in `src/pydisort_riccati_jax/retrieval_oe.py` (`osse_observation` NoiseModel
-dispatch, `make_Se`). Originally verified by the retired `tests/supplementary/check_noise_model.py`
+dispatch, `NoiseModel.Se`). Originally verified by the retired `tests/supplementary/check_noise_model.py`
 (per-band band-major coeffs, Se=diag(σ²), sample statistics, legacy match; git history).)*
 
 ---
@@ -915,7 +949,7 @@ exploit embarrassing parallelism *across* columns, never single-column core-scal
 
 ---
 
-## 14. Information-content profiling (DEFINITIVE) — spectral verification + angular novelty  [SETTLED — 2026-06-24]
+## 14. Information-content profiling (DEFINITIVE) — spectral verification + angular novelty  [SUPERSEDED 2026-07-15 → §17 — dense-grid quadratic IC ruled texture-inflated; retrieval-grid IC is canonical]
 
 The definitive Stage-1 IC run (supersedes the pilot §15 / `info_content_stage1.py`). Reports Rodgers
 **DOFS = tr(A) = Σ sᵢ²/(1+sᵢ²)** and Shannon **SIC = ½ Σ log₂(1+sᵢ²)** of the minimally-constrained
@@ -957,7 +991,7 @@ linearization at a LOO **realization** (`draw`, set v). The pilot's truth-linear
 `info_content_linearity_probe.py` / `info_content_robust_truth.json` are removed.
 
 **Noise = OCI 2 % calibration-relative** (`noise_model.oci_swir`), radiance *and* flux — matching the
-pre-§15 retrievals (the pilot's 3 % was an inconsistency). Optics = the miepython table (§8).
+pre-§16 retrievals (the pilot's 3 % was an inconsistency). Optics = the miepython table (§8).
 
 **Raw-Jacobian caching (the architecture).** Each worker caches **K_full (all 10 bands × all views),
 K_flux, s_int, the noise σ, the reflectance `y`, and the prior covariances** to a per-(mode,profile)
@@ -1005,7 +1039,10 @@ example.
 
 *Files: `scripts/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive}.py`
 (`ic_tau_bot_check` pruned), `src/pydisort_riccati_jax/{optics_table,info_content}.py`;
-handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §15.*
+handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §16. **(Retired 2026-07-16:
+the three scripts and the `AGENT_all125_ic.md` spec were deleted with the dense-bundle
+supersession — retrieval-grid IC (§17) is the canonical product; the dense-bundle outputs
+stay in `docs/cached_results/` for forensics only. Git history keeps the scripts.)*
 
 ## 15. Full r_e(τ) retrievals — log-space state, BP2026 convergence, oracle-adiabatic floor  [SETTLED — 2026-06-26]
 
@@ -1029,7 +1066,7 @@ by the **delta method** `to_log_prior(x_a,Sa)`: `x_a'=ln(x_a)`, `Sa'=D Sa Dᵀ`,
 vs a Monte-Carlo log-normal) — exposed as `log=True` on `make_{joint,climatology,marine_sc}_prior`; the
 Bayesian-Tikhonov correlation now lives on *fractional* r_e. The whole-state choice (vs radii-only) is the
 natural reading of BP2026's "log-transform the state" and gives a clean lognormal τ_bot prior (τ_bot spans
-1–50, so log is natural). **No §15-notebook IC re-run is needed**: posterior IC is reportable in linear µm
+1–50, so log is natural). **No §16-notebook IC re-run is needed**: posterior IC is reportable in linear µm
 by un-chain-ruling `K_lin = K_log/r_e`, and DOFS/SIC are invariant under the reparam. *Grid selection
 stays in physical space* (the noise-aware QRCP filter whitening is dimensionally correct there, and is
 ≈ invariant to the log reparam since `diag(r)·diag(σ_log) ≈ diag(σ_phys)`).
@@ -1109,7 +1146,7 @@ flagged in the sidecar).
 
 *Files: `src/pydisort_riccati_jax/retrieval_oe.py` (`state_space`/`to_log_prior`, `cost_rtol`/`chi2_floor`,
 `best_fit_adiabatic`); `scripts/retrieval_worker.py` (`tune_cost_rtol` pruned); handoff
-`hpc/AGENT_all125_fr.md`; analysis `scripts/retrieval_analysis.py` + notebook §16 (post-results).*
+`hpc/AGENT_all125_fr.md`; analysis `scripts/retrieval_analysis.py` + notebook §17 (post-results).*
 
 ---
 
@@ -1126,7 +1163,7 @@ the §15 joint log-space retrieval in two leak-free prior configurations sharing
 shape metric, d_W1 = W1_adia − W1_ours; RMSE **retired 2026-07-08** (it penalized truth jaggedness
 and its verdict flipped under τ_bot bookkeeping); LWP-bias (the disjoint **magnitude** metric) incl.
 the §5c v_e-corrected bookkeeping AND the oracle-adiabat LWP baseline; Mahalanobis; consumed by
-notebook §16). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
+notebook §17). Resumability: **L1** per-GN-iteration checkpoint + **L2** per-profile
 setup cache (both production-verified; the would-be L3 compile cache was measured a no-op for FR
 and removed).
 
@@ -1159,3 +1196,68 @@ old golden-probe gate is **retired** (stale different-grid reference — the ret
 grid-sensitive across code versions, so it was never a valid cross-version check; validation is
 the pytest suites + the L1/L2 gates + per-retrieval sanity checks). L2 setup caches are keyed
 `v2|…` (pre-refactor caches recompute by design).
+
+## 17. Retrieval-grid information content — the dense-grid IC supersession  [SETTLED — 2026-07-15]
+
+**The failure (2026-07-14 forensics).** The §14 "definitive" IC bundle computed DOFS/SIC from
+dense/ODE-grid Jacobians at production tol=1e-4. A tolerance ladder on idx98 gave DOFS
+9.12/7.06/5.71/4.86 at tol 1e-4…1e-7 — geometric decay (×0.63/decade), Richardson limit ≈3.4, i.e.
+~2.7× inflation at production tolerance. Mechanism: adaptive-integrator Jacobian *texture*
+(tolerance-scale structure, incoherent row-to-row) is rectified by quadratic functionals, and the
+phantom rank grows with row × column count (the "row-count law") — dense grids inflate essentially
+without bound, while *linear* functionals (retrievals, kernel-weighted means — the Platnick
+Table-3a validations) are immune. The bundle is ruled ERRONEOUS; nothing from it is quoted
+(manifest, 2026-07-14).
+
+**The fix is a reframing, not a recompute.** Operational information content lives on the
+retrieval grid: DOFS/SIC/per-band+per-view-group exact Shapley/matched-row budgets are computed
+per canonical ve046 record from the sidecar `K_log`/`Sa_log`/σ at the retrieved state (pure OE
+prior — the curvature-Tikhonov term is an optimizer device, not prior information, and is
+excluded). **The QRCP-grid IC is the ODE-grid IC projected onto its identifiable subspace** —
+p = k+2 ∈ [6, 9] is small enough that the functionals are texture-converged at production
+tolerance. `scripts/ic_retrieval_grid.py` → `docs/cached_results/ic_retrieval_grid.json` (125/125,
+0 errors; the recompute matches the sidecars' stored DOFS/SIC to 1e-14). The frozen-step Jacobian
+seam (`fixed_n_steps`/`freeze_step_grads`; `tests/22_fixed_steps_test.py`) was built as the
+dense-grid alternative and remains validated infrastructure, but the retrieval-grid product is
+canonical.
+
+**Gates (all PASS, 2026-07-15).**
+- *Grid echo* (the sharpest attack: DOFS ≤ p by construction, and QRCP chose k with the same
+  noise/prior): `scripts/ic_kforce_demo.py` forces k = 4→16 past QRCP's k≈5, with fresh QRCP
+  selection + LOO prior rebuild at each forced k, at both linearization points ('prior' =
+  climatological prior-mean r_e at the retrieved τ_bot; 'retrieved' = canonical x̂ interpolated)
+  × both tolerances (1e-4, 1e-6). DOFS plateaus — no k-tracking; linearizations agree ≲ 3 %;
+  tolerance agreement at k=16 is 2.4/1.8/1.2 % (idx98/55/39). Residual tolerance sensitivity of
+  the population numbers ≈ 2 % (vs the dense grid's ~2.7× inflation).
+- *Kernel convergence:* ve046 kernel probes (32-view fan, 51-pt s-grid, `ic_worker_wiggle`) at
+  tol 1e-6 vs 1e-7: signed near-nadir centroid/tail agree ≤ 0.004 (gate 0.01) for idx98/55/39.
+  The **signed Eq-3 kernel** is the primary depth object — |K| rectifies sign-flip texture into
+  fake deep-tail mass in the thin-cloud absorbing regime (median Eq-3 error ×2) and is not
+  plotted; a purity mask (|∫K ds|/∫|K| ds > 0.5) excludes lobe-cancelling rows (cloudbow
+  crossings; 4.05 µm on the thin profile).
+
+**Findings recorded in the notebook's IC section (aggressive rewrite 2026-07-15; restructured by the user 2026-07-16 into notebook §15 — framing, Fig-3 trade-off contours, depth-reach corollary — with the kernel/Shapley/budget/gate material archived in `docs/IC_extra.ipynb`; framed as the CPV2012 ¶49
+extension to (i) the nonadiabatic r_e(τ) profile state — τ_bot now retrieved, no known-τ_bot upper
+bound — and (ii) the angular axis).** (A) IC is low and the spectral axis saturates: DOFS median
+4.42 (IQR 4.32–4.57) on p ∈ [6, 9], SIC median 20.7 bits; greedy 1 band = 69 %, 4 bands = 95 % of
+full DOFS (SIC: 54 %/90 % — the two currencies kept distinct per CPV2012 ¶31); per-band Shapley
+0.29–0.31 (window VNIR) → 0.71/0.73 (3.7/4.05 µm), first greedy pick 3.7 or 4.05 µm in 113/123.
+(B) Bands and angles not interchangeable in either direction: matched-row budgets 10b×1v 2.94 vs
+2b×5v 2.37 (paired win 100 %; 20/40-row budgets 99 %), yet the 24-view fan adds +1.48 DOFS (paired
+median, IQR 1.34–1.67) on top of the saturated spectrum, and the 6-group angular Shapley never →0
+(0.87 → 0.64–0.68). Mechanism: the correlation pump — deepest-node variance reduction median 0.83
+correlated vs 0.52 diagonal (§11(f) re-measured on the retrieval grid). **v_e-correction result:**
+the v_e=0.10 glory anchor (1.038 µm ×2.6 at exact backscatter, unique) does not exist at
+v_e=0.046; sharp VIS glory-*ring* spikes appear ~2.5° off backscatter instead (0.55 µm ≤ ×3.1 at
+µ=0.918, 0.67 µm ≤ ×2.6 at µ=0.879; tol-converged) — feature-anchored angular information is real
+but v_e-conditional, and Finding B rests on the v_e-robust envelope (absorber oblique gain ×1.6–3.7
++ depth diversity; the oblique µ ≤ 0.78 Shapley groups are ring-free). Population medians exclude
+idx49/57 (k=2 give-up grids, true-τ_bot-fed pathology provenance; their pre-treatment k=6 grids
+gave 4.86/4.06 DOFS — exclusion is conservative). The one-sentence mismatch-campaign caution is
+recorded in §16's caveats; no IC claims are built on the mismatch runs.
+
+*Files: `scripts/{ic_retrieval_grid,ic_kforce_demo,ic_worker_wiggle,ic_figs}.py` (`ic_figs` = the
+2026-07-16 merger of the former `ic_kernel_figs` + `ic_stat_figs`);
+caches `docs/cached_results/{ic_retrieval_grid.json,ic_kforce_demo.json,ic_pump_mechanism_ve046.npz,
+kernel_probe_ve046_tol{6,7}_{98,55,39}.npz,
+ic_sidecar_K_ve046.npz}`; notebook §15 + `docs/IC_extra.ipynb`; manifest "IC resolution (2026-07-15)".*

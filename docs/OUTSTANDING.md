@@ -60,6 +60,43 @@ the demo swings (e.g. idealized §5) were an artifact of a deliberately **loose 
 climatologically-tight base prior (DESIGN §11; VOCALS r_base MAD≈1.4 µm) already removes them. (This
 supersedes DESIGN §3a's "smooth-basis route, left open.")
 
+**Update 2026-07-11 — the "not needed now" premise is partially refuted (idx-110, ve046).** On a *real*
+low-SIC shielded-base profile the tight, depth-decreasing σ_base does not suppress the swing — it *creates*
+a dr_e/ds **kink** at the data/prior seam: the data-pinned top holds truth (~18 µm) while the base is yanked
+to the climatology *mean* (~6 vs truth 10.2). Root cause: the prior kernel `exp(−|Δτ|/ℓ)` is Ornstein–Uhlenbeck
+(first-difference smoothness only, C⁰/non-differentiable paths) → it never penalises **curvature**. Two candidate
+fixes, both real, both risky: **(1) depth-increasing correlation** (tie the shielded base to the data-rich column
+above, not the prior mean) — attacks base *accuracy*, but fights the existing depth-decreasing σ (needs σ_base
+loosened too), imposes a vertical-coherence bias (biases genuinely-adiabatic bases high), and risks a near-singular
+deep `Sa` block; **(2) 2nd-difference (curvature) Tikhonov** (the lever above) — one-line GN insertion
+(`H_gn += λ·L₂ᵀL₂`, `rhs −= λ·L₂ᵀL₂·x`; no solver / positive-exp risk), removes the kink (C¹), but needs the
+**non-uniform** 3-pt stencil (QRCP nodes are irregular), a *small* λ (else it washes out real drizzle/entrainment
+structure — the minimally-constrained feature), and it smooths the *symptom* while base accuracy stays wrong.
+**Hard ceiling:** neither adds information — the shielded base (SIC≈13) stays prior-dominated, so its posterior σ
+stays wide/biased; this targets *plausibility*, not accuracy. Diagnostic before implementing: idx-110 deep-node
+averaging kernels / `data_fraction`.
+
+**Why the over-smoothing worry is smaller than it looks (user, 2026-07-11):** the true cloud is *not* smooth, but
+the **retrieved** profile ought to be — **radiative smoothing** band-limits what the measurement can resolve, so
+sub-resolution structure is unretrievable *by construction*. A curvature penalty therefore enforces the estimator's
+**correct smoothness class**, it does not discard retrievable signal (there is none at that scale); the kink is a
+genuine artifact of the C⁰ OU prior, not real structure the penalty would erase. This reframes fix (2) from "risky
+cosmetic" to "well-posed regularisation," and motivates turning it **ON** (not merely opt-in-for-research) — with a
+*calibrated* λ (small; the penalty self-localises to the data-poor deep nodes because it only bites where
+`KᵀSε⁻¹K` is small). **Counter-caveat (user, same day): self-localisation only protects if λ stays small —
+too strong a penalty smooths *across* the radiative-resolution scale and genuinely papers over *retrievable*
+structure (e.g. the well-constrained top gradient). Calibrate λ to relax the data-poor deep kink while leaving
+high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
+
+**Status: 2nd-difference Tikhonov IMPLEMENTED 2026-07-11** as `curvature_lambda` in `_gn_inner`/`gauss_newton_oe`
+(+ `CURVATURE_LAMBDA` env, `retrieval_worker`). Non-uniform 3-pt stencil (`_second_difference_operator`), penalty
+`P=λ·L₂ᵀWL₂` (W = interval quadrature weights → grid-independent curvature energy ∫(f″)²ds; a raw L₂ᵀL₂ scales
+~1/h⁴ and makes λ non-transferable across profiles) over the log-r_e node+r_base block, τ_bot excluded;
+**λ=0 ⇒ bit-identical** to the un-penalised solve. Linearised calibration (2026-07-11, from stored posteriors):
+energy-weighted **λ≈0.3–1** relaxes the idx-110 kink 72–76 % (r_base +0.24→+0.73 µm toward truth) while moving
+well-constrained thin-cloud nodes only ~0.15–0.38σ — the accuracy-vs-over-smoothing knob to set per campaign.
+Depth-increasing correlation (fix 1) remains un-implemented.
+
 ---
 
 ## C. jit-ability of the solver — the retrieval-cost lever  [RESOLVED → DESIGN §7]
@@ -248,7 +285,7 @@ all affected float32 tests pass at the physically-correct albedos. The conventio
 ## K. Measurement-noise model — shot term (Option A) and HARP2/polarized noise deferred  [DECISION / DEFERRED]
 
 The infrastructure is **built and settled** (`src/noise_model.py`; σ(ρ) = calibration-relative +
-floor in quadrature; the OCI-SWIR default; `osse_observation(noise=)` + `make_Se`; default
+floor in quadrature; the OCI-SWIR default; `osse_observation(noise=)` + `NoiseModel.Se`; default
 noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **open**:
 
 - **Shot term (Option A) — REMOVED from the code (2026-07-10 ponytail audit), pending OCI
@@ -277,7 +314,7 @@ noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pi
   (user-set 2026-06-19: ignore polarization / v_e for now).
 
 - **Notebook adoption — DONE (2026-06-19).** All four OSSE `Se` sites (§5 idealized / §8 thin joint /
-  §12 thick / §13 sub-adiabatic) now build `Se = roe.make_Se(fwd, y, nm.oci_swir())` — the PACE
+  §12 thick / §13 sub-adiabatic) now build `Se = nm.oci_swir().Se(y)` — the PACE
   OCI-SWIR model (calibration-relative ~2 %) — replacing the hand-picked `0.03·max(|y|,0.02)` floor;
   `noise_model` is imported and the §8 markdown + §11b document the change. The OSSE stays **noiseless**
   (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s mode-selection Se
@@ -295,12 +332,16 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   cluster; float32 suite 68/68 (CPU) + float64 26/26 (GPU) vs PythonicDISORT. The 3-profile
   golden cross-check is **retired** (stale different-grid reference — the retrieval is
   grid-sensitive across code versions, so it was never a valid cross-version gate; DESIGN §16).
-- ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06):** the IC re-run on the reconciled refactor
-  is the canonical bundle (`hpc/FINAL_RESULTS_MANIFEST.md`); the Se-fix erratum was *measured* on
-  the fixed selection — |ΔDOFS| ≤ 0.7 %, |ΔSIC| ≤ 0.21 % (mechanism ≤ 1.4 %), negligible.
-- **FR bundle transfer + notebook §16 finalization [jovyan, immediate].** The FR raw sidecars
+- ~~**IC re-run decision.**~~ **RESOLVED (2026-07-06), then SUPERSEDED (2026-07-14/15):** the
+  refactor-re-run IC bundle was subsequently ruled **erroneous** — adaptive-integrator Jacobian
+  texture inflates dense-grid DOFS/SIC ~2.7× at production tolerance. The canonical IC product is
+  now the **retrieval-grid IC** (`docs/cached_results/ic_retrieval_grid.json`, computed on the
+  ve046 canonical sidecars' QRCP grids), gate-verified by the forced-k / dual-linearization /
+  dual-tolerance demo and the signed-kernel tol6-vs-tol7 gate — DESIGN §17; notebook §15 rebuilt
+  on it (2026-07-15/16; overflow in `docs/IC_extra.ipynb`).
+- **FR bundle transfer + capstone finalization [jovyan, immediate].** The FR raw sidecars
   (`runs/_fr_parts/` + the supersession dirs per the manifest) have not yet been transferred to
-  the primary; notebook §16 (supersession-aware loader + the full metric ladder, smoke-tested)
+  the primary; the capstone section (now notebook §16; supersession-aware loader + the full metric ladder, smoke-tested)
   auto-fills and its Findings get finalized on first execution with the bundle present.
 - **Optimizer vNext [IMPLEMENTED 2026-07-10 in `_gn_inner`].** From
   `docs/optimizer_critique.txt` (git `191afed`) + the batch-3 backtrack observations, all four
@@ -318,12 +359,13 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   that regime, and TR radius control is functionally equivalent to LM damping (it would not
   remove the reject evals); revisit only if boundary-active retrievals become common (then a
   projected/reflective TR à la TRF is the right form).
-- **v_e-corrected OSSE [branch `ve_rerun`].** §5c shows v_e=0.10 is a poor VOCALS constant
-  (zero-median-bias 0.037 / min-RMS 0.046). The *bookkeeping* consequence is already handled
-  post-hoc (`retrieval_analysis` C-corrected LWP columns — first-order equivalent of a re-run);
-  a config-A re-run at `OSSE_VEFF≈0.046` tests the residual *optics* consequence (radiance
-  realism — the §15 angular findings ride on v_e-sensitive glory/cloudbow features, notebook
-  §15 Fig 0b). Pilot-first; spec in `hpc/AGENT_ve_rerun.md`.
+- ~~**v_e-corrected OSSE [branch `ve_rerun`].**~~ **RESOLVED (2026-07-15):** the config-A re-run
+  at `OSSE_VEFF=0.046` ran to 125/125 canonical (consolidation record in
+  `hpc/FINAL_RESULTS_MANIFEST.md` §ve046) and the notebook IC section (§15) was rebuilt on it. The glory question
+  is answered — more sharply than anticipated: the v_e=0.10 world's 1.038 µm exact-backscatter
+  anchor (×2.6) does not exist at v_e=0.046; sharp VIS glory-*ring* spikes (0.55 µm ≤×3.1,
+  0.67 µm ≤×2.6, ~2.5° off backscatter) replace it. Feature-anchored angular information is
+  v_e-conditional; Finding B is re-established on the v_e-robust angular envelope (DESIGN §17).
 - **μ0 = 0.9 conditionality [scope].** All published IC/FR numbers are single-geometry; quantify
   DOFS/band-ranking sensitivity to μ0 (cheap spot-check) and adopt μ0 binning for operational
   per-scene work (compile-per-bin; STRATEGY §4).

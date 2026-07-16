@@ -288,3 +288,32 @@ def test_23l_gn_float64_production_tol(opt_bands):
     assert chi2_red < 1e-3
     _, _, tau_bot = fwd64._split_state(res.x, S_NODES)
     assert abs(float(tau_bot) - TAU_BOT) < 0.1
+
+
+# --- 23l: 2nd-difference (curvature) Tikhonov penalty -----------------------------
+def test_23l_curvature_penalty(fwd, y_truth, gn_setup):
+    Se, clim, x_a, Sa = gn_setup
+    # (1) operator exactness on a NON-uniform grid: f''=2 exact for a quadratic, 0 for linear
+    t = np.array([0.0, 0.1, 0.35, 0.6, 1.0])
+    L2 = roe._second_difference_operator(t)
+    assert L2.shape == (3, 5)
+    np.testing.assert_allclose(L2 @ (t ** 2), np.full(3, 2.0), atol=1e-9)
+    np.testing.assert_allclose(L2 @ (3.0 - 2.0 * t), np.zeros(3), atol=1e-9)
+    assert roe._second_difference_operator(np.array([0.0, 1.0])).shape == (0, 2)  # n<3 -> empty
+
+    kw = dict(n_iter=8, lm=1e-2, xtol=1e-4, max_n_outer=1)
+    # (2) lambda=0 is BIT-IDENTICAL to the un-penalised default (production unchanged)
+    ref = roe.gauss_newton_oe(fwd, y_truth, S_NODES, x_a, Sa, Se, **kw)
+    z0 = roe.gauss_newton_oe(fwd, y_truth, S_NODES, x_a, Sa, Se, curvature_lambda=0.0, **kw)
+    np.testing.assert_array_equal(ref.x, z0.x)
+
+    # (3) lambda>0 does not INCREASE the retrieved log-r_e profile curvature (it penalises it)
+    s_prof = np.append(np.asarray(S_NODES, float), 1.0)      # nodes + r_base (fwd.retrieve_r_base)
+    Lp = roe._second_difference_operator(s_prof)
+
+    def _curv(res):
+        rn, rb, _ = (np.asarray(v, float) for v in fwd._split_state(res.x, S_NODES))
+        return float(np.linalg.norm(Lp @ np.log(np.append(np.atleast_1d(rn), float(rb)))))
+
+    reg = roe.gauss_newton_oe(fwd, y_truth, S_NODES, x_a, Sa, Se, curvature_lambda=100.0, **kw)
+    assert _curv(reg) <= _curv(ref) + 1e-9

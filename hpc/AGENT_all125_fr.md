@@ -71,7 +71,7 @@ noise realization added); `Se` (PACE-OCI 2 % calibration-relative, `noise_model.
 the assumed weighting / posterior covariance. Observing system = the **§15 multi-angle × 10-band
 superset** (principal-plane fan, 24 views = NQuad//2, μ₀=0.9).
 
-Three upgrades vs the pre-§15 retrievals, all in `src/retrieval_oe.py` (already on `main` after sync):
+Three upgrades vs the pre-§16 retrievals, all in `src/retrieval_oe.py` (already on `main` after sync):
 
 - **log-space state** (`state_space='log'`) + a log-space climatology prior (`to_log_prior`) — BP2026 §2.4
   (positivity free; better GN convergence);

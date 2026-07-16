@@ -23,7 +23,7 @@ calibration-relative) enters only as the assumed weighting / posterior covarianc
 Observing system = the §15 multi-angle × 10-band superset (principal-plane fan, 24
 views = NQuad//2, μ0=0.9, NQuad=48).
 
-Three §16 upgrades vs the pre-§15 retrievals (all in retrieval_oe):
+Three §17 upgrades vs the pre-§16 retrievals (all in retrieval_oe):
   * state_space='log' (BP2026 §2.4) + a log-space climatology prior (to_log_prior);
   * BP2026 cost-stagnation convergence (cost_rtol; chi2_floor coded but INACTIVE);
   * the oracle best-fit-adiabatic floor (best_fit_adiabatic) — the W1 lower bound
@@ -46,6 +46,8 @@ Env:  VOCALS_DATA   in-situ flight netCDFs (default = the jovyan path).
                      shared with the IC run when the signature matches).
       COST_RTOL      BP criterion-1 relative-misfit threshold (tuned; DESIGN §10h).
                      Default 0.01.
+      MAX_N_OUTER    re-mesh cap for the main A/B retrievals (default 1 = select-once,
+                     published-campaign behavior; 2 = fixed-count placement re-mesh).
 """
 import os
 import sys
@@ -63,6 +65,7 @@ from pydisort_riccati_jax import vocals_io as vio                    # noqa: E40
 from pydisort_riccati_jax import retrieval_oe as roe                 # noqa: E402
 from pydisort_riccati_jax import noise_model as nm                   # noqa: E402
 from pydisort_riccati_jax import osse_config as oc                   # noqa: E402
+from pydisort_riccati_jax import optics_table as ot                  # noqa: E402
 import jax.numpy as _jnp                                            # noqa: E402
 
 # Accuracy tiers: the radiance CACHE (truth) is high-accuracy (float64, tol*); the
@@ -80,11 +83,47 @@ _PREC = "float64" if _jnp.result_type(float) == _jnp.float64 else "float32"
 DATA = oc.VOCALS_DATA
 OPTICS_CACHE = oc.OPTICS_CACHE
 RADIANCE_CACHE = oc.RADIANCE_CACHE          # batch-1 truth cache (sig d71a8559, tol=1e-4, 125 profiles)
+# MISMATCHED-v_eff experiment (2026-07-12, OPT-IN, default UNSET -> byte-identical to before):
+# the truth radiance (RADIANCE_CACHE, gated by oc.signature()) and the RETRIEVAL's own optics
+# table are normally the SAME file. Setting RETRIEVAL_OPTICS_CACHE decouples them: env stays at
+# the TRUTH's v_eff/re_bounds (so the signature gate on RADIANCE_CACHE still passes on genuinely-
+# matching truth radiances -- never bypassed), but build_forward_and_obs's own forward model is
+# built from this DIFFERENT table instead -- i.e. the retrieval assumes a v_eff that does not
+# match the truth. Tests operational realism (true v_eff is unknown in practice).
+RETRIEVAL_OPTICS_CACHE = os.environ.get('RETRIEVAL_OPTICS_CACHE')  # None -> self-consistent (default)
 SOLVER_TOL = oc.SOLVER_TOL                                         # operational ODE tol (env SOLVER_TOL)
 MODE_MAP = os.environ.get('MODE_MAP', 'scan')                      # 'vmap' = GPU bands×modes
 COST_RTOL = float(os.environ.get('COST_RTOL', '0.01'))            # BP crit-1 (tuned); chi2_floor INACTIVE
 REMESH_CHI2_THR = float(os.environ.get('REMESH_CHI2_THR', '2.0')) # gauss_newton_oe remesh_if_chi2_red_gt
+#   default 2.0 kept (see retrieval_oe.gauss_newton_oe's inline note, §10h) — but for a noiseless-OSSE
+#   campaign (population clusters far below the real-noise χ²≈1 floor) 0.1 may be the tighter, still-safe
+#   threshold; set REMESH_CHI2_THR=0.1 to opt in (2026-07-09, user-flagged)
+CURVATURE_LAMBDA = float(os.environ.get('CURVATURE_LAMBDA', '0.0'))  # 2nd-difference (curvature) Tikhonov
+#   penalty strength on the log-r_e profile — OPT-IN, 0.0 = OFF = production default. Suppresses the
+#   data/prior-seam kink (OUTSTANDING §B′, idx-110); needs tuning, keep small (large λ over-smooths
+#   genuine drizzle/entrainment structure). Threaded to gauss_newton_oe via retrieve_one.
+MAX_N_OUTER = int(os.environ.get('MAX_N_OUTER', '1'))             # main-path re-mesh cap (default 1 =
+#   select-once, the published-campaign behavior; corrective re-runs pass 2 via retrieve_one() directly —
+#   this env lets a whole campaign (e.g. ve_rerun) opt every profile into placement re-meshing up front)
+_FKA = os.environ.get('FORCE_K_ACTIVE')                           # ablation knob (2026-07-16, OPT-IN):
+FORCE_K_ACTIVE = int(_FKA) if _FKA else None                      # pin select_retrieval_grid's k_active
+#   instead of letting the noise-aware filter (auto_k_active) pick it. FORCE_K_ACTIVE=1 forces exactly
+#   ONE free interior node — cloud-top s≈0, always retained first — so together with the r_base anchor
+#   (s=1) the retrieved profile has exactly 2 shape knots and interpolates re5-linear between them: the
+#   SAME functional form as make_adiabatic_prior. This makes the RETRIEVAL itself adiabatic-constrained
+#   (not just the first guess/prior mean), the "collapse to 2 adiabatic DOF" ablation (cf.
+#   best_fit_adiabatic's oracle floor, which does this post-hoc/non-causally). Default None = filter-
+#   selected k (unchanged production path).
+FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior configs to run
+if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
+    raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
 VERBOSE = os.environ.get('FR_VERBOSE', '1') not in ('0', '', 'false')
+SETUP_CACHE = os.environ.get('FR_SETUP_CACHE', '1') not in ('0', '', 'false')
+#   L2 setup cache — DEFAULT ON since 2026-07-13 (opt-out FR_SETUP_CACHE=0). It was opt-in only
+#   while the L2 equivalence gate (tests/hpc/test_l2_setup_cache.py) was pending; that gate passed
+#   2026-07-02 (+ post-refactor re-validation, CHANGELOG) and every production sbatch since sets
+#   it — the default just never flipped. One atomic .setup.npz per profile (no Lustre small-file
+#   issue — that concern was L3's 26k files), staleness-gated by the _cfg signature key.
 NQ, N_PHYS, NB = oc.NQUAD, oc.N_PHYS, oc.NB                        # 48, 24, 10
 BANDS, ALBEDO = oc.BANDS, oc.ALBEDO
 NOISE = nm.oci_swir()                                             # OCI 2 % calibration-relative + 1e-3 floor
@@ -95,11 +134,27 @@ S_DENSE = np.linspace(0.0, 1.0, 50)                              # thickness-neu
 TAU_BOT_OK = (0.3, 100.0)                                         # degenerate-profile guard
 
 
-def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setup_cache_path=None):
+def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
+                          retrieval_optics_override=None, setup_cache_path=None):
     """Build the log-space OPERATIONAL forward (precision via env, tol=SOLVER_TOL,
     mode_map=MODE_MAP), LOAD the high-accuracy radiance observation from the cache (the
     truth tier — NOT regenerated here), build Se, and select the azimuthal mode count +
     QRCP retrieval grid.
+
+    ``retrieval_optics_override`` (mismatched-v_eff experiment, 2026-07-12/13): when set,
+    the retrieval's forward model is built from this table file via a **load-only** path
+    (:func:`optics_table.load_table` + :func:`optics_table.select_channel`) — it does NOT
+    go through :func:`osse_config.load_optics`/``build_or_load_table``. That matters:
+    ``build_or_load_table`` computes its expected signature from the *module-global* env
+    (V_EFF/RE_BOUNDS/...), not from anything about the requested path — if the override
+    file's real content doesn't match the env's TRUTH v_eff (which must stay put so the
+    RADIANCE_CACHE signature gate is never bypassed), the normal build-or-load path
+    silently REBUILDS and OVERWRITES the override file with TRUTH-v_eff content (this is
+    exactly what corrupted ``optics_table_10band_nleg1536_re20_fq.npz`` on 2026-07-12 —
+    every mismatch-pilot task quietly clobbered it back to v_eff=0.046). Load-only never
+    writes, so it cannot happen again. The actual v_eff of whichever table was used is
+    stamped onto ``fwd.opt_v_eff`` — the ONE place callers should read it from (never an
+    independent ``np.load`` of the path, which can silently desync from what was loaded).
 
     Setup sequence (E2+E3 diet): select the mode count, run the cheap τ_bot
     pre-retrieval (:func:`retrieval_oe.retrieve_tau_bot`) directly on the fixed
@@ -115,13 +170,21 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     — shared by both prior configs (one compiled forward). ``tau_bot_pre`` is the
     pre-retrieved τ_bot (physical float) logged in the monitoring record."""
     _t = time.time()
-    opt = oc.load_optics(optics_cache)                               # canonical NLeg_all=1536 table
+    if retrieval_optics_override:
+        _tbl = ot.load_table(retrieval_optics_override)              # load-only -- never rebuilds/writes
+        opt = [ot.select_channel(_tbl, i) for i in range(NB)]
+        _opt_v_eff = float(_tbl["v_eff"])
+    else:
+        opt = oc.load_optics(optics_cache)                           # canonical NLeg_all=1536 table
+        _opt_v_eff = oc.V_EFF
     fwd = oc.build_forward(
         opt, tau_bot=clim["tau_bot_mean"], r_base=clim["r_base_mean"],
         views="retrieval", state_space="log", jac_mode="fwd",
         tol=SOLVER_TOL, mode_map=MODE_MAP)
+    fwd.opt_v_eff = _opt_v_eff              # provenance: the v_eff the forward ACTUALLY used
     if VERBOSE:
-        print(f"    [build +{time.time()-_t:.0f}s] optics + RetrievalForward "
+        print(f"    [build +{time.time()-_t:.0f}s] optics (v_eff={_opt_v_eff}"
+              f"{' OVERRIDE' if retrieval_optics_override else ''}) + RetrievalForward "
               f"({_PREC}, tol={SOLVER_TOL:.0e}, mode_map={MODE_MAP}) ready", flush=True)
 
     # OBSERVATION — signature-gated, cross-checked against truth (rigor over results).
@@ -137,13 +200,13 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
         raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp} "
                          f"— wrong-accuracy cache; refusing (rigor over results).")
     y = oc.select_retrieval_views(rec["y"])
-    Se = roe.make_Se(fwd, y, NOISE)
+    Se = NOISE.Se(y)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] loaded radiance cache "
               f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
               f"retrieval forward tol={SOLVER_TOL:.0e} ({_PREC})", flush=True)
 
-    # --- Layer-2 setup checkpoint (opt-in via FR_SETUP_CACHE; FR_CHECKPOINT_RESUME_PLAN.md) ---
+    # --- Layer-2 setup checkpoint (DEFAULT ON; opt-out FR_SETUP_CACHE=0; FR_CHECKPOINT_RESUME_PLAN.md) ---
     # The mode-count + grid selection + τ_bot pre-retrieval below are DETERMINISTIC and
     # platform-INDEPENDENT (~3 h CPU / ~106 min A100). Cache them so a resume — or a GPU run of a
     # profile whose setup idle-CPU already computed — SKIPS the whole expensive setup.
@@ -153,7 +216,16 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     # stale setup; the index guards against a misplaced/renamed cache file.
     # "v2" = the E1/E2/E3 setup semantics (uniform-K pad on vmap, pre-retrieval on
     # S_COARSE, single grid selection) — a pre-refactor cache must NOT be loaded.
-    _cfg = f"v2|{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+    _cfg = (f"v2|{_PREC}|tol{SOLVER_TOL:.0e}|NQ{NQ}|sig{oc.signature()[1]}|idx{int(index)}"
+            f"|opt{Path(retrieval_optics_override).name if retrieval_optics_override else 'self'}"
+            # CLIM_TAU_BOT feeds the pre-retrieval's prior anchor -> tau_bot_pre/grid in the
+            # cached setup depend on it; a different feed must never load this setup. Conditional
+            # (like osse_config.signature's quadrature tag) so every legacy cache stays valid.
+            + (f"|ctb{os.environ['CLIM_TAU_BOT']}" if os.environ.get('CLIM_TAU_BOT') else '')
+            # FORCE_K_ACTIVE changes the SELECTED s_grid itself (not just execution) -> a
+            # canonical (filter-selected) setup cache must never be mistaken for a forced-k one
+            # or vice versa (rigor over results — see FORCE_K_ACTIVE docstring above).
+            + (f"|k{FORCE_K_ACTIVE}" if FORCE_K_ACTIVE is not None else ''))
     if setup_cache_path is not None and os.path.exists(setup_cache_path):
         try:
             _sc = np.load(setup_cache_path, allow_pickle=True)
@@ -205,7 +277,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
     _t = time.time()
     x_fg2 = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
     s_grid, _, _ = roe.select_retrieval_grid(
-        fwd, x_fg2, S_COARSE, k_active=None, Se=Se, prior_builder=pb_phys)
+        fwd, x_fg2, S_COARSE, k_active=FORCE_K_ACTIVE, Se=Se, prior_builder=pb_phys)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] final select_retrieval_grid "
               f"(at tau_bot_pre={tau_bot_pre:.2f}) -> k={len(s_grid)}", flush=True)
@@ -229,7 +301,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE, setu
 
 def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
                  cost_rtol=COST_RTOL, chi2_floor=None, config="A", checkpoint_path=None,
-                 max_n_outer=1, remesh_chi2_thr=REMESH_CHI2_THR):
+                 max_n_outer=1, remesh_chi2_thr=REMESH_CHI2_THR, curvature_lambda=CURVATURE_LAMBDA):
     """Run ONE Gauss–Newton OE retrieval (a given prior/first-guess) on the fixed
     grid and assemble the raw sidecar dict + slim monitoring scalars. All inputs that
     differ between configs are x_a / x0 / Sa; everything else (fwd, y, Se, s_grid) is
@@ -247,7 +319,7 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
         fwd, y, s_grid, x_a, Sa, Se, x0=x0, n_iter=12, lm=1e-2, xtol=2e-3,
         cost_rtol=cost_rtol, chi2_floor=chi2_floor,
         max_n_outer=max_n_outer, prior_builder=pb_log, remesh_if_chi2_red_gt=remesh_chi2_thr, warn=True,
-        verbose=VERBOSE, checkpoint_path=checkpoint_path)
+        verbose=VERBOSE, checkpoint_path=checkpoint_path, curvature_lambda=curvature_lambda)
     if VERBOSE:
         print(f"  [{index}] config {config}: GN done in {time.time()-_t:.0f}s "
               f"({len(res.cost_history)} accepted iters, converged={res.converged})", flush=True)
@@ -311,7 +383,7 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
         dofs=float(post.dofs), sic=float(post.sic),
         dofs_profile=float(dby['profile']), dofs_r_base=float(dby['r_base']),
         dofs_tau_bot=float(dby['tau_bot']), dofs_profile_nodes=np.asarray(dby['profile_nodes']),
-        sigma=np.asarray(NOISE.sigma(y, n_bands=NB)), y=np.asarray(res.y), Fx=np.asarray(res.Fx),
+        sigma=np.asarray(NOISE.sigma(y)), y=np.asarray(res.y), Fx=np.asarray(res.Fx),
         # --- physical retrieved + dense convenience profiles ---
         re_nodes_ret=r_nodes, r_base_ret=r_base_ret, tau_bot_ret=tau_bot_ret,
         s_dense=S_DENSE, re_ours_dense=np.asarray(re_ours), re_truth_dense=re_truth_dense,
@@ -344,51 +416,89 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
 
 
 def main():
-    if os.environ.get("FR_SETUP_ONLY") and not os.environ.get("FR_SETUP_CACHE"):
-        raise SystemExit("FR_SETUP_ONLY requires FR_SETUP_CACHE=1 "
-                         "(there is no setup artifact to farm otherwise)")
+    if os.environ.get("FR_SETUP_ONLY") and not SETUP_CACHE:
+        raise SystemExit("FR_SETUP_ONLY requires the L2 setup cache "
+                         "(unset FR_SETUP_CACHE=0 — there is no setup artifact to farm otherwise)")
     index = int(sys.argv[1])
     out_prefix = sys.argv[2]
     profiles = vio.load_all_profiles(DATA)
     truth = profiles[index]
     flight = getattr(truth, 'flight', '?')
 
+    _ret_optics_path = RETRIEVAL_OPTICS_CACHE or str(OPTICS_CACHE)
     rec = dict(index=index, flight=flight, NQuad=NQ, cost_rtol=COST_RTOL,
                state_space='log', precision=_PREC, tol=SOLVER_TOL, mode_map=MODE_MAP,
-               radiance_cache=RADIANCE_CACHE.name)
+               radiance_cache=RADIANCE_CACHE.name, force_k_active=FORCE_K_ACTIVE,
+               # optics-table provenance (2026-07-12 quadrature/staircase fix): flags
+               # which table generation produced this result — legacy 32-pt moving vs
+               # the fixed-quadrature derivative-grade rebuild. osig/truth_v_eff describe
+               # the TRUTH world (the env oc.signature() the radiance cache is gated on);
+               # retrieval_optics_cache/retrieval_v_eff describe what the RETRIEVAL'S OWN
+               # forward model actually used — identical to the truth fields unless
+               # RETRIEVAL_OPTICS_CACHE deliberately decouples them (mismatched-v_eff
+               # experiment). mismatched_v_eff is the one-glance filter flag.
+               # retrieval_v_eff read via ot.load_table (2026-07-13 fix): LOAD-ONLY, same
+               # function build_forward_and_obs uses for the override path -- it never
+               # rebuilds/overwrites the file, so this read is guaranteed to reflect what
+               # the forward model actually used (see retrieval_optics_override docstring;
+               # a plain np.load of a build-or-load-gated path was the corruption vector).
+               osig=oc.signature()[1], optics_quadrature=oc.QUADRATURE,
+               optics_re_grid_n=oc.RE_GRID_N, optics_n_radii=oc.N_RADII,
+               truth_v_eff=oc.V_EFF, retrieval_optics_cache=Path(_ret_optics_path).name)
     try:
+        # inside the try (2026-07-13): a missing/unreadable table file must produce a
+        # "skipped" record with a traceback like every other failure — not an unlogged
+        # crash before any json is written. Override mode hard-requires the file (it
+        # must never be (re)built); the self-consistent path builds its table lazily in
+        # build_forward_and_obs, so on a fresh env the pre-build read is deferred and
+        # backfilled from fwd.opt_v_eff after the build instead.
+        if RETRIEVAL_OPTICS_CACHE or Path(_ret_optics_path).exists():
+            rec["retrieval_v_eff"] = float(ot.load_table(_ret_optics_path)["v_eff"])
+            rec["mismatched_v_eff"] = bool(abs(rec["retrieval_v_eff"] - rec["truth_v_eff"]) > 1e-9)
+        else:
+            rec["retrieval_v_eff"] = None                # backfilled post-build below
         if not (TAU_BOT_OK[0] <= float(truth.tau_bot) <= TAU_BOT_OK[1]) \
                 or len(np.asarray(truth.tau)) < 5:
             raise ValueError(f"degenerate (tau_bot={truth.tau_bot:.2f}, npts={len(truth.tau)})")
         rec["tau_bot"] = float(truth.tau_bot)
 
-        # Finalize-only fast path: BOTH configs already persisted (a prior wall landed
+        # Finalize-only fast path: every REQUESTED config already persisted (a prior wall landed
         # between the last _persist and the combined record below) -> rebuild <i>.json
         # from the persisted sidecars WITHOUT re-paying the multi-hour setup.
         if all(Path(f"{out_prefix}_{t}{s}").exists()
-               for t in ("A", "B") for s in (".npz", ".json")):
+               for t in FR_CONFIGS for s in (".npz", ".json")):
             _t0 = time.time()
-            _zA = np.load(f"{out_prefix}_A.npz", allow_pickle=True)
+            _z0 = np.load(f"{out_prefix}_{FR_CONFIGS[0]}.npz", allow_pickle=True)
             _rt = os.environ.get("RADIANCE_TOL")
             rec.update(radiance_tol=(float(_rt) if _rt else None), finalize_only=True,
-                       grid=np.round(np.asarray(_zA["s_grid"], float), 4).tolist(),
-                       K_list=[int(v) for v in _zA["K_list"]],
+                       grid=np.round(np.asarray(_z0["s_grid"], float), 4).tolist(),
+                       K_list=[int(v) for v in _z0["K_list"]],
                        runtime_s=round(time.time() - _t0, 1),
-                       A=json.loads(Path(f"{out_prefix}_A.json").read_text()),
-                       B=json.loads(Path(f"{out_prefix}_B.json").read_text()),
-                       npz=[f"{Path(out_prefix).name}_A.npz",
-                            f"{Path(out_prefix).name}_B.npz"])
-            print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: both configs persisted "
+                       npz=[f"{Path(out_prefix).name}_{t}.npz" for t in FR_CONFIGS],
+                       **{t: json.loads(Path(f"{out_prefix}_{t}.json").read_text())
+                          for t in FR_CONFIGS})
+            print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: configs {FR_CONFIGS} persisted "
                   f"— finalize-only (combined json rebuilt, no setup)", flush=True)
             Path(f"{out_prefix}.json").write_text(json.dumps(rec))
             return
 
         clim = vio.vocals_climatology(profiles, exclude_flight=flight)
+        if os.environ.get('CLIM_TAU_BOT'):        # manual τ_bot prior feed (e.g. the truth,
+            clim = dict(clim, tau_bot_mean=float(os.environ['CLIM_TAU_BOT']))  # per-index)
 
         t0 = time.time()
-        _setup_ckpt = f"{out_prefix}.setup.npz" if os.environ.get("FR_SETUP_CACHE") else None
-        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = \
-            build_forward_and_obs(truth, clim, index, setup_cache_path=_setup_ckpt)
+        _setup_ckpt = f"{out_prefix}.setup.npz" if SETUP_CACHE else None
+        fwd, y, Se, s_grid, pb_phys, pb_log, truth_tol, tau_bot_pre = build_forward_and_obs(
+            truth, clim, index, setup_cache_path=_setup_ckpt, optics_cache=OPTICS_CACHE,
+            retrieval_optics_override=RETRIEVAL_OPTICS_CACHE)
+        # cross-check the pre-build load-only read (rec["retrieval_v_eff"]) against what the
+        # forward model actually built from -- the whole point of fwd.opt_v_eff (see docstring).
+        # (None = fresh-env self-consistent build: no pre-build file existed, backfill instead.)
+        if rec["retrieval_v_eff"] is None:
+            rec["retrieval_v_eff"] = float(fwd.opt_v_eff)
+            rec["mismatched_v_eff"] = bool(abs(rec["retrieval_v_eff"] - rec["truth_v_eff"]) > 1e-9)
+        assert abs(fwd.opt_v_eff - rec["retrieval_v_eff"]) < 1e-9, \
+            f"retrieval_v_eff desync: rec={rec['retrieval_v_eff']} fwd.opt_v_eff={fwd.opt_v_eff}"
         rec["radiance_tol"] = truth_tol
         rec["tau_bot_pre"] = round(tau_bot_pre, 3)
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f}: built fwd + selected "
@@ -427,41 +537,51 @@ def main():
             os.replace(_tj, f"{out_prefix}_{tag}.json")
             Path(f"{out_prefix}_{tag}.ckpt.npz").unlink(missing_ok=True)
 
+        mons = {}
         # config A — LOO prior mean is x_a and x0
-        if Path(f"{out_prefix}_A.npz").exists() and Path(f"{out_prefix}_A.json").exists():
-            # resume-skip: reload the persisted monitoring record (mon_A feeds the
-            # combined <i>.json below — leaving it unbound was the NameError that
-            # mislabelled resumed profiles as skipped).
-            mon_A = json.loads(Path(f"{out_prefix}_A.json").read_text())
-            print(f"[{index}] config A already persisted — resume-skip", flush=True)
-        else:
-            sc_A, mon_A = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
-                                       Sa_log, truth, pb_log, index=index, config="A",
-                                       checkpoint_path=f"{out_prefix}_A.ckpt.npz")
-            _persist("A", sc_A, mon_A)
+        if "A" in FR_CONFIGS:
+            if Path(f"{out_prefix}_A.npz").exists() and Path(f"{out_prefix}_A.json").exists():
+                # resume-skip: reload the persisted monitoring record (mons['A'] feeds the
+                # combined <i>.json below — leaving it unbound was the NameError that
+                # mislabelled resumed profiles as skipped).
+                mons["A"] = json.loads(Path(f"{out_prefix}_A.json").read_text())
+                print(f"[{index}] config A already persisted — resume-skip", flush=True)
+            else:
+                sc_A, mons["A"] = retrieve_one(fwd, y, Se, s_grid, x_a_clim_log, x_a_clim_log,
+                                               Sa_log, truth, pb_log, index=index, config="A",
+                                               checkpoint_path=f"{out_prefix}_A.ckpt.npz",
+                                               max_n_outer=MAX_N_OUTER)
+                _persist("A", sc_A, mons["A"])
         # config B — one climatology realization (τ_bot SAMPLED) is x_a and x0; Sa shared
-        if Path(f"{out_prefix}_B.npz").exists() and Path(f"{out_prefix}_B.json").exists():
-            mon_B = json.loads(Path(f"{out_prefix}_B.json").read_text())
-            print(f"[{index}] config B already persisted — resume-skip", flush=True)
-        else:
-            draw, info = roe.draw_climatology_realization(
-                clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
-            x_draw_log = fwd._encode_state(draw)
-            sc_B, mon_B = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
-                                       Sa_log, truth, pb_log, index=index, config="B",
-                                       checkpoint_path=f"{out_prefix}_B.ckpt.npz")
-            sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
-                                            for k_, v in info.items()})
-            _persist("B", sc_B, mon_B)
+        if "B" in FR_CONFIGS:
+            if Path(f"{out_prefix}_B.npz").exists() and Path(f"{out_prefix}_B.json").exists():
+                mons["B"] = json.loads(Path(f"{out_prefix}_B.json").read_text())
+                print(f"[{index}] config B already persisted — resume-skip", flush=True)
+            else:
+                draw, info = roe.draw_climatology_realization(
+                    clim, s_grid, rng=np.random.default_rng(2000 + index), tau_bot=None)
+                x_draw_log = fwd._encode_state(draw)
+                sc_B, mons["B"] = retrieve_one(fwd, y, Se, s_grid, x_draw_log, x_draw_log,
+                                               Sa_log, truth, pb_log, index=index, config="B",
+                                               checkpoint_path=f"{out_prefix}_B.ckpt.npz",
+                                               max_n_outer=MAX_N_OUTER)
+                sc_B["draw_info"] = json.dumps({k_: (float(v) if not isinstance(v, str) else v)
+                                                for k_, v in info.items()})
+                _persist("B", sc_B, mons["B"])
 
         rec.update(grid=np.round(s_grid, 4).tolist(), K_list=list(map(int, fwd.K_list)),
-                   runtime_s=round(time.time() - t0, 1), A=mon_A, B=mon_B,
+                   runtime_s=round(time.time() - t0, 1), A=mons.get("A"), B=mons.get("B"),
                    npz=[f"{Path(out_prefix).name}_A.npz", f"{Path(out_prefix).name}_B.npz"])
+        parts = []
+        if "A" in mons:
+            m = mons["A"]
+            parts.append(f"A: dW1={m['d_w1']:+.3f} (ours {m['w1_ours']:.3f} vs adia "
+                         f"{m['w1_adia']:.3f}) DOFS={m['dofs']:.2f} conv={m['converged']}")
+        if "B" in mons:
+            m = mons["B"]
+            parts.append(f"B: dW1={m['d_w1']:+.3f} DOFS={m['dofs']:.2f} conv={m['converged']}")
         print(f"[{index}] {flight} tau={truth.tau_bot:.1f} DONE [{time.time()-t0:.0f}s] | "
-              f"A: dW1={mon_A['d_w1']:+.3f} (ours {mon_A['w1_ours']:.3f} vs adia "
-              f"{mon_A['w1_adia']:.3f}) DOFS={mon_A['dofs']:.2f} conv={mon_A['converged']} | "
-              f"B: dW1={mon_B['d_w1']:+.3f} DOFS={mon_B['dofs']:.2f} conv={mon_B['converged']}",
-              flush=True)
+              + " | ".join(parts), flush=True)
     except Exception as e:                                          # noqa: BLE001
         import traceback
         tb = traceback.format_exc()

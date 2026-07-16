@@ -16,22 +16,26 @@ Guidance for Claude Code working in this repo: the differentiable RT solver
   actions). Check OUTSTANDING before assuming a feature exists or is missing. Both revised
   2026-07-02; `CHANGELOG.md` is the refactor record + HPC validation brief.
 - **`hpc/`** — everything about the HPC production runs: the re-runnable AGENT task specs
-  (`AGENT_all125_{rad,ic,fr}.md`), `STRATEGY_hpc_retrieval_runs.md` (compute-minimization
-  playbook + the batch-3 lessons), `FINAL_RESULTS_MANIFEST.md` (the canonical batch-3 result
-  set + supersession rules), `sbatch/` (Slurm drivers). The L1/L2 checkpoint-resume design
+  (`AGENT_all125_{rad,fr}.md`; the dense-grid `ic` spec is retired — retrieval-grid IC is
+  pure post-processing), `STRATEGY_hpc_retrieval_runs.md` (compute-minimization
+  playbook + the batch-3 lessons), `sbatch/` (Slurm drivers — untracked scratch since
+  2026-07-16; retired drivers live in git history). The L1/L2 checkpoint-resume design
   lives in `scripts/retrieval_worker.py` + `CHANGELOG.md`. The production-scale rigor gates
   are the standardized `tests/hpc/` suite (opt-in: `PYDISORT_HPC_GATES=1 pytest -m hpc`).
 - **`docs/riccati_solver_VOCALS_retrieval.ipynb`** — the results notebook (presented figures;
-  its two inputs live in `docs/cached_results/`).
+  its cached inputs live in `docs/cached_results/` — §15's are the retrieval-grid IC set:
+  `ic_retrieval_grid.json`, `ic_kforce_demo.json`, `ic_sidecar_K_ve046.npz`,
+  `kernel_probe_ve046_*.npz`, `ic_pump_mechanism_ve046.npz`; overflow analyses in
+  `docs/IC_extra.ipynb`).
 
 ## Layout
 
 ```
-src/pydisort_riccati_jax/   the package (all importable code)
-scripts/                    the 6 worker/analysis entry points the AGENT specs run
+src/pydisort_riccati_jax/   the package (all importable code; per-module map in its CATALOG.md)
+scripts/                    the worker/analysis entry points (one-sentence map in scripts/CATALOG.md)
 tests/                      pytest suite (float32 default / float64 / hpc partitions)
 hpc/                        run specs, strategy, sbatch
-docs/                       results notebook + its 2 cached inputs, figures, report, design docs
+docs/                       results notebook + its cached inputs, figures, report, design docs
 runs/                       (untracked) worker outputs: parts dirs, logs, checkpoints
 ../data/                    (untracked, workspace-level) large caches: optics table,
                             osse_radiances.npz; VOCALS netCDFs are in

@@ -52,11 +52,9 @@ import numpy as np
 class NoiseModel:
     """Per-observation reflectance-noise model (see module docstring).
 
-    Each coefficient is either a **scalar** (applied to every observation) or a
-    **per-band array** of length ``n_bands`` (broadcast over that band's view
-    angles). The observation layout is **band-major** —
-    ``y = [band0×views, band1×views, …]`` — matching ``RetrievalForward.forward``,
-    so observation ``i`` belongs to band ``i // (m // n_bands)``.
+    Both coefficients are scalars, applied elementwise to every observation
+    (a per-band array variant was removed 2026-07-16, ponytail audit: no caller
+    ever differentiated the bands — re-add band broadcasting when one does).
 
     Parameters
     ----------
@@ -65,46 +63,24 @@ class NoiseModel:
     name : label for provenance / plotting.
     """
 
-    k_cal: float | np.ndarray
-    floor: float | np.ndarray = 0.0
+    k_cal: float
+    floor: float = 0.0
     name: str = "custom"
 
-    @staticmethod
-    def _per_obs(coeff, band, n_bands):
-        arr = np.atleast_1d(np.asarray(coeff, float))
-        if arr.size == 1:
-            return np.full(band.shape, arr.item())
-        if arr.size == n_bands:
-            return arr[band]
-        raise ValueError(
-            f"coefficient must be scalar or length n_bands={n_bands}, got {arr.size}")
-
-    def sigma(self, rho, n_bands=1):
-        """Per-observation 1σ noise on the reflectance vector ``rho``.
-
-        ``rho`` is the (band-major) observation vector of length ``m``; ``n_bands``
-        is how many equal-size band blocks it splits into (``m % n_bands == 0``).
-        """
+    def sigma(self, rho):
+        """Per-observation 1σ noise on the reflectance vector ``rho``."""
         rho = np.abs(np.asarray(rho, float)).ravel()
-        m = rho.size
-        if n_bands < 1 or m % n_bands != 0:
-            raise ValueError(f"len(rho)={m} not divisible by n_bands={n_bands}")
-        band = np.repeat(np.arange(n_bands), m // n_bands)        # band-major
-        kc = self._per_obs(self.k_cal, band, n_bands)
-        fl = self._per_obs(self.floor, band, n_bands)
-        return np.sqrt((kc * rho) ** 2 + fl ** 2)
+        return np.sqrt((self.k_cal * rho) ** 2 + self.floor ** 2)
 
-    def Se(self, rho, n_bands=1):
+    def Se(self, rho):
         """Assumed measurement-error covariance ``diag(σ²)`` (what the retrieval inverts)."""
-        s = self.sigma(rho, n_bands)
-        return np.diag(s ** 2)
+        return np.diag(self.sigma(rho) ** 2)
 
-    def sample(self, rho, n_bands=1, seed=0):
+    def sample(self, rho, seed=0):
         """A Gaussian noise *realization* ``ρ + N(0, σ)`` (for a noisy synthetic obs)."""
         rho = np.asarray(rho, float)
-        s = self.sigma(rho, n_bands).reshape(rho.shape)
         rng = np.random.default_rng(seed)
-        return rho + rng.standard_normal(rho.shape) * s
+        return rho + rng.standard_normal(rho.shape) * self.sigma(rho).reshape(rho.shape)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +93,6 @@ def oci_swir(k_cal=0.02, floor=1e-3):
     Calibration-relative: ``σ ≈ k_cal·ρ`` (plus a small floor), with ``k_cal``
     from the documented OCI/HARP2 radiometric accuracy of **1–3 %** (PACE MRD
     §3.7 absolute-gain uncertainty). Default ``k_cal=0.02`` (2 %) sits in that
-    band. ``k_cal`` may be a per-band array (length n_bands) to differentiate
-    the SWIR channels.
+    band.
     """
     return NoiseModel(k_cal=k_cal, floor=floor, name="OCI-SWIR")
