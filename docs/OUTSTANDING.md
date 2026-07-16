@@ -285,7 +285,7 @@ all affected float32 tests pass at the physically-correct albedos. The conventio
 ## K. Measurement-noise model — shot term (Option A) and HARP2/polarized noise deferred  [DECISION / DEFERRED]
 
 The infrastructure is **built and settled** (`src/noise_model.py`; σ(ρ) = calibration-relative +
-floor in quadrature; the OCI-SWIR default; `osse_observation(noise=)` + `make_Se`; default
+floor in quadrature; the OCI-SWIR default; `osse_observation(noise=)` + `NoiseModel.Se`; default
 noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pieces are **open**:
 
 - **Shot term (Option A) — REMOVED from the code (2026-07-10 ponytail audit), pending OCI
@@ -314,7 +314,7 @@ noiseless — see [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md) §12). These pi
   (user-set 2026-06-19: ignore polarization / v_e for now).
 
 - **Notebook adoption — DONE (2026-06-19).** All four OSSE `Se` sites (§5 idealized / §8 thin joint /
-  §12 thick / §13 sub-adiabatic) now build `Se = roe.make_Se(fwd, y, nm.oci_swir())` — the PACE
+  §12 thick / §13 sub-adiabatic) now build `Se = nm.oci_swir().Se(y)` — the PACE
   OCI-SWIR model (calibration-relative ~2 %) — replacing the hand-picked `0.03·max(|y|,0.02)` floor;
   `noise_model` is imported and the §8 markdown + §11b document the change. The OSSE stays **noiseless**
   (Se is the assumed weighting/UQ covariance only). `select_num_modes`'s mode-selection Se

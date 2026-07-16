@@ -1,6 +1,6 @@
 # Strategy guide — minimizing wall-clock for the OSSE retrieval batches (`rad` / `ic` / `fr`)
 
-*(Companions: `AGENT_all125_{rad,ic,fr}.md` (the task hand-offs). §1–2 and §5–7 generalize beyond this
+*(Companions: `AGENT_all125_{rad,fr}.md` (the task hand-offs; the dense-grid `ic` spec is retired). §1–2 and §5–7 generalize beyond this
 cluster; §3–4 carry the cluster- and pipeline-specific numbers.)*
 
 ---

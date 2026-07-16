@@ -864,7 +864,7 @@ scene retrieval should revisit it (off-diagonal `Se`) — see OUTSTANDING K.
 **Default NOISELESS; the model is still used for `Se`.** `osse_observation(..., noise=None)` adds
 nothing (the OSSE decision, §10b). A noise *realization* is opt-in: pass a `NoiseModel` (drawn via
 `sample`, band-major over `fwd.n_bands`) or an explicit per-σ. Independently, the *assumed* covariance
-the retrieval inverts is `Se = diag(σ²)` built by `make_Se(fwd, y, model)` — needed for weighting and
+the retrieval inverts is `Se = diag(σ²)` built by `model.Se(y)` (`make_Se` wrapper removed 2026-07-16, ponytail) — needed for weighting and
 the χ²-gate **even with no perturbation**. The grounded `oci_swir()` model is the intended replacement
 for the historical hand-picked `Se = diag((0.03·max(|y|,0.02))²)` (the `generic_relative`
 preset that reproduced it was removed 2026-07-10, uncalled — git history keeps it).
@@ -897,7 +897,7 @@ capabilities, so they are recorded here for honesty, not tracked as open work):
 *(Implemented in `src/pydisort_riccati_jax/noise_model.py` — `NoiseModel`
 (`sigma`/`Se`/`sample`; calibration-relative + floor since 2026-07-10), preset `oci_swir` —
 and wired in `src/pydisort_riccati_jax/retrieval_oe.py` (`osse_observation` NoiseModel
-dispatch, `make_Se`). Originally verified by the retired `tests/supplementary/check_noise_model.py`
+dispatch, `NoiseModel.Se`). Originally verified by the retired `tests/supplementary/check_noise_model.py`
 (per-band band-major coeffs, Se=diag(σ²), sample statistics, legacy match; git history).)*
 
 ---
@@ -1039,7 +1039,10 @@ example.
 
 *Files: `scripts/{ic_worker_profile,ic_worker_mechanism,ic_analysis_definitive}.py`
 (`ic_tau_bot_check` pruned), `src/pydisort_riccati_jax/{optics_table,info_content}.py`;
-handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §16.*
+handoff `hpc/AGENT_all125_ic.md`→`_fr.md`; figures in notebook §16. **(Retired 2026-07-16:
+the three scripts and the `AGENT_all125_ic.md` spec were deleted with the dense-bundle
+supersession — retrieval-grid IC (§17) is the canonical product; the dense-bundle outputs
+stay in `docs/cached_results/` for forensics only. Git history keeps the scripts.)*
 
 ## 15. Full r_e(τ) retrievals — log-space state, BP2026 convergence, oracle-adiabatic floor  [SETTLED — 2026-06-26]
 
@@ -1253,7 +1256,8 @@ idx49/57 (k=2 give-up grids, true-τ_bot-fed pathology provenance; their pre-tre
 gave 4.86/4.06 DOFS — exclusion is conservative). The one-sentence mismatch-campaign caution is
 recorded in §16's caveats; no IC claims are built on the mismatch runs.
 
-*Files: `scripts/{ic_retrieval_grid,ic_kforce_demo,ic_worker_wiggle,ic_kernel_figs,ic_stat_figs}.py`;
+*Files: `scripts/{ic_retrieval_grid,ic_kforce_demo,ic_worker_wiggle,ic_figs}.py` (`ic_figs` = the
+2026-07-16 merger of the former `ic_kernel_figs` + `ic_stat_figs`);
 caches `docs/cached_results/{ic_retrieval_grid.json,ic_kforce_demo.json,ic_pump_mechanism_ve046.npz,
 kernel_probe_ve046_tol{6,7}_{98,55,39}.npz,
 ic_sidecar_K_ve046.npz}`; notebook §15 + `docs/IC_extra.ipynb`; manifest "IC resolution (2026-07-15)".*

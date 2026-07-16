@@ -40,8 +40,6 @@ from pathlib import Path
 
 import numpy as np
 
-PARTS = Path(sys.argv[1] if len(sys.argv) > 1 else "runs/_ve046_tik_fr_parts")
-OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "docs/cached_results/ic_retrieval_grid.json")
 BISPECTRAL = (0.67, 2.13)
 N_VGROUP = 6
 
@@ -57,27 +55,30 @@ def _dofs_sic(G, Sa):
     return dofs, float(0.5 * logdet / np.log(2.0))
 
 
-def shapley(grams, Sa, n_players):
-    """Exact Shapley shares of DOFS and SIC over Gram blocks (subset enumeration)."""
+def shapley_shares(vals, n):
+    """Exact Shapley values from a complete subset→scalar map (bitmask keys over
+    ``n`` players; sums to vals[full])."""
     from math import factorial
-    n = n_players
-    # value of every subset (bitmask -> (dofs, sic))
-    vals = {}
-    for mask in range(1 << n):
-        if mask == 0:
-            vals[0] = (0.0, 0.0)
-            continue
-        G = sum(grams[i] for i in range(n) if mask >> i & 1)
-        vals[mask] = _dofs_sic(G, Sa)
     w = [factorial(s) * factorial(n - s - 1) / factorial(n) for s in range(n)]
-    sh_d = np.zeros(n); sh_s = np.zeros(n)
+    sh = np.zeros(n)
     for mask in range(1 << n):
         s = bin(mask).count("1")
         for i in range(n):
             if not mask >> i & 1:
-                d0, s0 = vals[mask]; d1, s1 = vals[mask | (1 << i)]
-                sh_d[i] += w[s] * (d1 - d0)
-                sh_s[i] += w[s] * (s1 - s0)
+                sh[i] += w[s] * (vals[mask | (1 << i)] - vals[mask])
+    return sh
+
+
+def shapley(grams, Sa, n_players):
+    """Exact Shapley shares of DOFS and SIC over Gram blocks (subset enumeration)."""
+    n = n_players
+    # value of every subset (bitmask -> (dofs, sic))
+    vals = {0: (0.0, 0.0)}
+    for mask in range(1, 1 << n):
+        G = sum(grams[i] for i in range(n) if mask >> i & 1)
+        vals[mask] = _dofs_sic(G, Sa)
+    sh_d = shapley_shares({m: v[0] for m, v in vals.items()}, n)
+    sh_s = shapley_shares({m: v[1] for m, v in vals.items()}, n)
     return sh_d, sh_s, vals
 
 
@@ -171,6 +172,8 @@ def analyze(npz_path):
 
 
 def main():
+    PARTS = Path(sys.argv[1] if len(sys.argv) > 1 else "runs/_ve046_tik_fr_parts")
+    OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "docs/cached_results/ic_retrieval_grid.json")
     recs, errs = [], []
     for pth in sorted(PARTS.glob("[0-9]*_A.npz"), key=lambda q: int(q.name.split("_")[0])):
         try:

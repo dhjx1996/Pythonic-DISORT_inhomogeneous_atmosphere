@@ -61,7 +61,7 @@ fwd = oc.build_forward(opt, tau_bot=tau_bot, r_base=float(truth.r_base),
 xa_sref = np.asarray(roe.make_climatology_prior(s_ref, clim)[0])
 x_lin = fwd._encode_state(np.concatenate([xa_sref[:len(s_ref) + 1], [tau_bot]]))
 y_probe = np.asarray(roe.osse_observation(fwd, truth.tau, truth.r_e))
-roe.select_num_modes(fwd, x_lin, s_ref, np.diag(nm.oci_swir().sigma(y_probe, n_bands=oc.NB) ** 2))
+roe.select_num_modes(fwd, x_lin, s_ref, np.diag(nm.oci_swir().sigma(y_probe) ** 2))
 
 t0 = time.time()
 # radiances of the LINEARIZATION profile itself (the "vertically structured cloud")

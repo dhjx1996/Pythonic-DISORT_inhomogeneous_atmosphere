@@ -1547,9 +1547,8 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
     *measurement* noise on the ToA radiances (instrument noise), not VOCALS truth
     uncertainty (DESIGN §12). ``noise`` may be **(a)** a :class:`noise_model.NoiseModel`
     (a PACE/OCI instrument model — a Gaussian realization is drawn via its
-    ``sample`` using ``fwd.n_bands`` for the band-major layout), or **(b)** an
-    explicit per-observation σ (scalar or array). Build the matching assumed ``Se``
-    with :func:`make_Se`.
+    ``sample``), or **(b)** an explicit per-observation σ (scalar or array). Build
+    the matching assumed ``Se`` with ``noise.Se(y)``.
     """
     tau_truth = np.asarray(tau_truth, float)
     re_truth = np.asarray(re_truth, float)
@@ -1570,23 +1569,11 @@ def osse_observation(fwd: RetrievalForward, tau_truth, re_truth, *, noise=None,
     y = np.asarray(fwd.forward(x, s_truth), float)
     if noise is not None:
         if hasattr(noise, "sample"):                 # a noise_model.NoiseModel
-            y = np.asarray(noise.sample(y, n_bands=fwd.n_bands, seed=seed), float)
+            y = np.asarray(noise.sample(y, seed=seed), float)
         else:                                        # explicit per-obs σ (scalar/array)
             rng = np.random.default_rng(seed)
             y = y + rng.normal(0.0, 1.0, size=y.shape) * np.asarray(noise)
     return y
-
-
-def make_Se(fwd: RetrievalForward, y, noise_model):
-    """Assumed measurement-error covariance ``Se = diag(σ²)`` from a NoiseModel.
-
-    The OE counterpart to :func:`osse_observation`'s perturbation: it supplies the
-    band-major ``fwd.n_bands`` so a :class:`noise_model.NoiseModel` can apply
-    per-band coefficients. Use this in place of the old hand-picked
-    ``Se = diag((0.03·max(|y|, 0.02))²)`` to ground the weighting in the PACE/OCI
-    instrument model (DESIGN §12). Noiseless OSSE still needs ``Se`` for weighting.
-    """
-    return noise_model.Se(np.asarray(y, float), n_bands=fwd.n_bands)
 
 
 def retrieve_tau_bot(fwd, y, Se, clim, s_nodes, *,

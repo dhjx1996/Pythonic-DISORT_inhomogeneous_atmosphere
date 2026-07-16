@@ -118,7 +118,7 @@ try:
     t0 = time.time()
     # self-consistent observation (same phase-function world), noiseless -> OCI Se
     y = np.asarray(roe.osse_observation(fwd, truth.tau, truth.r_e))
-    sig = NOISE.sigma(y, n_bands=oc.NB)
+    sig = NOISE.sigma(y)
     print(f"[{idx}] {flight} tau={truth.tau_bot:.1f} phase={PHASE}: "
           f"y done in {time.time()-t0:.0f}s; mode selection + dense Jacobian...", flush=True)
     roe.select_num_modes(fwd, x_lin, s_ref, np.diag(sig ** 2))

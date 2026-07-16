@@ -149,3 +149,6 @@ runs/
 
 # pre-refactor test-support leftover (optics-table cache, retired golden probes, old workers)
 tests/supplementary/
+
+# Slurm drivers = per-campaign scratch (2026-07-16); retired drivers recoverable from git history
+hpc/sbatch/

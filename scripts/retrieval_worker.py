@@ -200,7 +200,7 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
         raise ValueError(f"radiance cache tol {truth_tol} != expected RADIANCE_TOL {_exp} "
                          f"— wrong-accuracy cache; refusing (rigor over results).")
     y = oc.select_retrieval_views(rec["y"])
-    Se = roe.make_Se(fwd, y, NOISE)
+    Se = NOISE.Se(y)
     if VERBOSE:
         print(f"    [build +{time.time()-_t:.0f}s] loaded radiance cache "
               f"({RADIANCE_CACHE.name}, truth tol={truth_tol}) -> y[{y.size}]; "
@@ -383,7 +383,7 @@ def retrieve_one(fwd, y, Se, s_grid, x_a, x0, Sa, truth, pb_log, *, index,
         dofs=float(post.dofs), sic=float(post.sic),
         dofs_profile=float(dby['profile']), dofs_r_base=float(dby['r_base']),
         dofs_tau_bot=float(dby['tau_bot']), dofs_profile_nodes=np.asarray(dby['profile_nodes']),
-        sigma=np.asarray(NOISE.sigma(y, n_bands=NB)), y=np.asarray(res.y), Fx=np.asarray(res.Fx),
+        sigma=np.asarray(NOISE.sigma(y)), y=np.asarray(res.y), Fx=np.asarray(res.Fx),
         # --- physical retrieved + dense convenience profiles ---
         re_nodes_ret=r_nodes, r_base_ret=r_base_ret, tau_bot_ret=tau_bot_ret,
         s_dense=S_DENSE, re_ours_dense=np.asarray(re_ours), re_truth_dense=re_truth_dense,
