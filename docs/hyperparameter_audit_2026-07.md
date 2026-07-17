@@ -39,7 +39,7 @@ further; **INERT** = never binding in practice.
 | priors: `r_base_ratio` | 0.65·r_top, clipped < r_top | VOCALS median 0.60, King/Vukićević AMT-2025 ≈0.70 | OK |
 | priors: `sigma_top`/`sigma_base` | ≈2.3–2.5 / ≈1.4–1.5 µm | VOCALS MADs; "tight where blind, loose where strong" (DD §11, population-confirmed) | OK |
 | priors: `sigma_tau_bot` | ~100 % relative | τ_bot fully data-determined (A≈1) | OK |
-| priors: `corr_length` | 0.5 (normalized depth) | default τ_bot/2 heritage | **FLAG (low)** — the smoothness scale was never swept at 2 % noise; it shapes the Bayesian-Tikhonov coupling that moves the shielded base |
+| priors: `corr_length` | 0.5 (normalized depth) → top–base prior corr **0.135** | default τ_bot/2 heritage; **in-situ VOCALS corr(ln r_top, ln r_base)=0.84** (BP2026 recipe), so we under-couple by design | **FLAG (§2.4b)** — deliberate: weak coupling exposes the depth information-collapse rather than hiding it; KV2012/KR2012 use 0 (diagonal), BP2026 uses the empirical ~0.84; tune for ops (OD §L) |
 | B-draw RNG | `default_rng(2000+index)` | reproducibility across resumes (audited clean) | OK |
 | `TAU_BOT_OK` | (0.3, 100) | degenerate-profile guard (idx-0 τ≈1585) | OK |
 | LWP | (2/3)·∫r_e dτ | assumes Q_ext≈2; z-integral cross-check carried in the sidecar | OK (documented approximation) |
@@ -88,6 +88,37 @@ levers with no dedicated sweep at the 2 % noise model. Both are plausibly benign
 neither has the evidence discipline the other knobs now have. Candidate for a cheap
 2-case sweep when the HPC is next idle.
 
+### 2.4b The prior top–base correlation is under-specified vs the in-situ covariance (flag, deliberate for now)
+`corr_length=0.5` sets the **only** knob controlling the prior correlation between
+cloud-top r_e and the (shielded) cloud-base r_e. Through the exponential kernel
+`S_a[i,j]=σ_iσ_j·exp(−|s_i−s_j|/ℓ)`, top (s=0) and base (s=1) get
+`corr = exp(−1/0.5) = exp(−2) ≈ **0.135**` — nearly independent. **The VOCALS-REx
+in-situ data says otherwise:** defining `r_top`/`r_base` as the mean over the top/bottom
+25 % of each normalized-depth profile (the BP2026 recipe), the empirical
+`corr(ln r_top, ln r_base)` over the 125 profiles is **+0.84** (Pearson-log; bootstrap
+95 % CI [0.79, 0.88]; Spearman 0.85, so not a log/outlier artifact; monotone-stable
+0.73→0.86 across a 10–30 % cutoff). We are imposing ~0.135 where the data supports ~0.84.
+
+**Standard practice differs by school** (all four refs in `cloud_profile_retrieval/`):
+- **KV2012** (King & Vaughan, eq 1 = our re⁵ law, state `[r_t,r_b,τ_c]`) and **KR2012**
+  (Kokhanovsky & Rozanov, linear `[a_t,a_b]`+τ, `Q=S_a⁻¹`) both use a **diagonal `S_a`**
+  — top and base *uncorrelated* (corr=0). Our 0.135 is already above their bar.
+- **BP2025** (Buggee & Pilewskie, AMT 2025) couples top→base through the **prior mean**:
+  `r_base,a = 0.70·r_top` (median VOCALS ratio), covariance not made off-diagonal.
+- **BP2026** (the log-space source we already follow) operationalizes it in the
+  **covariance**: eq (3) `S'_a = Cov(ln[r_top,r_bot,τ_c,IWV])` — the *full empirical*
+  VOCALS covariance, off-diagonals included. This is the ~0.84 above.
+
+**Decision (2026-07-16): keep the untuned 0.135 for the research campaigns, do not adopt
+the empirical 0.84.** Rationale: a weak prior correlation is *more instructive* — it lets
+the genuine information collapse at depth (the shielded base, few DOFS_base) show through
+in the posterior, rather than masking it behind a strong prior tie whose ~0.84 value is a
+single-campaign (SE-Pacific marine Sc) statistic that may not generalize. Caveat on the
+0.84 itself: it is our reproduction of BP2026's stated recipe on our VOCALS load, not a
+readout of BP's published `S_a`. **For operations this parameter should be tuned** (or
+replaced by a BP2026-style empirical `S_a`), and that likely warrants a dedicated FR run —
+tracked in `OUTSTANDING.md §L`.
+
 ## 3. Logic soundness — the claim chain (checked, sound)
 
 1. **Forward validity.** Riccati solver ≡ pydisort references across 22 test files +
@@ -125,3 +156,6 @@ neither has the evidence discipline the other knobs now have. Candidate for a ch
    into DD where they harden decisions.
 4. Idle-HPC candidates: corr_length/margin mini-sweeps (§2.4); μ0 sensitivity spot
    check (§2.3); OCI SNR tables → shot-noise term (OD-K).
+5. Prior top–base correlation (§2.4b): deliberately left at 0.135 (untuned) for the
+   research campaigns; for ops, tune `corr_length` or adopt a BP2026-style empirical
+   `S_a` (VOCALS corr≈0.84) — a dedicated FR run (OD §L).

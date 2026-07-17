@@ -114,6 +114,15 @@ FORCE_K_ACTIVE = int(_FKA) if _FKA else None                      # pin select_r
 #   (not just the first guess/prior mean), the "collapse to 2 adiabatic DOF" ablation (cf.
 #   best_fit_adiabatic's oracle floor, which does this post-hoc/non-causally). Default None = filter-
 #   selected k (unchanged production path).
+_CL = os.environ.get('CORR_LENGTH')                              # prior top-base correlation knob (2026-07-16):
+CORR_LENGTH = float(_CL) if _CL else None                        # make_adiabatic_prior's exp-kernel length ℓ in
+#   NORMALIZED depth. corr(top s=0, base s=1) = exp(-1/ℓ). Default None -> make_adiabatic_prior's own default
+#   (τ_bot/2 = 0.5 in normalized depth -> corr 0.135, the weak/uninformative prior; byte-identical to before).
+#   The "strong" campaigns set CORR_LENGTH=5.7355 -> corr 0.84, matching the empirical VOCALS in-situ
+#   corr(ln r_top, ln r_base) (BP2026-style; hyperparameter_audit §2.4b, OUTSTANDING §L). Single-factor lever:
+#   ONLY the off-diagonals of the r_e block change; diagonal σ's (hence grid selection / auto_k_active, which
+#   use only diag(Sa)) and τ_bot (block-diagonal) are untouched, so the L2 setup (grid, K, τ_bot_pre) is
+#   invariant and weak-vs-strong isolates exactly the prior correlation in the joint GN.
 FR_CONFIGS = os.environ.get('FR_CONFIGS', 'AB').upper()           # which prior configs to run
 if not FR_CONFIGS or set(FR_CONFIGS) - {'A', 'B'}:                # (ve_rerun: 'A' = headline only;
     raise SystemExit(f"FR_CONFIGS must be a non-empty subset of 'AB', got {FR_CONFIGS!r}")  # default unchanged)
@@ -236,8 +245,8 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
                 s_grid = np.asarray(_sc["s_grid"], float)
                 tau_bot_pre, sigma_tau_pre = float(_sc["tau_bot_pre"]), float(_sc["sigma_tau_pre"])
                 clim = dict(clim, tau_bot_mean=tau_bot_pre, tau_bot_std=sigma_tau_pre)
-                pb_phys = lambda sn: roe.make_climatology_prior(sn, clim)
-                pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
+                pb_phys = lambda sn: roe.make_climatology_prior(sn, clim, corr_length=CORR_LENGTH)
+                pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True, corr_length=CORR_LENGTH)
                 if VERBOSE:
                     print(f"    [build] Layer-2 setup cache HIT -> K={fwd.K_list} k={len(s_grid)} "
                           f"tau_bot_pre={tau_bot_pre:.2f} [skipped select_num_modes + grid-select "
@@ -272,8 +281,10 @@ def build_forward_and_obs(truth, clim, index, *, optics_cache=OPTICS_CACHE,
               f"(truth={truth.tau_bot:.2f}, clim_prior={_clim_tau_prior:.2f})", flush=True)
 
     # FINAL GRID at the per-profile τ_bot anchor. Prior builders close over updated clim.
-    pb_phys = lambda sn: roe.make_climatology_prior(sn, clim)
-    pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True)
+    # CORR_LENGTH threads into the MAIN-retrieval prior only (grid selection uses diag(Sa) only, so
+    # s_grid is corr-invariant — the L2 setup stays shared across weak/strong corr runs).
+    pb_phys = lambda sn: roe.make_climatology_prior(sn, clim, corr_length=CORR_LENGTH)
+    pb_log = lambda sn: roe.make_climatology_prior(sn, clim, log=True, corr_length=CORR_LENGTH)
     _t = time.time()
     x_fg2 = fwd._encode_state(roe.make_climatology_prior(S_COARSE, clim)[0])
     s_grid, _, _ = roe.select_retrieval_grid(
@@ -429,6 +440,7 @@ def main():
     rec = dict(index=index, flight=flight, NQuad=NQ, cost_rtol=COST_RTOL,
                state_space='log', precision=_PREC, tol=SOLVER_TOL, mode_map=MODE_MAP,
                radiance_cache=RADIANCE_CACHE.name, force_k_active=FORCE_K_ACTIVE,
+               corr_length=CORR_LENGTH,
                # optics-table provenance (2026-07-12 quadrature/staircase fix): flags
                # which table generation produced this result — legacy 32-pt moving vs
                # the fixed-quadrature derivative-grade rebuild. osig/truth_v_eff describe
@@ -517,7 +529,7 @@ def main():
             return
 
         # shared LOG climatology prior on the selected grid (Sa_log shared by A & B)
-        x_a_clim_log, Sa_log = roe.make_climatology_prior(s_grid, clim, log=True)
+        x_a_clim_log, Sa_log = roe.make_climatology_prior(s_grid, clim, log=True, corr_length=CORR_LENGTH)
 
         # Persist each config's artifacts the moment that config finishes, so a
         # later config-B wall/crash cannot erase an already-converged config A.

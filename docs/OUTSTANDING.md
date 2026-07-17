@@ -97,7 +97,10 @@ high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
 **λ=0 ⇒ bit-identical** to the un-penalised solve. Linearised calibration (2026-07-11, from stored posteriors):
 energy-weighted **λ≈0.3–1** relaxes the idx-110 kink 72–76 % (r_base +0.24→+0.73 µm toward truth) while moving
 well-constrained thin-cloud nodes only ~0.15–0.38σ — the accuracy-vs-over-smoothing knob to set per campaign.
-Depth-increasing correlation (fix 1) remains un-implemented. **Adopted in production (2026-07-15/16):
+Depth-increasing correlation (fix 1) remains un-implemented — now **quantified** in §L "Prior top–base
+correlation": our prior imposes top↔base corr ≈ 0.135 (`corr_length=0.5`) where the VOCALS in-situ
+covariance (BP2026 recipe) is ≈ 0.84; deliberately left weak for research, flagged to tune for ops.
+**Adopted in production (2026-07-15/16):
 the canonical ve046 campaign (`runs/_ve046_tik_fr_parts`, summary
 `docs/cached_results/retrieval_summary_ve046.json`) ran with λ=1.0; §15's retrieval-grid IC uses those
 sidecars (with the curvature term excluded from the IC prior — DESIGN §17).**
@@ -378,6 +381,23 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   per-scene work (compile-per-bin; STRATEGY §4).
 - **Un-swept second-order knobs [low].** `corr_length` (prior smoothness) and `margin` (+1 node)
   have no dedicated sweep at the 2 % noise model; cheap 2-case sweeps when the HPC is idle.
+- **Prior top–base correlation under-specified vs in-situ [flag, deliberate — tune for ops].**
+  `corr_length=0.5` fixes the *only* knob setting the prior correlation between cloud-top and
+  cloud-base r_e: `corr = exp(−1/0.5) ≈ **0.135**` (top↔base). The VOCALS-REx in-situ covariance
+  (BP2026 recipe: mean over top/bottom 25 % of each profile, log space, 125 profiles) gives
+  `corr(ln r_top, ln r_base) = **0.84**` (bootstrap 95 % CI [0.79, 0.88]; Spearman 0.85). We
+  under-couple by design. Literature (all in `cloud_profile_retrieval/`): **KV2012** and **KR2012**
+  use a *diagonal* `S_a` (corr 0); **BP2025** couples via the prior *mean* (`r_base,a=0.70·r_top`);
+  **BP2026** — the log-space source we follow — operationalizes it in the *covariance*
+  (eq 3, `S'_a=Cov(ln[r_top,r_bot,τ,IWV])`, the empirical ~0.84). **Decision 2026-07-16: keep the
+  untuned 0.135 for research** — a weak tie lets the genuine depth information-collapse (shielded
+  base, low DOFS/SIC) show through in the posterior instead of being masked by a strong prior tie
+  whose 0.84 is a single-campaign (SE-Pacific marine Sc) statistic of uncertain generality. This is
+  the quantified form of §B′ "fix (1) depth-increasing correlation" (still un-implemented).
+  **For operations this must be tuned** (sweep `corr_length`, or replace `make_adiabatic_prior`'s
+  kernel with a BP2026-style empirical `S_a`) — **likely a dedicated FR run down the road.** The
+  `ve046_adia` ablation (2026-07-16, `runs/_ve046_tik_adia_parts`) is where this matters most: base
+  r_e rides on ~1 shielded DOF, so the 0.135-vs-0.84 gap most directly shapes its base/LWP results.
 - **Spectral surface albedo [low].** Constant Lambertian 0.06 across 0.55–4.05 µm is crude
   (SWIR sea albedo ≈ 0.02); secondary under bright cloud — revisit if dark-scene bands matter.
 - **Shot-noise term** — removed from the code pending OCI SNR tables (§K; re-add is one line).
