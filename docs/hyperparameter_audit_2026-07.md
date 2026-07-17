@@ -39,7 +39,7 @@ further; **INERT** = never binding in practice.
 | priors: `r_base_ratio` | 0.65·r_top, clipped < r_top | VOCALS median 0.60, King/Vukićević AMT-2025 ≈0.70 | OK |
 | priors: `sigma_top`/`sigma_base` | ≈2.3–2.5 / ≈1.4–1.5 µm | VOCALS MADs; "tight where blind, loose where strong" (DD §11, population-confirmed) | OK |
 | priors: `sigma_tau_bot` | ~100 % relative | τ_bot fully data-determined (A≈1) | OK |
-| priors: `corr_length` | 0.5 (normalized depth) → top–base prior corr **0.135** | default τ_bot/2 heritage; **in-situ VOCALS corr(ln r_top, ln r_base)=0.84** (BP2026 recipe), so we under-couple by design | **FLAG (§2.4b)** — deliberate: weak coupling exposes the depth information-collapse rather than hiding it; KV2012/KR2012 use 0 (diagonal), BP2026 uses the empirical ~0.84; tune for ops (OD §L) |
+| priors: `corr_length` | 0.5 (normalized depth) → top–base prior corr **0.135**; env-overridable via `CORR_LENGTH` (2026-07-16), strong = 5.7355 → **0.84** | default τ_bot/2 heritage; **in-situ VOCALS corr(ln r_top, ln r_base)=0.84** (BP2026 recipe), so we under-couple by design | **FLAG (§2.4b)** — deliberate: weak coupling exposes the depth information-collapse rather than hiding it; KV2012/KR2012 use 0 (diagonal), BP2026 uses the empirical ~0.84; strong-corr sensitivity campaigns (FR/adiabatic/v_e-mismatch at 0.84) queued — `hpc/AGENT_strongcorr_pipeline.md`; tune for ops (OD §L) |
 | B-draw RNG | `default_rng(2000+index)` | reproducibility across resumes (audited clean) | OK |
 | `TAU_BOT_OK` | (0.3, 100) | degenerate-profile guard (idx-0 τ≈1585) | OK |
 | LWP | (2/3)·∫r_e dτ | assumes Q_ext≈2; z-integral cross-check carried in the sidecar | OK (documented approximation) |
@@ -116,8 +116,17 @@ in the posterior, rather than masking it behind a strong prior tie whose ~0.84 v
 single-campaign (SE-Pacific marine Sc) statistic that may not generalize. Caveat on the
 0.84 itself: it is our reproduction of BP2026's stated recipe on our VOCALS load, not a
 readout of BP's published `S_a`. **For operations this parameter should be tuned** (or
-replaced by a BP2026-style empirical `S_a`), and that likely warrants a dedicated FR run —
-tracked in `OUTSTANDING.md §L`.
+replaced by a BP2026-style empirical `S_a`) — tracked in `OUTSTANDING.md §L`.
+
+**Update (2026-07-16, same day):** the sensitivity run is no longer hypothetical. A
+`CORR_LENGTH` env knob (`scripts/retrieval_worker.py`) now sets ℓ directly — unset →
+0.5 (corr 0.135, byte-identical default), `5.7355` → corr 0.84 — threaded only into the
+main-retrieval prior (grid selection and `retrieve_tau_bot` unchanged), so weak↔strong
+isolates exactly the prior correlation; each result stamps `corr_length` for provenance.
+Three strong-corr (0.84) campaigns are queued in strict order behind the weak-corr
+adiabatic ablation: FR, adiabatic, and v_e-mismatch — `hpc/AGENT_strongcorr_pipeline.md`.
+The weak 0.135 remains the default and the primary (headline) configuration; the strong
+runs are its sensitivity companions.
 
 ## 3. Logic soundness — the claim chain (checked, sound)
 
@@ -156,6 +165,7 @@ tracked in `OUTSTANDING.md §L`.
    into DD where they harden decisions.
 4. Idle-HPC candidates: corr_length/margin mini-sweeps (§2.4); μ0 sensitivity spot
    check (§2.3); OCI SNR tables → shot-noise term (OD-K).
-5. Prior top–base correlation (§2.4b): deliberately left at 0.135 (untuned) for the
-   research campaigns; for ops, tune `corr_length` or adopt a BP2026-style empirical
-   `S_a` (VOCALS corr≈0.84) — a dedicated FR run (OD §L).
+5. Prior top–base correlation (§2.4b): 0.135 stays the primary configuration; the
+   strong-corr (0.84, `CORR_LENGTH=5.7355`) sensitivity campaigns (FR / adiabatic /
+   v_e-mismatch) are queued — `hpc/AGENT_strongcorr_pipeline.md`. For ops, tune
+   `corr_length` or adopt a BP2026-style empirical `S_a` (OD §L).

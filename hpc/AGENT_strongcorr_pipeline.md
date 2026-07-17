@@ -1,8 +1,37 @@
-# Delegated task — the STRONG-CORRELATION pipeline (4 campaigns, STRICT ORDER)
+# Delegated task — the STRONG-CORRELATION pipeline (4 campaigns)
 
 *(Branch `ve_rerun`. Results move by zip, never git. 2026-07-16. User directive: run the four in
-strict order — each must 100 % drain AND have its deliverable bundle ready before the next
+order — each must 100 % drain AND have its deliverable bundle ready before the next
 starts.)*
+
+**ORDERING REVISED (user, 2026-07-17):**
+- Campaigns **2 and 3 may OVERLAP**: campaign 3's jobs launch without waiting for campaign 2 to
+  fully drain (throughput). Campaign 1 must still drain + bundle before 2/3 start; campaign 4
+  still comes last (needs the mismatch-table rebuild).
+- Campaigns 2 and 3 each start with a few **PILOT jobs** (small `--array` of hand-picked indices,
+  advisor-selected) submitted ahead of the remainder so preliminary results arrive early.
+  **Pilots gate NOTHING** — the full arrays launch without waiting for pilot verdicts; pilot
+  outputs are for early scientific look + standing checks only.
+- L2 setup-cache PRE-SEEDING makes the overlap cheap: `.setup.npz` lives per parts dir (no
+  automatic cross-campaign hit), but the cfg key excludes `corr_length` (setup corr-invariant by
+  design) and includes `|k1` — so BEFORE launch, copy campaign 1's 125 `<i>.setup.npz` into
+  `_ve046_strongcorr_adia_parts/` (campaign 3, keys match exactly) and the canonical run's 124
+  into `_ve046_strongcorr_fr_parts/` (campaign 2; the canonical mixed-quadrature legacy-sig ones
+  are harmlessly key-rejected as stale and recomputed — only its fq-keyed setups actually hit).
+  Advisor-confirmed sound: a strong-corr run reusing a weak-corr setup for the same idx/k is
+  correct, not a bug. Campaigns 2 and 3 cannot collide with each other (`|k1` discriminator +
+  separate dirs).
+- Launch order at campaign-1 handoff: bundle → seed both dirs → **c2 pilots + c3 pilots
+  CONCURRENT** (two `--array=8,34,44,57,78` submissions back-to-back) → c2 remainder → c3
+  remainder.
+- **Pilot set (advisor, 2026-07-17), one set for both campaigns: idx 8, 44, 78, 34, 57** —
+  8 = severe non-adiabatic archetype (does 0.84 force it adiabatic?), 44 = mild non-adiabatic
+  (fast), 78 = thick shielded base (strong corr should move r_base MOST), 34 = low-τ negative
+  control (base data-visible, corr should move it LITTLE), 57 = adiabatic-beat-baseline stability
+  check. Pilot early-look: setup byte-identical to weak counterpart (isolation proof);
+  `corr_length=5.7355` stamped; r_base shift ordered 78 >> 34; dofs_r_base drops vs weak;
+  base pulled toward adia regression. Red flags: results byte-identical to weak (knob not
+  reaching GN prior), new negrel/NaN (S_a conditioning), r_base newly pinned at bound.
 
 ## The single lever these campaigns share
 

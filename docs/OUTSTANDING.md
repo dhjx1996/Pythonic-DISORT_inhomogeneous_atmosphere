@@ -97,9 +97,11 @@ high-`KᵀSε⁻¹K` nodes ≈ fixed; do NOT choose λ for maximal smoothness.**
 **λ=0 ⇒ bit-identical** to the un-penalised solve. Linearised calibration (2026-07-11, from stored posteriors):
 energy-weighted **λ≈0.3–1** relaxes the idx-110 kink 72–76 % (r_base +0.24→+0.73 µm toward truth) while moving
 well-constrained thin-cloud nodes only ~0.15–0.38σ — the accuracy-vs-over-smoothing knob to set per campaign.
-Depth-increasing correlation (fix 1) remains un-implemented — now **quantified** in §L "Prior top–base
-correlation": our prior imposes top↔base corr ≈ 0.135 (`corr_length=0.5`) where the VOCALS in-situ
-covariance (BP2026 recipe) is ≈ 0.84; deliberately left weak for research, flagged to tune for ops.
+Depth-increasing correlation (fix 1) is now **implemented** (2026-07-16) as the `CORR_LENGTH` env knob
+and **quantified** in §L "Prior top–base correlation": our prior imposes top↔base corr ≈ 0.135
+(`corr_length=0.5`) where the VOCALS in-situ covariance (BP2026 recipe) is ≈ 0.84; 0.135 stays the
+primary configuration, strong-corr (0.84) sensitivity campaigns queued (`hpc/AGENT_strongcorr_pipeline.md`);
+flagged to tune for ops.
 **Adopted in production (2026-07-15/16):
 the canonical ve046 campaign (`runs/_ve046_tik_fr_parts`, summary
 `docs/cached_results/retrieval_summary_ve046.json`) ran with λ=1.0; §15's retrieval-grid IC uses those
@@ -393,11 +395,16 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
   untuned 0.135 for research** — a weak tie lets the genuine depth information-collapse (shielded
   base, low DOFS/SIC) show through in the posterior instead of being masked by a strong prior tie
   whose 0.84 is a single-campaign (SE-Pacific marine Sc) statistic of uncertain generality. This is
-  the quantified form of §B′ "fix (1) depth-increasing correlation" (still un-implemented).
-  **For operations this must be tuned** (sweep `corr_length`, or replace `make_adiabatic_prior`'s
-  kernel with a BP2026-style empirical `S_a`) — **likely a dedicated FR run down the road.** The
-  `ve046_adia` ablation (2026-07-16, `runs/_ve046_tik_adia_parts`) is where this matters most: base
-  r_e rides on ~1 shielded DOF, so the 0.135-vs-0.84 gap most directly shapes its base/LWP results.
+  the quantified form of §B′ "fix (1) depth-increasing correlation" — **now implemented as the
+  `CORR_LENGTH` env knob** (`scripts/retrieval_worker.py`, 2026-07-16; unset → ℓ=0.5, corr 0.135;
+  `5.7355` → corr 0.84; main-retrieval prior only, stamped into each sidecar). **The sensitivity
+  runs are scheduled:** three strong-corr (0.84) campaigns — FR, adiabatic, v_e-mismatch — queued
+  in strict order behind the weak-corr adiabatic ablation (`hpc/AGENT_strongcorr_pipeline.md`).
+  0.135 remains the default/primary configuration. **For operations this must still be tuned**
+  (sweep `corr_length`, or replace `make_adiabatic_prior`'s kernel with a BP2026-style empirical
+  `S_a`). The `ve046_adia` ablation (2026-07-16, `runs/_ve046_tik_adia_parts`) is where this
+  matters most: base r_e rides on ~1 shielded DOF, so the 0.135-vs-0.84 gap most directly shapes
+  its base/LWP results.
 - **Spectral surface albedo [low].** Constant Lambertian 0.06 across 0.55–4.05 µm is crude
   (SWIR sea albedo ≈ 0.02); secondary under bright cloud — revisit if dark-scene bands matter.
 - **Shot-noise term** — removed from the code pending OCI SNR tables (§K; re-add is one line).
