@@ -34,8 +34,7 @@ truth-fed compromise rung was replaced by this real competitor, 2026-07-17.)
 Usage: plot_retrieved_profile.py <idx> [config=A] [parts_dir=runs/_ve046_tik_fr_parts]
                                   [out=docs/figures/ve046_idx{idx}_profile.png]
 Env: OSSE_VEFF/OSSE_RE_MAX/OPTICS_CACHE/RADIANCE_CACHE default to the ve046 fq
-     campaign (override for a different campaign's parts_dir); CURVATURE_LAMBDA
-     defaults to 1.0 (the ve046 campaign's value) for the title only.
+     campaign (override for a different campaign's parts_dir).
      PLOT_CAMPAIGN_TAG (default "ve046") titles the campaign — set it when plotting a
      parts_dir whose retrieval was not the self-consistent ve046 one (e.g. the mismatched-v_e
      run), so the figure cannot be mistaken for a self-consistent result.
@@ -79,7 +78,6 @@ def main():
     config = sys.argv[2] if len(sys.argv) > 2 else "A"
     parts_dir = Path(sys.argv[3] if len(sys.argv) > 3 else "runs/_ve046_tik_fr_parts")
     out = sys.argv[4] if len(sys.argv) > 4 else f"docs/figures/ve046_idx{idx}_profile.png"
-    curvature_lambda = float(os.environ.get("CURVATURE_LAMBDA", "1.0"))
     campaign_tag = os.environ.get("PLOT_CAMPAIGN_TAG", "ve046")
 
     z = dict(np.load(parts_dir / f"{idx}_{config}.npz", allow_pickle=True))
@@ -112,15 +110,15 @@ def main():
     tau_nodes = s_grid * tau_bot_ret
 
     fig, ax = plt.subplots(figsize=(7, 8))
-    ax.plot(z["truth_re"], z["truth_tau"], color="grey", lw=1.3, label="truth (in situ)")
+    ax.plot(z["truth_re"], z["truth_tau"], color="grey", lw=1.3, label="truth")
     ax.plot(re_prior_dense, tau_dense_pre, color="tab:orange", ls="--", lw=1.8, label="prior")
     ax.plot(z["re_adia_dense"], tau_dense_adia, color="tab:green", ls="-.", lw=1.6,
-            label="best-fit adiabat (oracle, W1)")
+            label="best-fit adiabat")
     k1_parts = os.environ.get("PLOT_K1_PARTS", "")
     if k1_parts:
         # PLOT_OVERLAY_LABEL relabels the overlay when the parts dir is not the matched
         # k=1 campaign (e.g. overlaying the weak-l FR counterpart for vetting)
-        olabel = os.environ.get("PLOT_OVERLAY_LABEL", "retrieved adiabat (k=1)")
+        olabel = os.environ.get("PLOT_OVERLAY_LABEL", "retrieved adiabat")
         z1 = dict(np.load(Path(k1_parts) / f"{idx}_{config}.npz", allow_pickle=True))
         re1 = np.asarray(z1["re_ours_dense"], float)
         tau1 = S_DENSE * float(z1["tau_bot_ret"])
@@ -133,14 +131,12 @@ def main():
         re_nodes1 = np.asarray(z1["re_nodes_ret"], float)
         sig1 = [re_nodes1[0] * np.sqrt(S1[0]), float(z1["r_base_ret"]) * np.sqrt(S1[n1])]
         ax.errorbar([re1[0], re1[-1]], [tau1[0], tau1[-1]], xerr=sig1, fmt="o",
-                    color="tab:purple", ms=9, capsize=3, zorder=5,
-                    label=("overlay top/base $\\pm1\\sigma$" if "k=1" not in olabel
-                           else "k=1 top/base $\\pm1\\sigma$"))
+                    color="tab:purple", ms=9, capsize=3, zorder=5)
     ax.plot(z["re_ours_dense"], tau_dense_ret, color="tab:blue", lw=2.2, label="retrieved")
     ax.plot(float(z["truth_r_base"]), truth_tau_bot, "*", color="k", ms=15, zorder=7,
             label="truth base")
     ax.errorbar(re_nodes_ret, tau_nodes, xerr=sigma_nodes, fmt="o", color="tab:blue",
-                ms=6, capsize=3, zorder=6, label=r"nodes $\pm1\sigma$")
+                ms=6, capsize=3, zorder=6)
     ax.errorbar([r_base_ret], [tau_bot_ret], xerr=[sigma_rbase], fmt="X", color="tab:red",
                 ms=12, capsize=3, zorder=7, label=r"retrieved base $\pm1\sigma$")
 
@@ -150,8 +146,8 @@ def main():
     ax.grid(alpha=0.3)
     ax.legend(fontsize=9, loc="best")   # dynamic: keep the legend off the retrievals (user rule 2026-07-18)
     ax.set_title(
-        f"idx-{idx} ({str(z['flight'])})  {campaign_tag}, curvature Tikhonov lambda={curvature_lambda:g}\n"
-        f"$\\chi^2_\\mathrm{{red}}$={float(z['chi2_red']):.4f},  "
+        f"idx-{idx} ({str(z['flight'])}, {campaign_tag})  "
+        f"$\\chi^2_r$={float(z['chi2_red']):.3f},  "
         f"$\\tau_\\mathrm{{bot}}$={tau_bot_ret:.2f} (truth {truth_tau_bot:.2f}),  "
         f"DOFS={float(z['dofs']):.2f}", fontsize=11)
     fig.tight_layout()

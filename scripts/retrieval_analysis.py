@@ -21,8 +21,9 @@ jagged in-situ truth and a smooth retrieval with the same size-mass distribution
 (the property RMSE lacked). The DOF-graded LADDER is unchanged in spirit — best CONSTANT r_e
 (1 DOF) ≥ best re⁵-adiabat fit to truth (2 DOF, the oracle floor) ≥ us — now scored in W1,
 plus the NO-RETRIEVAL prior-mean baseline. d_w1 ≡ W1_adia − W1_ours (> 0 ⇒ we beat the floor).
-The MAIN reported shape metric is **pct_w1 = 100·W1_ours/τ_bot_truth** — W1 as a % of the cloud's
-optical depth, thickness-normalized so it is comparable across profiles (the raw W1 CDF integral
+The MAIN reported shape metric is **Ŵ₁ = 100·W1_ours/τ_bot_truth** (stored under the key
+`pct_w1`) — W1 thickness-normalized so it is comparable across profiles; the factor 100 is a
+fixed rescaling for readability, NOT a percentage (the raw W1 CDF integral
 above stays un-normalized). W1_ours is no longer stored (= pct_w1·τ_bot_truth/100 = W1_adia − d_w1).
 LWP is reported under §5c's post-hoc constant-v_e width corrections (C(0.037), C(0.046)) and
 the per-profile oracle C*, for OUR retrieval AND for the oracle adiabatic best-fit — the
@@ -248,7 +249,7 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         tau_bot_ret=tau_bot_ret, tau_bot_truth=float(d["truth_tau_bot"]),
         converged=bool(d["converged"]), n_gn=int(d["n_gn"]),
         chi2_red=float(d["chi2_red"]), structural_misfit=bool(d["structural_misfit"]),
-        # profile-shape fidelity (Wasserstein ladder). MAIN metric = pct_w1: W1_ours as % of
+        # profile-shape fidelity (Wasserstein ladder). MAIN metric = Ŵ₁ (key pct_w1): W1_ours over
         # τ_bot_truth (thickness-normalized, comparable across profiles). W1_ours itself is NOT
         # stored — recover as pct_w1·τ_bot_truth/100 = w1_adia − d_w1 (user directive 2026-07-11).
         pct_w1=(100.0 * w1_ours / tb_t) if tb_t else float("nan"),
@@ -296,7 +297,7 @@ def _low_confidence(rows, q=90.0):
     """The worst-decile of pct_w1 — the CANONICAL τ-normalized shape error — i.e. the fits not
     to be trusted (flag, don't drop). REBASED from the un-normalized d_w1 (2026-07-16, user):
     the absolute-τ criterion was support-scaled, so thin clouds could never trip it regardless
-    of fit quality (idx92, the 4th-worst %W1 at τ_bot≈2.2, escaped the old flag). Self-scaling
+    of fit quality (idx92, the 4th-worst Ŵ₁ at τ_bot≈2.2, escaped the old flag). Self-scaling
     threshold (no magic constant): the q-th percentile of pooled pct_w1, worst-first members."""
     pw = np.array([r["pct_w1"] for r in rows], float)
     thr = float(np.percentile(pw, q))
@@ -367,7 +368,7 @@ def summarize(rows):
 
 
 def _print_table(rows):
-    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'%W1':>7} "
+    hdr = (f"{'idx':>4} {'flt':>5} {'c':>1} {'τ_bot':>6} {'conv':>4} {'Ŵ₁':>7} "
            f"{'dW1':>7} {'LWPbias':>8} {'rel%':>6} {'d²_re':>7} {'d²a→x̂':>7} {'sig':>4} {'DOFS':>5}")
     print(hdr)
     print("-" * len(hdr))
