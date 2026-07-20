@@ -12,19 +12,20 @@ All curves in absolute optical depth tau (0 = cloud top, tau_bot = cloud base):
                               climatological tau_bot in x_a_log: rendering on that support
                               kinks into a clamped vertical tail wherever the cloud is
                               thicker than the climatology (s>1 clamps to r_base).
-  * best-fit adiabat      -- re_adia_dense from the sidecar (the W1 best fit against truth,
+  * Best-fit adiabat      -- re_adia_dense from the sidecar (the W1 best fit against truth,
                               so on the TRUTH tau_bot axis), green dash-dot. NO top/base
                               markers (user rule 2026-07-18: the circles belong to the k=1
                               retrieval overlay, not the best-fit adiabat)
-  * retrieved             -- re_ours_dense (on the retrieved tau_bot axis), blue solid,
+  * Multi-point ret       -- the free-node (multi-node) retrieval, re_ours_dense on the
+                              retrieved tau_bot axis, blue solid,
                               with node markers +-1 sigma (delta method from S_hat_log)
   * truth base            -- black star at (truth_r_base, truth_tau_bot)
-  * retrieved base        -- blue square +-1 sigma, distinguished from the interior nodes
+  * Multi-point ret base  -- blue square +-1 sigma, distinguished from the interior nodes
                               (blue circles) by shape and size
 
 Title reports chi2_red, tau_bot (retrieved vs truth), and DOFS (not SIC -- 2026-07-15).
 
-Optional overlay (PLOT_K1_PARTS=<parts_dir>): the k=1 RETRIEVED adiabat from the matched
+Optional overlay (PLOT_K1_PARTS=<parts_dir>): the 2-point ret (k=1 RETRIEVED adiabat) from the matched
 adiabatic-retrieval campaign (ve046_adia_bundle_1137436) -- the {idx}_{config}.npz sidecar's
 re_ours_dense on ITS OWN retrieved tau_bot support, purple SOLID (user 2026-07-20: both
 retrieved profiles get equal visual weight) with top/base circle markers, chi2_red in the label
@@ -114,12 +115,12 @@ def main():
     ax.plot(z["truth_re"], z["truth_tau"], color="grey", lw=1.3, label="truth")
     ax.plot(re_prior_dense, tau_dense_pre, color="tab:orange", ls="--", lw=1.8, label="prior")
     ax.plot(z["re_adia_dense"], tau_dense_adia, color="tab:green", ls="-.", lw=1.6,
-            label="best-fit adiabat")
+            label="Best-fit adiabat")
     k1_parts = os.environ.get("PLOT_K1_PARTS", "")
     if k1_parts:
         # PLOT_OVERLAY_LABEL relabels the overlay when the parts dir is not the matched
         # k=1 campaign (e.g. overlaying the weak-l FR counterpart for vetting)
-        olabel = os.environ.get("PLOT_OVERLAY_LABEL", "retrieved adiabat")
+        olabel = os.environ.get("PLOT_OVERLAY_LABEL", "2-point ret")
         z1 = dict(np.load(Path(k1_parts) / f"{idx}_{config}.npz", allow_pickle=True))
         re1 = np.asarray(z1["re_ours_dense"], float)
         tau1 = S_DENSE * float(z1["tau_bot_ret"])
@@ -133,13 +134,13 @@ def main():
         sig1 = [re_nodes1[0] * np.sqrt(S1[0]), float(z1["r_base_ret"]) * np.sqrt(S1[n1])]
         ax.errorbar([re1[0], re1[-1]], [tau1[0], tau1[-1]], xerr=sig1, fmt="o",
                     color="tab:purple", ms=9, capsize=3, zorder=5)
-    ax.plot(z["re_ours_dense"], tau_dense_ret, color="tab:blue", lw=2.2, label="retrieved")
+    ax.plot(z["re_ours_dense"], tau_dense_ret, color="tab:blue", lw=2.2, label="Multi-point ret")
     ax.plot(float(z["truth_r_base"]), truth_tau_bot, "*", color="k", ms=15, zorder=7,
             label="truth base")
     ax.errorbar(re_nodes_ret, tau_nodes, xerr=sigma_nodes, fmt="o", color="tab:blue",
                 ms=6, capsize=3, zorder=6)
     ax.errorbar([r_base_ret], [tau_bot_ret], xerr=[sigma_rbase], fmt="s", color="tab:blue",
-                ms=10, capsize=3, zorder=7, label=r"retrieved base $\pm1\sigma$")
+                ms=10, capsize=3, zorder=7, label=r"Multi-point ret base $\pm1\sigma$")
 
     ax.invert_yaxis()
     ax.set_xlabel(r"$r_e$ [µm]")
