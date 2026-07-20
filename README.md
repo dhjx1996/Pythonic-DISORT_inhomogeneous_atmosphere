@@ -101,16 +101,9 @@ cd tests && python -m pytest . -v
 cd tests && PYDISORT_RICCATI_JAX_X64=1 python -m pytest -m float64 -v
 ```
 
-## Status
+## Contact
 
-Forward solver and retrieval loop work end-to-end: differentiable Mie optics → Riccati RT →
-Gauss–Newton optimal estimation with autodiff Jacobians, validated on VOCALS-REx profiles
-(see demo above). Delta-M scaling and Nakajima–Tanaka TMS correction are implemented
-(production ON). The repository was reviewed, reorganized, and efficiency-upgraded on
-2026-07-02 — `CHANGELOG.md` records what changed and how it is being validated; open items
-are tracked in `docs/OUTSTANDING.md` (§K, §L).
-
-Contact: Dion Ho, dh3065@columbia.edu.
+Dion Ho, dh3065@columbia.edu.
 
 License: MIT (see `LICENSE.md`).
 
