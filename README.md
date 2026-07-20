@@ -43,10 +43,7 @@ For **constant** ω / phase function, prefer `pydisort` — it is exact and fast
 Effective-radius profiles rₑ(τ) per [VOCALS-REx](https://doi.org/10.5194/acp-11-627-2011)
 in-situ observations of marine stratocumulus (C-130 CDP probe), retrieved from a multi-band
 (10 shortwave/near-IR channels, 0.55–4.05 µm) multi-angle (24 view directions) satellite
-observing system with Gauss–Newton optimal estimation and autodiff Jacobians. Grey: in-situ
-truth; blue: retrieved rₑ(τ) ±1σ; dashed orange: adiabatic prior; green dash-dot: the truth-fed
-best-fit adiabat (the oracle *floor* a 2-parameter adiabatic model could reach); red ✕: (assumed)
-known cloud base.
+observing system with Gauss–Newton optimal estimation and autodiff Jacobians.
 
 <p align="center">
 <img src="docs/figures/idealized_retrieval_thin.png" width="380" alt="VOCALS retrieval idx20 (RF03, τ≈1.5) beating the adiabatic floor"/>
@@ -54,9 +51,8 @@ known cloud base.
 <img src="docs/figures/idealized_retrieval_thick.png" width="380" alt="VOCALS retrieval idx35 (RF05, τ≈2.9) beating the adiabatic floor"/>
 </p>
 
-The two clouds where the free-node retrieval most **beats the truth-fed adiabatic floor** — the
-blue retrieval tracks the in-situ truth's non-adiabatic structure the green 2-parameter adiabat
-cannot follow, on radiances alone. **Left:** RF03, τ ≈ 1.5 (−81 % W₁ vs the floor). **Right:**
+The two clouds where the free-node retrieval most **beats the truth-fed adiabatic best-fit (green)**.
+**Left:** RF03, τ ≈ 1.5 (−81 % W₁ vs the floor). **Right:**
 RF05, τ ≈ 2.9 (−79 %). Full all-125 campaign (and the matched adiabatic-retrieval comparison) in
 [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_retrieval.ipynb), §16.
 
