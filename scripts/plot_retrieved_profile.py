@@ -12,14 +12,15 @@ All curves in absolute optical depth tau (0 = cloud top, tau_bot = cloud base):
                               climatological tau_bot in x_a_log: rendering on that support
                               kinks into a clamped vertical tail wherever the cloud is
                               thicker than the climatology (s>1 clamps to r_base).
-  * best-fit adiabat (oracle, W1) -- re_adia_dense from the sidecar (fit against truth,
+  * best-fit adiabat      -- re_adia_dense from the sidecar (the W1 best fit against truth,
                               so on the TRUTH tau_bot axis), green dash-dot. NO top/base
                               markers (user rule 2026-07-18: the circles belong to the k=1
-                              retrieval overlay, not the oracle)
+                              retrieval overlay, not the best-fit adiabat)
   * retrieved             -- re_ours_dense (on the retrieved tau_bot axis), blue solid,
                               with node markers +-1 sigma (delta method from S_hat_log)
   * truth base            -- black star at (truth_r_base, truth_tau_bot)
-  * retrieved base        -- red X +-1 sigma, distinguished from the interior nodes
+  * retrieved base        -- blue square +-1 sigma, distinguished from the interior nodes
+                              (blue circles) by shape and size
 
 Title reports chi2_red, tau_bot (retrieved vs truth), and DOFS (not SIC -- 2026-07-15).
 
@@ -125,7 +126,7 @@ def main():
         ax.plot(re1, tau1, color="tab:purple", ls="-", lw=2.2,
                 label=f"{olabel}, $\\chi^2_r$={float(z1['chi2_red']):.2g}")
         # top/base circles live on the k=1 RETRIEVAL (user rule 2026-07-18) — never on the
-        # oracle; ±1σ error bars (delta method from the overlay's own S_hat_log, 2026-07-19)
+        # best-fit adiabat; ±1σ error bars (delta method from the overlay's own S_hat_log, 2026-07-19)
         S1 = np.diag(np.asarray(z1["S_hat_log"], float))
         n1 = len(np.asarray(z1["s_grid"], float))
         re_nodes1 = np.asarray(z1["re_nodes_ret"], float)
@@ -137,8 +138,8 @@ def main():
             label="truth base")
     ax.errorbar(re_nodes_ret, tau_nodes, xerr=sigma_nodes, fmt="o", color="tab:blue",
                 ms=6, capsize=3, zorder=6)
-    ax.errorbar([r_base_ret], [tau_bot_ret], xerr=[sigma_rbase], fmt="X", color="tab:red",
-                ms=12, capsize=3, zorder=7, label=r"retrieved base $\pm1\sigma$")
+    ax.errorbar([r_base_ret], [tau_bot_ret], xerr=[sigma_rbase], fmt="s", color="tab:blue",
+                ms=10, capsize=3, zorder=7, label=r"retrieved base $\pm1\sigma$")
 
     ax.invert_yaxis()
     ax.set_xlabel(r"$r_e$ [µm]")
