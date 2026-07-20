@@ -137,31 +137,6 @@ def _re5_interp(s_eval, s_bp, re_bp):
                      np.asarray(re_bp, float) ** 5) ** 0.2
 
 
-def _fit_adiabat_rbase_pinned_uw1(re_truth_d, tau_truth, s_dense, rb_pin, bounds=(2.0, 25.0)):
-    """The COMPROMISE adiabat (2026-07-16): r_base PINNED to our retrieved base, r_top fit by
-    minimizing the UNNORMALIZED mass-CDF distance uW1 = ∫|ΔM|dτ (M = cumulative r_e mass) —
-    the one knob must serve shape AND mass simultaneously. (A normalized-W1 pinned fit is a
-    no-op: the mass-normalized CDF is amplitude-invariant, so pinning the base just slides the
-    fit along a W1-flat direction.) Truth-fed; PLACEHOLDER for the k=1 radiance-driven
-    adiabat-class competitor — validate against it when that campaign lands, then retire."""
-    from scipy.optimize import minimize_scalar
-    g = np.linspace(0.0, tau_truth[-1], 512)
-
-    def cum(re):
-        c = np.concatenate([[0.0], np.cumsum(0.5 * (re[1:] + re[:-1]) * np.diff(tau_truth))])
-        return np.interp(g, tau_truth, c)
-
-    M_t = cum(re_truth_d)
-
-    def uw1_of(rt):
-        curve = (rb_pin ** 5 + (rt ** 5 - rb_pin ** 5) * (1.0 - s_dense)) ** 0.2
-        return float(np.trapezoid(np.abs(cum(curve) - M_t), g))
-
-    rt = float(minimize_scalar(uw1_of, bounds=bounds, method="bounded",
-                               options=dict(xatol=1e-6)).x)
-    return (rb_pin ** 5 + (rt ** 5 - rb_pin ** 5) * (1.0 - s_dense)) ** 0.2, rt
-
-
 # ────────────────────────────── per-sidecar analysis ──────────────────────────────
 def _coerce_str(v):
     try:
@@ -230,11 +205,6 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         xa = np.exp(np.asarray(d["x_a_log"], float))        # [r_e(nodes), r_base, τ_bot] physical
         re_pr = _re5_interp(s_dense, np.r_[s_grid, 1.0], np.r_[xa[:k], xa[k]])
         w1_prior = wasserstein_tau(re_truth_d, tau_truth_abs, re_pr, s_dense * float(xa[k + 1]))
-    # ---- the rb-pinned COMPROMISE adiabat (placeholder rung for the k=1 competitor) ----
-    re_pin_d, adia_pin_r_top = _fit_adiabat_rbase_pinned_uw1(
-        re_truth_d, tau_truth_abs, s_dense, r_base_ret)
-    w1_adia_pin = wasserstein_tau(re_truth_d, tau_truth_abs, re_pin_d, tau_truth_abs)
-    lwp_pin = lwp_trapz_tau(re_pin_d, tau_truth_abs)
     # ---- LWP of the oracle adiabatic best-fit = the LWP-bias BASELINE: a perfect-SHAPE adiabat
     #      carries the SAME width/Q_ext artifact as us → the LWP bias is bookkeeping, not shape error.
     lwp_adia = lwp_trapz_tau(re_adia_d, tau_truth_abs)
@@ -284,9 +254,6 @@ def analyze_sidecar(npz_path, *, re_max=RE_MAX_DEFAULT):
         pct_w1=(100.0 * w1_ours / tb_t) if tb_t else float("nan"),
         w1_adia=w1_adia, d_w1=d_w1,
         w1_const=w1_const, w1_prior=w1_prior,
-        # rb-pinned COMPROMISE adiabat (uW1 fit; placeholder for the k=1 competitor):
-        # normalized-W1 score + its LWP, both evaluated like every other ladder member
-        w1_adia_pin=w1_adia_pin, lwp_pin=lwp_pin, adia_pin_r_top=adia_pin_r_top,
         # LWP
         lwp_ours=lwp_ours, lwp_truth_z=lwp_truth_z, lwp_truth_tau=lwp_truth_tau,
         lwp_bias_z=lwp_bias_z, lwp_bias_tau=lwp_bias_tau,

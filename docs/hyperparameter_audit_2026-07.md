@@ -1,4 +1,4 @@
-# Hyperparameter & logic audit — 2026-07-02
+# Hyperparameter & logic audit — 2026-07-02 (Updated on 07-19)
 
 Point-in-time audit of every tuning knob and the scientific claim-chain, done as part
 of the 2026-07 refactor (commits `0a1b678`…). Sources: the code as of this commit,
@@ -18,77 +18,40 @@ further; **INERT** = never binding in practice.
 | truth/retrieval `tol` | 1e-4 | probe §A3 (closed 2026-06-29): same χ²ᵣ floor as 1e-5, only setting stable at both τ ends; E7 "keep" | OK; thick-tail (τ≳36) profile non-uniqueness caveat stands (DD note) |
 | float32 default `tol` | 1e-3 (+`_RTOL_FLOOR_F32`) | DD §4; production explicitly float64 (DD §15) | OK (non-production) |
 | `max_steps` | 4096 | headroom over ~35-step solves; the float32 10-band blowup is caught by it | OK |
-| `MU0` | 0.9 fixed | OSSE choice | **FLAG (scope)** — all §14/§15 results are conditional on one solar geometry; operational work needs μ0 binning (μ0 is a static/compile arg — STRATEGY §4) |
+| `MU0` | 0.9 fixed | OSSE choice | **FLAG (scope; §2.1)** — all §14/§15 results are conditional on one solar geometry; operational work needs μ0 binning (μ0 is a static/compile arg — STRATEGY §4) |
 | views | 24 = NQuad//2, μ∈[0.25,0.95], φ=π, golden-ratio irregular | ≥NQuad//2 rule (DD §11b, verified A_top 0.25→0.39); irregularity kills the 0.55 µm aliasing notch (DD §14); μ=0.25 plane-parallel edge documented | OK |
 | `ALBEDO` | 0.06 Lambertian, all 10 bands | DD §9 (BDRF convention fixed there) | **FLAG (low)** — sea albedo is spectrally varying (VIS≈0.02–0.06 → SWIR≈0.02); constant 0.06 is crude, though secondary under bright cloud. Revisit if dark-scene bands matter |
-| `RE_BOUNDS` | (2, 20) µm | VOCALS truth max 18.1 + margin; 25 also safe at NLEG_ALL=1536 | OK (sufficiency choice, documented) |
-| `RE_GRID_N`/`N_RADII` | 32 / 600 | table-resolution choices; ripple-free per optics_table docstring | OK |
-| `V_EFF` | 0.10 fixed | Hansen–Travis typical marine-Sc width; v_e is unretrievable from scalar intensity (DOFS~1 plateau — polarized cloudbow needed, shelved) | OK with caveat: results are conditional on v_e=0.10; sensitivity unquantified at 2 % noise |
+| `RE_BOUNDS` | (2, 22) µm | VOCALS truth max 18.1 + margin; 25 also safe at NLEG_ALL=1536 | OK (sufficiency choice, documented) |
+| `RE_GRID_N`/`N_RADII` | 181 / 4096 | table-resolution choices; ripple-free per optics_table docstring | OK |
+| `V_EFF` | 0.10 / 0.046 (canon) | 0.1 is the Hansen–Travis typical marine-Sc width and 0.046 was inferred from VOCALS-REx data; v_e is unretrievable from scalar intensity (DOFS~1 plateau — polarized cloudbow needed, shelved) | OK with caveat: sensitivity unquantified at 2 % noise |
 | noise `k_cal` | 2 % + 1e-3 floor | PACE MRD §3.7 radiometric accuracy 1–3 %, calibration-dominated for bright clouds (DD §12) | OK |
 | shot term | removed from code 2026-07-10 (was OFF/never populated) | OD-K open (needs OCI SNR tables; re-add is one quadrature line) | **FLAG (open)** — inherited open item; matters most for the dark 3.7/4.05 µm bands |
-| mode-trim `frac` | 1/3 of min σ_ε | "≪ noise" rule | OK |
-| IC workers' mode-trim `Se` | ~~flat (0.005)²·I~~ → measured-radiance OCI Se | was inconsistent with the oci_swir Se the diagnostics assume | **FIXED 2026-07-02** — see §2.1; re-run decision pending |
+| mode-trim `frac` | 1/3 of min σ_ε | "≪ noise" rule; determines `NFourier` in `pydisort_riccati_jax` | OK |
 | `filter_threshold` | 0.5 | Rodgers SNR=1 data/prior crossover; 0.25→0.5 re-sweep at 2 % noise (DD §10f) | OK; OD §G still says 0.25 — doc drift to fix in the doc revision |
 | `margin` | +1 node | heuristic ("one prior-filled direction") | **FLAG (low)** — untested lever; harmless with the tight base prior, but no sweep exists at 2 % noise |
 | `k_max` | 8 | cap on the filter count | INERT (observed k=4–6) |
 | `S_REF_MODES`/`S_COARSE` | 4 / 5 uniform nodes | setup grids; S_COARSE is now also the τ_bot pre-retrieval grid (E3) | OK pending the HPC golden gate (§2.2) |
 | GN: `n_iter`/`lm`/`xtol`/`cost_rtol` | 12 / 1e-2 / 2e-3 / 0.01 | observed 5–10 accepts; cost_rtol tuned (DD §10h); E7 "keep" | OK |
 | `chi2_floor` | OFF | Sε magnitude not reliably profiled (DD §10h) | OK (deliberate) |
-| `max_n_outer` | 1 (FR) / 2 (default) | frozen grid for clean A-vs-B; re-mesh escalation gated | OK |
-| pre-retrieval: `re_sigma_tight`/`n_iter`/`xtol` | 0.1 / **4** / **2e-2** | 0.1 pins r_e (physical basis: ω=1 VIS rows carry τ_bot); 4/2e-2 are the **new E2a diet** (was 8/5e-3) | **FLAG (gate)** — validated on the toy suite only; the production check is the 3-profile golden gate (§2.2) |
+| `max_n_outer` | 2 (default) | frozen grid for clean A-vs-B; re-mesh escalation gated | OK |
+| pre-retrieval: `re_sigma_tight`/`n_iter`/`xtol` | 0.1 / **4** / **2e-2** | 0.1 pins r_e (physical basis: ω=1 VIS rows carry τ_bot); 4/2e-2 are the **new E2a diet** (was 8/5e-3) | OK |
 | priors: `r_base_ratio` | 0.65·r_top, clipped < r_top | VOCALS median 0.60, King/Vukićević AMT-2025 ≈0.70 | OK |
 | priors: `sigma_top`/`sigma_base` | ≈2.3–2.5 / ≈1.4–1.5 µm | VOCALS MADs; "tight where blind, loose where strong" (DD §11, population-confirmed) | OK |
 | priors: `sigma_tau_bot` | ~100 % relative | τ_bot fully data-determined (A≈1) | OK |
-| priors: `corr_length` | 0.5 (normalized depth) → top–base prior corr **0.135**; env-overridable via `CORR_LENGTH` (2026-07-16), strong = 5.7355 → **0.84** | default τ_bot/2 heritage; **in-situ VOCALS corr(ln r_top, ln r_base)=0.84** (BP2026 recipe), so we under-couple by design | **FLAG (§2.4b)** — deliberate: weak coupling exposes the depth information-collapse rather than hiding it; KV2012/KR2012 use 0 (diagonal), BP2026 uses the empirical ~0.84; strong-corr sensitivity campaigns (FR/adiabatic/v_e-mismatch at 0.84) queued — `hpc/AGENT_strongcorr_pipeline.md`; tune for ops (OD §L) |
-| B-draw RNG | `default_rng(2000+index)` | reproducibility across resumes (audited clean) | OK |
+| priors: `corr_length` | 0.5 (normalized depth) → top–base prior **corr 0.135** (Update: 5.74, i.e. **corr 0.84** has been tried) | default τ_bot/2 heritage; **in-situ VOCALS corr(ln r_top, ln r_base)=0.84** (BP2026 recipe), so we under-couple by design | **FLAG (§2.2)** — deliberate: weak coupling exposes the depth information-collapse rather than hiding it; KV2012/KR2012 use 0 (diagonal), BP2026 uses the empirical ~0.84; tune for ops (OD §L) |
+| B-draw RNG *(results retired)* | `default_rng(2000+index)` | reproducibility across resumes (audited clean) | OK |
 | `TAU_BOT_OK` | (0.3, 100) | degenerate-profile guard (idx-0 τ≈1585) | OK |
 | LWP | (2/3)·∫r_e dτ | assumes Q_ext≈2; z-integral cross-check carried in the sidecar | OK (documented approximation) |
 
 ## 2. Flags in detail
 
-### 2.1 IC mode-selection noise is not the retrieval noise (medium)
-`scripts/ic_worker_profile.py:110` and `ic_worker_mechanism.py:71` select the mode
-count with `Se = (0.005)²·I`, while everything downstream (Se weighting, DOFS/SIC)
-uses `noise_model.oci_swir()` (2 %·ρ + 1e-3 floor). For dark SWIR scenes the oci σ
-can sit near the 1e-3 floor — 5× *below* the flat 0.005 — so the trim threshold
-(frac·min σ) is looser than the assumed measurement noise and can drop modes that are
-not strictly sub-noise for the darkest observations. Production FR is consistent
-(`retrieval_worker` passes the oci Se). **Status: FIXED in code (2026-07-02)** — both
-IC workers now load the radiance record before mode selection and select against the
-measured-radiance OCI Se (each worker's own view set). The published definitive
-bundle still reflects the old flat value; a re-run therefore changes K selection
-(same or MORE modes kept — the accuracy-safe direction) and shifts DOFS/SIC beyond
-the E1 sub-noise note. The re-run decision sits with the user + HPC agent (see
-CHANGELOG).
-
-### 2.2 The E2a/E3 setup diet needs its production gate (gate-blocking)
-`retrieve_tau_bot(n_iter=4, xtol=2e-2)` + pre-retrieval-on-`S_COARSE` change where
-the per-profile grid anchor comes from. The toy suite (tests/23i) confirms anchor
-recovery, but the anchor feeds grid selection, so the production check is grid
-stability + retrieved-state agreement on real profiles across the τ range:
-`tests/hpc/test_golden_profiles.py` (3-profile golden-diff) **must pass on the HPC
-before the next production sweep** — as the fable assessment prescribed for E1–E6.
-
-### 2.3 Single solar geometry (scope, not a bug)
+### 2.1 Single solar geometry (scope, not a bug)
 All published IC and FR numbers are at μ0=0.9. The conclusions notebook presents are
 geometry-conditional; nothing in the code prevents other μ0 (rebuild `setup`), but
 no result yet quantifies how DOFS/band-value rankings move with μ0. Operational
 per-scene work needs the μ0-binning strategy (STRATEGY §4) — deferred, documented.
 
-### 2.4a Accepted latent gap: optics-table cache signature omits `n_gl` (low, by decision)
-`optics_table._signature` keys the disk cache on (wavelengths, r_e bounds/grid, v_eff, NLeg)
-but **not** `n_gl` — a table rebuilt at a different Gauss–Legendre projection order under the
-same key would be wrongly reused. Judged consistent-enough on 2026-06-29 (`n_gl` is fixed at
-4096 on the standard path); recorded here for awareness (ported from the retired STREAMLINE.md).
-
-### 2.4 Un-swept second-order priors (low)
-`corr_length=0.5` (normalized) and `margin=1` are the two remaining prior/selection
-levers with no dedicated sweep at the 2 % noise model. Both are plausibly benign
-(the base is prior-dominated by design; margin adds one prior-filled direction), but
-neither has the evidence discipline the other knobs now have. Candidate for a cheap
-2-case sweep when the HPC is next idle.
-
-### 2.4b The prior top–base correlation is under-specified vs the in-situ covariance (flag, deliberate for now)
+### 2.2 The prior top–base correlation is under-specified vs the in-situ covariance (flag, deliberate for now)
 `corr_length=0.5` sets the **only** knob controlling the prior correlation between
 cloud-top r_e and the (shielded) cloud-base r_e. Through the exponential kernel
 `S_a[i,j]=σ_iσ_j·exp(−|s_i−s_j|/ℓ)`, top (s=0) and base (s=1) get
@@ -109,25 +72,6 @@ in-situ data says otherwise:** defining `r_top`/`r_base` as the mean over the to
   **covariance**: eq (3) `S'_a = Cov(ln[r_top,r_bot,τ_c,IWV])` — the *full empirical*
   VOCALS covariance, off-diagonals included. This is the ~0.84 above.
 
-**Decision (2026-07-16): keep the untuned 0.135 for the research campaigns, do not adopt
-the empirical 0.84.** Rationale: a weak prior correlation is *more instructive* — it lets
-the genuine information collapse at depth (the shielded base, few DOFS_base) show through
-in the posterior, rather than masking it behind a strong prior tie whose ~0.84 value is a
-single-campaign (SE-Pacific marine Sc) statistic that may not generalize. Caveat on the
-0.84 itself: it is our reproduction of BP2026's stated recipe on our VOCALS load, not a
-readout of BP's published `S_a`. **For operations this parameter should be tuned** (or
-replaced by a BP2026-style empirical `S_a`) — tracked in `OUTSTANDING.md §L`.
-
-**Update (2026-07-16, same day):** the sensitivity run is no longer hypothetical. A
-`CORR_LENGTH` env knob (`scripts/retrieval_worker.py`) now sets ℓ directly — unset →
-0.5 (corr 0.135, byte-identical default), `5.7355` → corr 0.84 — threaded only into the
-main-retrieval prior (grid selection and `retrieve_tau_bot` unchanged), so weak↔strong
-isolates exactly the prior correlation; each result stamps `corr_length` for provenance.
-Three strong-corr (0.84) campaigns are queued in strict order behind the weak-corr
-adiabatic ablation: FR, adiabatic, and v_e-mismatch — `hpc/AGENT_strongcorr_pipeline.md`.
-The weak 0.135 remains the default and the primary (headline) configuration; the strong
-runs are its sensitivity companions.
-
 ## 3. Logic soundness — the claim chain (checked, sound)
 
 1. **Forward validity.** Riccati solver ≡ pydisort references across 22 test files +
@@ -141,31 +85,11 @@ runs are its sensitivity companions.
 3. **Noiseless observation + assumed Se.** DD §10b/§12 decision: y is noise-free,
    Se enters as weighting/posterior only. Standard OSSE practice; consequence
    (DOFS/SIC reflect *assumed* noise) is stated where it matters.
-4. **IC methodology.** Spectral baseline = flux reflectance (plane albedo, m=0
-   exact) — the CPV2012/King–Vaughan quantity; the angular-novelty analysis is the
-   extension beyond CPV2012; DOFS/SIC per Rodgers (eq. 2.80 form verified in
-   `posterior_diagnostics`); band-addition order data-greedy from the standard
-   bispectral pair (NK1990) — reconstruction of the published figures verified
-   bit-level (2026-07-02, `ic_analysis_definitive.py` reproduces both JSONs).
-5. **Retrieval design.** Log-state + LM monotone descent + cost-stagnation stop =
+4. **Retrieval design.** Log-state + LM monotone descent + cost-stagnation stop =
    BP2026 §2.4/lines 205-213; normalized-depth nodes make joint τ_bot retrieval
    well-posed (no node-crossing); QRCP node selection whitened by noise and prior
-   (Rodgers filter factors); oracle-adiabatic ΔRMSE is a like-for-like floor (same
-   function class, generous τ_bot oracle).
-6. **Signature discipline.** `signature()` fingerprints what y *means*; tol is an
+   (Rodgers filter factors).
+5. **Signature discipline.** `signature()` fingerprints what y *means*; tol is an
    accuracy tag asserted separately — verified both directions in workers. The one
    deliberate hole — K-trim and solver-precision are unsigned — is now documented
    (E1 note) and safe because the truth tier never mode-trims.
-
-## 4. Standing actions
-
-1. HPC: run the golden gate (`tests/hpc/`, §2.2) before the next production sweep.
-2. IC mode-trim Se: fixed in code (§2.1); decide the IC re-run (user + HPC agent).
-3. Doc revision pass: fix OD §G filter_threshold drift; fold this audit's verdicts
-   into DD where they harden decisions.
-4. Idle-HPC candidates: corr_length/margin mini-sweeps (§2.4); μ0 sensitivity spot
-   check (§2.3); OCI SNR tables → shot-noise term (OD-K).
-5. Prior top–base correlation (§2.4b): 0.135 stays the primary configuration; the
-   strong-corr (0.84, `CORR_LENGTH=5.7355`) sensitivity campaigns (FR / adiabatic /
-   v_e-mismatch) are queued — `hpc/AGENT_strongcorr_pipeline.md`. For ops, tune
-   `corr_length` or adopt a BP2026-style empirical `S_a` (OD §L).
