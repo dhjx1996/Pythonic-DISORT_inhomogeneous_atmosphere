@@ -10,7 +10,7 @@ hot path; the *table build* is offline and is done here with **miepython** (Bohr
 & Huffman; numba-accelerated via miepython's own JIT) over the gamma size
 distribution. ``miejax_lite`` is retained for legacy / validation only.
 
-Why swap (DESIGN_DECISIONS §13): autodiff independence from Mie (above) means the
+Why swap (DESIGN_DECISIONS §8): autodiff independence from Mie (above) means the
 JAX-Mie front-end buys nothing for the retrieval, while miepython is the field
 reference implementation and trivially reaches the strong-absorption bands (e.g.
 3.7 µm) that motivated the band superset.

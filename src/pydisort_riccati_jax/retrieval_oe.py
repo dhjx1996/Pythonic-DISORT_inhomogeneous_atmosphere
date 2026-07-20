@@ -47,7 +47,7 @@ from .solver import (
     riccati_setup, riccati_solve, eval_radiance,
     pydisort_riccati_jax, _barycentric_interpolate,
 )
-from .optics_table import table_lookup   # miepython-built table; JAX-Mie (miejax_lite) retired (DESIGN §13)
+from .optics_table import table_lookup   # miepython-built table; JAX-Mie (miejax_lite) retired (DESIGN §8)
 
 
 # ============================================================================
@@ -846,7 +846,7 @@ def to_log_prior(x_a, Sa):
 
 
 def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
-                         sigma_top=3.0, sigma_base=1.5, corr_length=None,
+                         sigma_top=2.5, sigma_base=1.5, corr_length=None,
                          strength=1.0):
     """Adiabatic first guess ``x_a`` and correlated prior covariance ``S_a``.
 
@@ -868,7 +868,8 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
     data-grounded climatological value is the **VOCALS-REx ensemble's own** cloud-top
     r_e distribution (125 profiles): mean ≈ **9.7 µm** (median 9.5, σ 2.3; range
     4.9–18.0), or ≈ **10.3 ± 2.2 µm** for the thick (τ_bot>8) subset — and that
-    empirical σ≈2.2–2.3 µm is consistent with the ``sigma_top=3`` used here. (The OSSE
+    empirical σ≈2.2–2.3 µm is what the ``sigma_top=2.5`` default here encodes (the
+    harmonized grounded value shared by all three builders; see CATALOG.md). (The OSSE
     demo instead passes the true top, deliberately: see notebook §13 — a perfectly
     anchored adiabatic prior makes the measurement's *departure* from adiabatic
     unambiguous.) This empirical mean+spread is the first rung of a fully learned prior.
@@ -894,7 +895,7 @@ def make_adiabatic_prior(tau_nodes, tau_bot, r_base, r_top_prior, *,
 
 def make_joint_prior(s_nodes, *, tau_bot_prior, r_top_prior, r_base_prior,
                      retrieve_r_base=True, retrieve_tau_bot=True,
-                     sigma_top=5.0, sigma_base=2.0, sigma_tau_bot=None,
+                     sigma_top=2.5, sigma_base=1.5, sigma_tau_bot=None,
                      corr_length=None, strength=1.0, log=False):
     """Joint prior over the retrieved state ``x = [r_e nodes, (r_base), (τ_bot)]``.
 
@@ -956,7 +957,11 @@ def make_climatology_prior(s_nodes, clim, *, retrieve_r_base=True,
     :func:`vocals_io.vocals_climatology` (computed EXCLUDING the target's own
     flight — leave-one-flight-out, so the prior never sees a statistic derived from
     the truth profile or any profile sharing its flight; the leak-free OSSE
-    discipline). Means = ensemble means; σ's = ensemble spreads. This is the
+    discipline). The prior means come from ``clim["*_mean"]`` and the σ's from
+    ``clim["*_std"]`` — note those keys hold **robust** statistics (ensemble
+    *median* location and 1.4826·MAD spread, not arithmetic mean/std; see
+    :func:`vocals_io.vocals_climatology`), the ``*_mean``/``*_std`` names being
+    the generic prior-interface labels. This is the
     fallback if the generic Option-2 prior (:func:`make_marine_sc_prior`) degrades
     the retrieval — and is then also the prior the information-content profiling
     would use.
@@ -1349,6 +1354,26 @@ def gauss_newton_oe(fwd: RetrievalForward, y, s_nodes, x_a, Sa, Se, *,
     x = np.asarray(x_a, float) if x0 is None else np.asarray(x0, float)
     Se_inv = np.linalg.inv(np.asarray(Se, float))
     m = len(np.asarray(y, float))
+
+    # State-length guard: the prior must describe exactly the state the forward
+    # retrieves — r_e nodes plus r_base/τ_bot iff the forward retrieves them. A
+    # silent mismatch here means the prior and forward were built with disagreeing
+    # ``retrieve_r_base``/``retrieve_tau_bot`` flags (the forward defaults BOTH False
+    # — the legacy fixed-anchor baseline — while the prior builders default BOTH
+    # True). Fail loudly rather than mis-index the state (CATALOG.md "retrieve_*").
+    expected = len(s_nodes) + int(fwd.retrieve_r_base) + int(fwd.retrieve_tau_bot)
+    for _name, _v in (("x_a", x_a), ("x0", x0)):
+        if _v is not None and len(np.asarray(_v, float)) != expected:
+            raise ValueError(
+                f"prior state length {len(np.asarray(_v, float))} ({_name}) != forward "
+                f"expected {expected} = {len(s_nodes)} r_e nodes + "
+                f"{int(fwd.retrieve_r_base)} r_base + {int(fwd.retrieve_tau_bot)} τ_bot; "
+                "check that retrieve_r_base/retrieve_tau_bot match on the forward and "
+                "the prior builder.")
+    if np.asarray(Sa, float).shape != (expected, expected):
+        raise ValueError(
+            f"prior covariance Sa shape {np.asarray(Sa, float).shape} != "
+            f"({expected}, {expected}); same retrieve_* mismatch as above.")
 
     x, K, Fx, hist, conv = _gn_inner(fwd, s_nodes, y, x, x_a, Sa, Se,
                                      n_iter=n_iter, lm=lm, xtol=xtol,

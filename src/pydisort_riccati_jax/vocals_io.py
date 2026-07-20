@@ -240,6 +240,9 @@ def vocals_climatology(profiles: list[CloudProfile], *,
     r_top_m, r_top_s = robust([p.r_top for p in held])
     r_base_m, r_base_s = robust([p.r_base for p in held])
     tau_m, tau_s = robust([p.tau_bot for p in held])
+    # NB: the ``*_mean``/``*_std`` keys are the generic prior-interface labels
+    # (what make_*_prior expects) but hold ROBUST stats — median location and
+    # 1.4826·MAD spread, NOT arithmetic mean/std (see docstring).
     return dict(
         n=len(held), flights=sorted({p.flight for p in held}),
         r_top_mean=r_top_m, r_top_std=max(r_top_s, 0.5),
