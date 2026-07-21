@@ -51,9 +51,10 @@ observing system with Gauss–Newton optimal estimation and autodiff Jacobians.
 <img src="docs/figures/idealized_retrieval_thick.png" width="380" alt="VOCALS retrieval idx35 (RF05, τ≈2.9) beating the adiabatic floor"/>
 </p>
 
-The two clouds where the free-node retrieval most **beats the truth-fed adiabatic best-fit (green)**.
-**Left:** RF03, τ ≈ 1.5 (−81 % W₁ vs the floor). **Right:**
-RF05, τ ≈ 2.9 (−79 %). Full all-125 campaign (and the matched adiabatic-retrieval comparison) in
+The two clouds where the multi-point retrieval most **beats the truth-fed best-fit adiabat (green)**.
+**Left:** RF03, τ ≈ 1.5 (−81 % in W₁ vs that best fit). **Right:**
+RF05, τ ≈ 2.9 (−79 %). Full all-125 campaign (and the matched 2-point adiabatic-retrieval
+comparison) in
 [`docs/riccati_solver_VOCALS_retrieval.ipynb`](docs/riccati_solver_VOCALS_retrieval.ipynb), §16.
 
 ## Documentation

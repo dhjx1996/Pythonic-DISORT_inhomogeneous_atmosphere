@@ -1167,6 +1167,10 @@ def _gn_inner(fwd, s_nodes, y, x0, x_a, Sa, Se, *, n_iter, lm, xtol,
     # curvature of the log-r_e profile vs normalized depth. OPT-IN: λ=0 ⇒ P=None ⇒ the solve is
     # bit-identical to the un-penalised path (the OU exp-kernel prior is C⁰-only and never
     # suppresses the data/prior-seam kink — this does; OUTSTANDING §B′).
+    # NOTE: penalises the ABSOLUTE profile ‖L₂ x‖², so the curved re5-linear adiabatic prior mean
+    # is itself penalised (biases toward straight-in-log). A departure form ‖L₂(x−x_a)‖² only
+    # relocates the bias (toward the climatological adiabat's curvature, which is a poor per-cloud
+    # reference); left as-is pending the insensitivity check in OUTSTANDING §B′.
     P = None
     if curvature_lambda and float(curvature_lambda) > 0.0:
         s_prof = (np.append(np.asarray(s_nodes, float), 1.0)

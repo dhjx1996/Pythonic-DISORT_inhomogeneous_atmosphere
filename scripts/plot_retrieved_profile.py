@@ -20,7 +20,8 @@ All curves in absolute optical depth tau (0 = cloud top, tau_bot = cloud base):
                               retrieved tau_bot axis, blue solid,
                               with node markers +-1 sigma (delta method from S_hat_log)
   * truth base            -- black star at (truth_r_base, truth_tau_bot)
-  * Multi-point ret base  -- blue square +-1 sigma, distinguished from the interior nodes
+  * Ret base              -- blue square +-1 sigma (the multi-point retrieval's base: the blue
+                              says whose it is), distinguished from the interior nodes
                               (blue circles) by shape and size
 
 Title reports chi2_red, tau_bot (retrieved vs truth), and DOFS (not SIC -- 2026-07-15).
@@ -140,13 +141,19 @@ def main():
     ax.errorbar(re_nodes_ret, tau_nodes, xerr=sigma_nodes, fmt="o", color="tab:blue",
                 ms=6, capsize=3, zorder=6)
     ax.errorbar([r_base_ret], [tau_bot_ret], xerr=[sigma_rbase], fmt="s", color="tab:blue",
-                ms=10, capsize=3, zorder=7, label=r"Multi-point ret base $\pm1\sigma$")
+                ms=10, capsize=3, zorder=7, label=r"Ret base $\pm1\sigma$")
 
+    if max(tau_bot_ret, truth_tau_bot) > 5.0:   # veiled-core onset τ≈5 (FDDM2020); key on the actual
+        # cloud extent, not the uninformative prior support (tau_bot_pre) which can run past 5 on thin clouds
+        ax.axhline(5.0, ls=":", color="k", alpha=0.5, lw=1.2)
+        ax.text(0.015, 5.0, "Veiling onset", color="k", alpha=0.6, fontsize=9.5,
+                ha="left", va="bottom", transform=ax.get_yaxis_transform())
     ax.invert_yaxis()
     ax.set_xlabel(r"$r_e$ [µm]")
     ax.set_ylabel(r"optical depth $\tau$")
     ax.grid(alpha=0.3)
-    ax.legend(fontsize=9, loc="best")   # dynamic: keep the legend off the retrievals (user rule 2026-07-18)
+    if not os.environ.get("PLOT_NO_LEGEND"):   # montage panels may suppress it (Fig 1 request)
+        ax.legend(fontsize=9, loc="best")   # dynamic: keep the legend off the retrievals (user rule 2026-07-18)
     ax.set_title(
         f"idx-{idx} ({str(z['flight'])}, {campaign_tag})  "
         f"$\\chi^2_r$={float(z['chi2_red']):.3f},  "
@@ -154,7 +161,7 @@ def main():
         f"DOFS={float(z['dofs']):.2f}", fontsize=11)
     fig.tight_layout()
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=int(os.environ.get("PLOT_DPI", "150")))
     print("saved", out)
 
 

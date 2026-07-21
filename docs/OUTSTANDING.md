@@ -3,8 +3,8 @@
 Open items, kept deliberately prominent. Settled rationale is in
 [`DESIGN_DECISIONS.md`](./DESIGN_DECISIONS.md). **Resolved / out-of-scope items are collapsed to a
 one-line pointer** — the `## letter` headers are retained because both docs cross-reference them by
-letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **K**
-and **L**. *(Revised 2026-07-02 with the repository refactor — `CHANGELOG.md`; per-knob evidence
+letter; the full rationale lives in the linked DESIGN section. The genuinely-open items are **K**,
+**L**, and **M**. *(Revised 2026-07-02 with the repository refactor — `CHANGELOG.md`; per-knob evidence
 in [`hyperparameter_audit_2026-07.md`](./hyperparameter_audit_2026-07.md). Re-synced 2026-07-16
 after the ve_rerun→main merge: ve046 canonicalization, retrieval-grid IC, results-manifest
 retirement.)*
@@ -106,6 +106,34 @@ flagged to tune for ops.
 the canonical ve046 campaign (`runs/_ve046_tik_fr_parts`, summary
 `docs/cached_results/retrieval_summary_ve046.json`) ran with λ=1.0; §15's retrieval-grid IC uses those
 sidecars (with the curvature term excluded from the IC prior — DESIGN §17).**
+
+**OPEN (2026-07-21): the penalty reference-curvature question.** The implemented (and published)
+penalty is on the **absolute** profile, `½λ‖L₂ x‖²`, whose zero-penalty set is the constant+linear
+(straight-in-log) profiles. The re5-linear adiabatic prior mean is *curved* in log-r_e, so this form
+**penalises the adiabatic bend itself** — it biases the retrieval toward straight-in-log. Noticed while
+writing the paper (the free-node method quietly carries a mild anti-curvature bias).
+- The obvious "fix" — penalise the departure `½λ‖L₂(x−x̄)‖²` (adiabatic mean → null space, `S_a⁻¹→S_a⁻¹+P`
+  same mean) — does **not** cleanly solve it: it only relocates the bias from "toward straight" to "toward
+  the *climatological* adiabat's curvature," and that reference is a poor per-cloud proxy. In log-space the
+  adiabatic curvature is dominated by the base and scales as `⅕[1−(r_top/r_base)⁵]²` — a **5th power of the
+  endpoint ratio**, so it swings ~an order of magnitude across the plausible ratio range (ratio 1.4→2.0 gives
+  base-curvature ∝ 19→960). Even the best-fit (oracle) adiabat departs substantially in curvature from the
+  climatological prior mean.
+- Why it is probably second-order either way: that curvature lives **at the base = the veiled region**,
+  where the `S_a` prior already pulls x→x̄ and shape is conceded unretrievable (DESIGN §14/§15). Absolute
+  and departure forms differ mainly *there*; the data-constrained upper cloud (mild curvature, data-dominated)
+  is barely touched. Residual exposure = the transition node at the data/veil seam; the 0.15σ figure above is
+  one thick profile (idx-110) and does not bound this across thin/mid/deep regimes.
+- **Decision (2026-07-21): keep the published absolute form; do NOT switch.** Not because A is better —
+  it isn't claimed to be — but because it is what the campaign ran, and neither reference is assumption-free
+  (de-kinking vs impose-no-shape are in tension). The paper carries the adiabatic-shape penalisation as an
+  explicit caveat (user-authored).
+- **The way to actually settle it (deferred):** retrieve a regime-spanning ~6 profiles under (A) absolute,
+  (B) departure, and (C) α→0 pure de-kink, overlay the profiles in the *data-constrained* region. Flat ⇒
+  report as an implementation detail, results insensitive to the penalty reference (the stronger claim). Not
+  flat ⇒ genuine finding; then consider the principled shape-neutral target: reference curvature to the
+  **self-consistent adiabat through the retrieval's own endpoints** (penalise non-adiabaticity, not
+  deviation-from-climatology; nonlinear, more machinery).
 
 ---
 
@@ -408,3 +436,62 @@ The 2026-07-02 refactor (`CHANGELOG.md` = the HPC validation brief; per-knob evi
 - **Spectral surface albedo [low].** Constant Lambertian 0.06 across 0.55–4.05 µm is crude
   (SWIR sea albedo ≈ 0.02); secondary under bright cloud — revisit if dark-scene bands matter.
 - **Shot-noise term** — removed from the code pending OCI SNR tables (§K; re-add is one line).
+
+---
+
+## M. Encode uncertainty about the imposed structural assumptions  [DEFERRED — research]
+
+*(Brainstorm 2026-07-21; motivated by notebook §17 "structure spectrum" + Finding 5.)*
+
+**The gap.** The structure knobs — model class `m` (k=1 vs free-node), correlation length `ℓ`,
+curvature strength `α` — are **fixed conditioning variables** `θ=(ℓ,α,m)`. OE delivers `p(x|y,θ)`
+at a point and Rodgers `Ŝ` is the covariance *conditional on that point*; there is no prior `p(θ)`
+and no marginalization `p(x|y)=∫p(x|y,θ)p(θ|y)dθ`. This is precisely why structural error is absent
+from `Ŝ` and why the posterior is under-dispersed (§17 Finding 4: PIT 0.81→1.00 along the spectrum,
+42 % of truths outside the 95 % ellipsoid — the §13b representation-bias blind spot). Encoding this
+uncertainty **is** the principled fix for that under-dispersion.
+
+**The enabling insight (why it's more than error-inflation).** §17 Finding 5 — the operating point
+lives in the **radiance null space**, so `p(θ|y)≈p(θ)`; the data cannot sharpen the structure
+hyper-posterior, hence the extra posterior width is inherently **hyper-prior-sourced**, not a
+likelihood effect. Collapse the three dials to one spectrum coordinate `s∈[0,1]`, put `p(s)`, weight
+by the evidence `Z(y|s)` (closed-form `χ² + logdet(K S_a Kᵀ + S_ε)` in the linear-Gaussian limit).
+Then evidence-weighting **auto-recovers Finding 2's regime-dependence**: where structure is
+radiance-loud (thin/mid, Finding 4 χ²ᵣ strain) `Z` falls with `s` → downweight structure → leans
+free-node; where radiance-silent (deep veiled core) `Z` is flat → weights ride `p(s)` → posterior
+becomes a mixture spanning adiabat↔free-node, wide and honest at depth. Turns "radiances cannot
+choose the operating point" into "they choose to the extent they can, and admit ignorance where they
+cannot."
+
+**Menu, ranked by value-for-effort:**
+1. **Law-of-total-variance retrofit [cheapest; reuses the 4 §17 campaigns].**
+   `Var(x|y)=E_θ[Var(x|y,θ)] + Var_θ[E(x|y,θ)]`; the second (between-structure) term is the missing
+   dispersion, computable *today* from the retrieved profiles already in hand. Add to `Ŝ`, re-run
+   PIT. **This is the recommended first experiment** — one afternoon, no new campaigns; validates or
+   kills the premise before investing in hierarchical machinery.
+2. **Evidence-weighted BMA over a 1-D `s`-grid.** Full version of (1): mixture mean/cov,
+   `w_k∝Z(y|s_k)p(s_k)`; multimodal at depth (breaks the Gaussian-ellipsoid PIT — report the mixture).
+   Covariance part is doable on the **§15 sidecar Jacobians** (linear-Gaussian, cheap) without
+   re-running nonlinear GN.
+3. **Empirical-Bayes hyper-prior from the 0.84 CI.** The bootstrap CI `corr∈[0.79,0.88]` maps through
+   `ℓ=−1/ln(corr)` to a ready-made `ℓ∈[4.24,7.82]` (sampling uncertainty, narrow). Distinct from the
+   *epistemic* "does coupling apply to this cloud" spread — the full spectrum `ℓ:0.5↔5.74`
+   (`corr:0.135↔0.84`, §L). Carry both; they answer different questions.
+4. **Joint retrieval of `ln ℓ, ln α` as state.** Propagates structure uncertainty via the joint
+   covariance off-diagonals; DOFS≈0 for the new components (null space) — the honest outcome. Awkward:
+   `ℓ,α` enter the *prior*, not the forward operator → profiling cleaner than differentiating.
+5. **Robust/credal priors (Γ-minimax).** No `p(θ)`; report the envelope of any functional (LWP,
+   `r_base`, deep-`r_e`) over `ℓ∈[0.5,5.74]`. Envelope width = structural uncertainty; pairs with the
+   LWP-bias comparison vs BP2025/26.
+6. **Decision-theoretic operating point.** Formalizes Finding 5's "priced bias–variance policy":
+   Bayes-risk min under model uncertainty (loss Ŵ₁, truth-population dist, `p(s)`) — makes the
+   "deep-Sc population prices it the other way" remark quantitative.
+
+**Limits to state in any writeup:** (a) turtles-up — `p(s)` is itself asserted structure (a milder
+assumption than a fixed point, not zero); (b) null-space ⇒ the added deep width is *whatever `p(s)`
+puts in — report sensitivity to it; (c) multimodality vs Gaussian `Ŝ` — (2)/(6) force mixtures,
+(1)/(3)/(5) keep a Gaussian/interval story; (d) `α`↔`ℓ` are partly redundant (both →∞ collapse to a
+template, §17) so the 1-D `s` coordinate is the right object to put uncertainty on, not a 2-D
+`(ℓ,α)` grid; (e) scope — §17's spectrum is `ℓ,α,m`, but the same logic extends to the other imposed
+choices (`r_base` ratio 0.65, QRCP node count, `v_eff`, prior mean); decide the boundary explicitly.
+Related: §B′ (curvature penalty = the `α` dial), §L (the 0.135-vs-0.84 corr flag = the `ℓ` dial).
